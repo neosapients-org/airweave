@@ -18,6 +18,7 @@ from airweave.domains.sync_pipeline.entity.actions import (
 )
 from airweave.domains.sync_pipeline.entity.handlers.protocol import EntityActionHandler
 from airweave.domains.sync_pipeline.exceptions import SyncFailureError
+from airweave.domains.sync_pipeline.processors.classifier import ClassifierProcessor
 from airweave.domains.sync_pipeline.protocols import ChunkEmbedProcessorProtocol
 from airweave.platform.destinations._base import BaseDestination
 
@@ -48,6 +49,7 @@ class DestinationHandler(EntityActionHandler):
         """Initialize with destination list and chunk/embed processor."""
         self._destinations = destinations
         self._processor = processor
+        self._classifier = ClassifierProcessor()
 
     @property
     def name(self) -> str:
@@ -153,6 +155,16 @@ class DestinationHandler(EntityActionHandler):
     ) -> None:
         """Process entities through ChunkEmbedProcessor and insert into destinations."""
         copies = [e.model_copy(deep=True) for e in entities]
+
+        # Classify documents before chunking so doc_category is baked into embeddings
+        if self._classifier.enabled:
+            try:
+                copies = await self._classifier.process(copies)
+            except Exception as e:
+                sync_context.logger.warning(
+                    f"[{self.name}] Classification failed, continuing without: {e}"
+                )
+
         proc_start = asyncio.get_running_loop().time()
         processed = await self._processor.process(copies, sync_context, runtime)
         proc_elapsed = asyncio.get_running_loop().time() - proc_start

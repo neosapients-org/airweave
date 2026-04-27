@@ -343,6 +343,8 @@ class EntityTransformer:
                 fields["mime_type"] = entity.mime_type
             if entity.local_path:
                 fields["local_path"] = entity.local_path
+            if entity.doc_category:
+                fields["doc_category"] = entity.doc_category
 
     def _add_access_control_fields(self, fields: Dict[str, Any], entity: BaseEntity) -> None:
         """Add access control fields.

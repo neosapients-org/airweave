@@ -38,6 +38,12 @@ schema base_entity {
             attribute: fast-search
         }
 
+        # Document category for filtered search (set by ClassifierProcessor)
+        field doc_category type string {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
         # Breadcrumbs for hierarchy navigation
         field breadcrumbs type array<breadcrumb> {
             indexing: summary

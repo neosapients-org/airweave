@@ -5,48 +5,47 @@ from zipfile import ZipFile
 
 from fastapi import Depends, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from airweave import crud
 from airweave.api import deps
 from airweave.api.context import ApiContext
 from airweave.api.inject import Inject
 from airweave.api.router import TrailingSlashRouter
+from airweave.db.session import get_db
 from airweave.domains.storage.protocols import SyncFileManagerProtocol
+from airweave.models.entity import Entity
 
 router = TrailingSlashRouter()
 
 
-async def verify_picnic_health_access(
+async def _verify_entity_ownership(
+    entity_id: str,
     ctx: ApiContext,
     db: AsyncSession,
 ) -> None:
-    """Verify that the request is from Picnic Health organization.
+    """Verify the entity belongs to the authenticated user's organization.
+
+    Looks up the entity by entity_id in Postgres and checks that
+    entity.organization_id matches the JWT bearer's organization.
+
+    Args:
+        entity_id: The entity ID to verify ownership for.
+        ctx: The API context (org-verified via JWT + X-Organization-ID).
+        db: Database session.
 
     Raises:
-        HTTPException: If not from Picnic Health
+        HTTPException: 404 if entity not found or not owned by the org.
     """
-    # Picnic Health organization ID
-    PICNIC_HEALTH_ORG_ID = "9878d9b4-0fb9-4401-b2b3-15420da4eda3"
-
-    # Check if the request is from Picnic Health organization by ID
-    if str(ctx.organization.id) != PICNIC_HEALTH_ORG_ID:
-        # Get the organization details for logging
-        organization = await crud.organization.get(db=db, id=ctx.organization.id, ctx=ctx)
-
-        ctx.logger.warning(
-            f"File access denied for organization: "
-            f"{organization.name if organization else 'Unknown'} "
-            f"(ID: {ctx.organization.id})",
-            extra={
-                "organization_id": ctx.organization.id,
-                "organization_name": organization.name if organization else None,
-                "auth_method": ctx.auth_method,
-                "expected_org_id": PICNIC_HEALTH_ORG_ID,
-            },
-        )
+    stmt = select(Entity.id).where(
+        Entity.entity_id == entity_id,
+        Entity.organization_id == ctx.organization.id,
+    ).limit(1)
+    result = await db.execute(stmt)
+    if result.scalar_one_or_none() is None:
         raise HTTPException(
-            status_code=403, detail="Access restricted to Picnic Health organization members"
+            status_code=404,
+            detail=f"Entity not found: {entity_id}",
         )
 
 
@@ -55,28 +54,29 @@ async def download_file(
     *,
     entity_id: str,
     ctx: ApiContext = Depends(deps.get_context),
-    db: AsyncSession = Depends(deps.get_db),
+    db: AsyncSession = Depends(get_db),
     sfm: SyncFileManagerProtocol = Inject(SyncFileManagerProtocol),
 ) -> FileResponse:
     """Download a file by entity ID.
 
+    Requires authentication via JWT + X-Organization-ID header.
+    Verifies the entity belongs to the authenticated organization.
+
     Args:
         entity_id: The entity ID
-        ctx: The current authentication context
-        db: Database session
+        ctx: The current authentication context (org-verified via JWT)
+        db: Database session for ownership verification
         sfm: Sync file manager (injected)
 
     Returns:
         FileResponse: The file content
 
     Raises:
-        HTTPException: If file not found or invalid entity ID
+        HTTPException: If file not found, not owned by org, or invalid entity ID
     """
-    # Verify Picnic Health access
-    await verify_picnic_health_access(ctx, db)
+    await _verify_entity_ownership(entity_id, ctx, db)
 
     try:
-        # Download to temp file
         content, file_path = await sfm.download_ctti_file(
             ctx.logger,
             entity_id,
@@ -88,7 +88,6 @@ async def download_file(
                 status_code=404, detail=f"File not found for entity ID: {entity_id}"
             )
 
-        # Extract ID suffix from entity_id for filename
         file_suffix = entity_id.split(":")[-1] if ":" in entity_id else entity_id
 
         return FileResponse(
@@ -98,6 +97,8 @@ async def download_file(
             headers={"Content-Disposition": f'attachment; filename="{file_suffix}.md"'},
         )
 
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
@@ -110,25 +111,27 @@ async def get_file_content(
     *,
     entity_id: str,
     ctx: ApiContext = Depends(deps.get_context),
-    db: AsyncSession = Depends(deps.get_db),
+    db: AsyncSession = Depends(get_db),
     sfm: SyncFileManagerProtocol = Inject(SyncFileManagerProtocol),
 ) -> dict:
     """Get file content as JSON response.
 
+    Requires authentication via JWT + X-Organization-ID header.
+    Verifies the entity belongs to the authenticated organization.
+
     Args:
         entity_id: The entity ID
-        ctx: The current authentication context
-        db: Database session
+        ctx: The current authentication context (org-verified via JWT)
+        db: Database session for ownership verification
         sfm: Sync file manager (injected)
 
     Returns:
         dict: JSON response with the file content
 
     Raises:
-        HTTPException: If file not found or invalid entity ID
+        HTTPException: If file not found, not owned by org, or invalid entity ID
     """
-    # Verify Picnic Health access
-    await verify_picnic_health_access(ctx, db)
+    await _verify_entity_ownership(entity_id, ctx, db)
 
     try:
         content = await sfm.get_ctti_file_content(ctx.logger, entity_id)
@@ -138,7 +141,6 @@ async def get_file_content(
                 status_code=404, detail=f"File not found for entity ID: {entity_id}"
             )
 
-        # Extract ID suffix from entity_id
         id_suffix = entity_id.split(":")[-1] if ":" in entity_id else entity_id
 
         return {
@@ -148,10 +150,10 @@ async def get_file_content(
             "content_length": len(content),
         }
 
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         ctx.logger.error(f"Error getting file content: {e}")
         raise HTTPException(status_code=500, detail="Internal server error") from e
@@ -162,39 +164,51 @@ async def download_files_batch(
     *,
     entity_ids: List[str],
     ctx: ApiContext = Depends(deps.get_context),
-    db: AsyncSession = Depends(deps.get_db),
+    db: AsyncSession = Depends(get_db),
     sfm: SyncFileManagerProtocol = Inject(SyncFileManagerProtocol),
 ) -> StreamingResponse:
     """Download multiple files as a ZIP archive.
 
+    Requires authentication via JWT + X-Organization-ID header.
+    Verifies all entities belong to the authenticated organization.
+
     Args:
         entity_ids: List of entity IDs to download
-        ctx: The current authentication context
-        db: Database session
+        ctx: The current authentication context (org-verified via JWT)
+        db: Database session for ownership verification
         sfm: Sync file manager (injected)
 
     Returns:
         StreamingResponse: ZIP file containing all requested files
 
     Raises:
-        HTTPException: If no valid files found
+        HTTPException: If no valid files found or entities not owned by org
     """
-    # Verify Picnic Health access
-    await verify_picnic_health_access(ctx, db)
-
     if not entity_ids:
         raise HTTPException(status_code=400, detail="No entity IDs provided")
 
     if len(entity_ids) > 100:
         raise HTTPException(status_code=400, detail="Maximum 100 files can be downloaded at once")
 
+    # Batch ownership check: verify all entity_ids belong to this org
+    stmt = select(Entity.entity_id).where(
+        Entity.entity_id.in_(entity_ids),
+        Entity.organization_id == ctx.organization.id,
+    )
+    result = await db.execute(stmt)
+    owned_ids = {row[0] for row in result.all()}
+    unauthorized_ids = set(entity_ids) - owned_ids
+    if unauthorized_ids:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Entities not found: {', '.join(list(unauthorized_ids)[:5])}",
+        )
+
     try:
-        # Download all files
         results = await sfm.download_ctti_files_batch(
             ctx.logger, entity_ids, continue_on_error=True
         )
 
-        # Filter successful downloads
         successful_downloads = {
             entity_id: content for entity_id, (content, _) in results.items() if content is not None
         }
@@ -204,21 +218,17 @@ async def download_files_batch(
                 status_code=404, detail="No valid files found for the provided entity IDs"
             )
 
-        # Create ZIP file in memory
         import io
 
         zip_buffer = io.BytesIO()
 
         with ZipFile(zip_buffer, "w") as zip_file:
             for entity_id, content in successful_downloads.items():
-                # Extract ID suffix for filename
                 file_suffix = entity_id.split(":")[-1] if ":" in entity_id else entity_id
                 zip_file.writestr(f"{file_suffix}.md", content)
 
-        # Reset buffer position
         zip_buffer.seek(0)
 
-        # Log summary
         ctx.logger.info(
             f"Batch download completed: {len(successful_downloads)}/{len(entity_ids)} files",
             extra={
@@ -238,6 +248,8 @@ async def download_files_batch(
             },
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         ctx.logger.error(f"Error in batch download: {e}")
         raise HTTPException(status_code=500, detail="Internal server error") from e
@@ -248,23 +260,23 @@ async def check_files_exist(
     *,
     entity_ids: List[str] = Query(..., description="List of entity IDs to check"),
     ctx: ApiContext = Depends(deps.get_context),
-    db: AsyncSession = Depends(deps.get_db),
+    db: AsyncSession = Depends(get_db),
     sfm: SyncFileManagerProtocol = Inject(SyncFileManagerProtocol),
 ) -> dict:
     """Check which files exist in storage.
 
+    Requires authentication via JWT + X-Organization-ID header.
+    Only checks entities owned by the authenticated organization.
+
     Args:
         entity_ids: List of entity IDs to check
-        ctx: The current authentication context
-        db: Database session
+        ctx: The current authentication context (org-verified via JWT)
+        db: Database session for ownership verification
         sfm: Sync file manager (injected)
 
     Returns:
         dict: Dictionary with entity_ids as keys and existence status as values
     """
-    # Verify Picnic Health access
-    await verify_picnic_health_access(ctx, db)
-
     if not entity_ids:
         raise HTTPException(status_code=400, detail="No entity IDs provided")
 
@@ -273,9 +285,21 @@ async def check_files_exist(
             status_code=400, detail="Maximum 1000 entity IDs can be checked at once"
         )
 
+    # Only check entities that belong to this org
+    stmt = select(Entity.entity_id).where(
+        Entity.entity_id.in_(entity_ids),
+        Entity.organization_id == ctx.organization.id,
+    )
+    result = await db.execute(stmt)
+    owned_ids = {row[0] for row in result.all()}
+
     results = {}
 
     for entity_id in entity_ids:
+        if entity_id not in owned_ids:
+            # Entity not owned by this org — report as not found
+            results[entity_id] = False
+            continue
         try:
             exists = await sfm.check_ctti_file_exists(ctx.logger, entity_id)
             results[entity_id] = exists

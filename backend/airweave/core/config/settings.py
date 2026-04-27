@@ -119,6 +119,12 @@ class Settings(BaseSettings):
 
     CODE_SUMMARIZER_ENABLED: bool = False
 
+    # Document classification during sync pipeline
+    CLASSIFICATION_ENABLED: bool = False
+    CLASSIFICATION_MODEL: str = "gpt-4o-mini"
+    CLASSIFICATION_VISION_MODEL: str = "gpt-4o"
+    CLASSIFICATION_BATCH_SIZE: int = 25
+
     # Debug configuration
     DEBUG: bool = False
 
