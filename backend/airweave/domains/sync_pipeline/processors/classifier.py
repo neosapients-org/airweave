@@ -154,7 +154,14 @@ class ClassifierProcessor:
     # -----------------------------------------------------------------------
 
     async def _vision_ocr_pass(self, entities: List["BaseEntity"]) -> None:
-        """Run vision OCR on image entities with poor text extraction."""
+        """Run vision OCR on ALL image entities.
+
+        Images always use the vision model as their source of truth.
+        Whatever Docling extracted (often raw base64 binary or empty) is
+        discarded — the OCR result replaces textual_representation entirely
+        so the chunker produces one clean, meaningful chunk instead of
+        dozens of base64 garbage chunks.
+        """
         from airweave.platform.entities._base import FileEntity
 
         image_entities = [
@@ -163,7 +170,6 @@ class ClassifierProcessor:
             if isinstance(e, FileEntity)
             and e.mime_type
             and e.mime_type.startswith("image/")
-            and self._has_poor_text(e)
         ]
 
         if not image_entities:
@@ -181,17 +187,6 @@ class ClassifierProcessor:
                 self._logger.warning(
                     f"[ClassifierProcessor] OCR failed for {entity.entity_id}: {result}"
                 )
-
-    def _has_poor_text(self, entity: "FileEntity") -> bool:
-        """Check if textual_representation is mostly metadata or too short."""
-        text = entity.textual_representation or ""
-        stripped = text.strip()
-        if len(stripped) < 50:
-            return True
-        # Mostly Docling metadata headers with little actual content
-        lines = stripped.split("\n")
-        content_lines = [line for line in lines if line.strip() and not line.startswith("#")]
-        return len(content_lines) < 3
 
     async def _ocr_single(self, entity: "FileEntity") -> None:
         """OCR a single image entity using the vision model."""
