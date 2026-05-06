@@ -124,6 +124,7 @@ class Settings(BaseSettings):
     CLASSIFICATION_MODEL: str = "gpt-4o-mini"
     CLASSIFICATION_VISION_MODEL: str = "gpt-4o"
     CLASSIFICATION_BATCH_SIZE: int = 25
+    CLASSIFICATION_RATE_LIMIT_PER_HOUR: int = 1000  # Max documents classified per org per hour
 
     # Debug configuration
     DEBUG: bool = False
