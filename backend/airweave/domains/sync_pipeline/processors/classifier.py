@@ -84,6 +84,83 @@ VISION_OCR_PROMPT = (
 )
 
 
+def _normalize_categories(raw_categories: object, *, logger=None, name: str = "unknown") -> list[str]:
+    """Normalize raw LLM output into up to 3 supported categories."""
+    if isinstance(raw_categories, str):
+        raw_categories = [raw_categories]
+    if not isinstance(raw_categories, list):
+        return ["other"]
+
+    categories: list[str] = []
+    for category in raw_categories:
+        if not isinstance(category, str):
+            continue
+        if category in PREDEFINED_CATEGORIES:
+            categories.append(category)
+        elif category.startswith("other"):
+            categories.append("other")
+        else:
+            if logger is not None:
+                logger.warning(
+                    f"[ClassifierProcessor] Unknown category '{category}' for {name}, "
+                    "dropping it"
+                )
+
+        if len(categories) == 3:
+            break
+
+    return categories or ["other"]
+
+
+def strip_category_prefix(text: str) -> str:
+    """Remove an existing category prefix from textual representation."""
+    if not text.startswith("[Category:") and not text.startswith("[Categories:"):
+        return text
+
+    _, sep, remainder = text.partition("\n")
+    if not sep:
+        return ""
+    return remainder.lstrip("\n")
+
+
+def prepend_categories_prefix(text: str, categories: list[str]) -> str:
+    """Prepend a normalized category prefix to text."""
+    categories_str = ", ".join(categories)
+    return f"[Categories: {categories_str}]\n\n{text}"
+
+
+async def classify_text(
+    text: str,
+    filename: str,
+    mime_type: str,
+    model: Optional[str] = None,
+) -> list[str]:
+    """Classify raw text into up to 3 document categories."""
+    if not settings.OPENAI_API_KEY:
+        return []
+
+    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    prompt = CLASSIFICATION_PROMPT.format(
+        filename=filename,
+        mime_type=mime_type,
+        content_snippet=text[:1500],
+    )
+
+    try:
+        response = await client.chat.completions.create(
+            model=model or settings.CLASSIFICATION_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0,
+            max_tokens=100,
+        )
+        raw = json.loads(response.choices[0].message.content or "{}")
+    except Exception:
+        return []
+
+    return _normalize_categories(raw.get("doc_categories", []), name=filename)
+
+
 class ClassifierProcessor:
     """Classifies entities by document categories using an LLM."""
 
@@ -255,35 +332,17 @@ class ClassifierProcessor:
                 f"LLM returned invalid JSON for entity '{name}': {e}"
             ) from e
 
-        raw_categories = result.get("doc_categories", [])
-        if isinstance(raw_categories, str):
-            raw_categories = [raw_categories]
-
-        categories: list[str] = []
-        for category in raw_categories:
-            if not isinstance(category, str):
-                continue
-            if category in PREDEFINED_CATEGORIES:
-                categories.append(category)
-            elif category.startswith("other"):
-                categories.append("other")
-            else:
-                self._logger.warning(
-                    f"[ClassifierProcessor] Unknown category '{category}' for {name}, "
-                    "dropping it"
-                )
-
-            if len(categories) == 3:
-                break
-
-        if not categories:
-            categories = ["other"]
+        categories = _normalize_categories(
+            result.get("doc_categories", []),
+            logger=self._logger,
+            name=name,
+        )
 
         if hasattr(entity, "doc_categories"):
             entity.doc_categories = categories
 
         if entity.textual_representation:
-            categories_str = ", ".join(categories)
-            entity.textual_representation = (
-                f"[Categories: {categories_str}]\n\n{entity.textual_representation}"
+            entity.textual_representation = prepend_categories_prefix(
+                entity.textual_representation,
+                categories,
             )

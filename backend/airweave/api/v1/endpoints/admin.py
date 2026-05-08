@@ -11,7 +11,7 @@ import asyncio
 from dataclasses import asdict
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 from uuid import UUID
 
 from fastapi import Body, Depends, HTTPException, Path, Query
@@ -1316,6 +1316,18 @@ class AdminSearchDestination(str, Enum):
     VESPA = "vespa"
 
 
+class ReclassifyResponse(BaseModel):
+    """Response payload for collection reclassification."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    readable_collection_id: str
+    processed: int
+    skipped: int
+    failed: int
+    message: str
+
+
 @router.post("/collections/{readable_id}/search", response_model=schemas.SearchResponse)
 async def admin_search_collection(
     readable_id: str,
@@ -1462,6 +1474,56 @@ async def admin_get_user_principals(
         return []
 
     return list(access_context.all_principals)
+
+
+@router.post(
+    "/collections/{readable_id}/reclassify",
+    response_model=ReclassifyResponse,
+)
+async def reclassify_collection(
+    readable_id: str = Path(..., description="The readable ID of the collection"),
+    db: AsyncSession = Depends(deps.get_db),
+    ctx: ApiContext = Depends(deps.get_context),
+    collection_repo: CollectionRepositoryProtocol = Inject(CollectionRepositoryProtocol),
+) -> ReclassifyResponse:
+    """Admin-only: reclassify all Vespa documents for a collection."""
+    from airweave.platform.destinations.vespa.destination import VespaDestination
+
+    _require_admin_permission(ctx, FeatureFlagEnum.API_KEY_ADMIN_SYNC)
+
+    collection = await collection_repo.get_by_readable_id(
+        db,
+        readable_id=readable_id,
+        ctx=ctx,
+    )
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+
+    destination = await VespaDestination.create(
+        collection_id=collection.id,
+        logger=ctx.logger,
+    )
+
+    try:
+        stats: Dict[str, int] = await destination.reclassify_collection_documents(collection.id)
+    finally:
+        await destination.close_connection()
+
+    ctx.logger.info(
+        f"Reclassification complete for {readable_id}: "
+        f"processed={stats['processed']}, skipped={stats['skipped']}, failed={stats['failed']}"
+    )
+
+    return ReclassifyResponse(
+        readable_collection_id=readable_id,
+        processed=stats["processed"],
+        skipped=stats["skipped"],
+        failed=stats["failed"],
+        message=(
+            f"Reclassification complete. {stats['processed']} documents updated, "
+            f"{stats['skipped']} skipped, {stats['failed']} failed."
+        ),
+    )
 
 
 @router.get("/source-connections/{source_connection_id}/cursor")
