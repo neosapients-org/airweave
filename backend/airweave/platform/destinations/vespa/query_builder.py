@@ -124,6 +124,7 @@ class QueryBuilder:
         dense_embeddings: Optional[List[List[float]]],
         sparse_embeddings: Optional[List[Any]] = None,
         retrieval_strategy: str = "hybrid",
+        temporal_params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build Vespa query parameters with pre-computed embeddings.
 
@@ -147,8 +148,12 @@ class QueryBuilder:
         effective_rerank = limit + offset
         global_phase_rerank = max(100, effective_rerank)
 
-        # Select ranking profile based on retrieval strategy
-        ranking_profile = self._get_ranking_profile(retrieval_strategy)
+        # Select ranking profile based on retrieval strategy and temporal config
+        base_ranking_profile = self._get_ranking_profile(retrieval_strategy)
+        if temporal_params:
+            ranking_profile = f"freshness_{base_ranking_profile}"
+        else:
+            ranking_profile = base_ranking_profile
 
         query_params: Dict[str, Any] = {
             "query": primary_query,
@@ -183,6 +188,14 @@ class QueryBuilder:
             sparse_tensor = self._convert_sparse_query_to_tensor(sparse_embeddings[0])
             if sparse_tensor:
                 query_params["input.query(q_sparse)"] = sparse_tensor
+
+        if temporal_params:
+            query_params["ranking.features.query(freshness_weight)"] = temporal_params.get(
+                "freshness_weight", 0.3
+            )
+            query_params["ranking.features.query(freshness_field)"] = temporal_params.get(
+                "freshness_field", "updated_at"
+            )
 
         return query_params
 

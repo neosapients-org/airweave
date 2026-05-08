@@ -124,7 +124,7 @@ class Retrieval(SearchOperation):
             dense_embeddings=dense_embeddings,
             sparse_embeddings=sparse_embeddings,
             retrieval_strategy=retrieval_strategy,
-            temporal_config=None,
+            temporal_config=context.temporal_config,
         )
 
         # Convert AirweaveSearchResult objects to dicts for downstream compatibility
@@ -174,8 +174,8 @@ class Retrieval(SearchOperation):
             final_count=final_count,
             search_method=retrieval_strategy,
             has_filter=filter_obj is not None,
-            has_temporal_decay=False,
-            decay_weight=0.0,
+            has_temporal_decay=context.temporal_config is not None,
+            decay_weight=context.temporal_config.weight if context.temporal_config else 0.0,
             prefetch_multiplier=self.RERANK_PREFETCH_MULTIPLIER if has_reranking else 1.0,
             actual_fetch_limit=fetch_limit,
             embeddings_used=num_embeddings,

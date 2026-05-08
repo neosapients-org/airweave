@@ -52,7 +52,7 @@ class VespaTransientFeedError(ConnectionError):
     "vespa",
     supports_vector=True,
     requires_client_embedding=True,
-    supports_temporal_relevance=False,
+    supports_temporal_relevance=True,
 )
 class VespaDestination(VectorDBDestination):
     """Vespa destination with chunk-as-document model.
@@ -362,7 +362,7 @@ class VespaDestination(VectorDBDestination):
             dense_embeddings: Pre-computed dense embeddings for neural/hybrid search
             sparse_embeddings: Pre-computed sparse embeddings for keyword scoring
             retrieval_strategy: Search strategy - "hybrid", "neural", or "keyword"
-            temporal_config: Ignored (not yet supported)
+            temporal_config: Optional temporal relevance configuration
 
         Returns:
             List of AirweaveSearchResult objects (unified format)
@@ -404,8 +404,15 @@ class VespaDestination(VectorDBDestination):
         yql = self._query_builder.build_yql(
             queries, airweave_collection_id, filter, retrieval_strategy
         )
+        temporal_params = self.translate_temporal(temporal_config)
         query_params = self._query_builder.build_params(
-            queries, limit, offset, dense_embeddings, sparse_embeddings, retrieval_strategy
+            queries,
+            limit,
+            offset,
+            dense_embeddings,
+            sparse_embeddings,
+            retrieval_strategy,
+            temporal_params=temporal_params,
         )
         query_params["yql"] = yql
 
@@ -441,15 +448,21 @@ class VespaDestination(VectorDBDestination):
     def translate_temporal(
         self, config: Optional[AirweaveTemporalConfig]
     ) -> Optional[Dict[str, Any]]:
-        """Translate temporal config (not yet implemented).
+        """Translate temporal config to Vespa ranking parameters.
 
         Args:
             config: Temporal relevance configuration
 
         Returns:
-            None - temporal relevance not yet supported
+            Vespa temporal ranking parameters, or None
         """
-        return None
+        if config is None:
+            return None
+
+        return {
+            "freshness_weight": config.weight,
+            "freshness_field": config.reference_field,
+        }
 
     # -------------------------------------------------------------------------
     # Utility Methods

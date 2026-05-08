@@ -106,7 +106,9 @@ class SearchService:
             "retrieval_strategy": (
                 search_context.retrieval.strategy.value if search_context.retrieval else "none"
             ),
-            "temporal_relevance": 0.0,
+            "temporal_relevance": (
+                search_context.temporal_config.weight if search_context.temporal_config else 0.0
+            ),
             "expand_query": search_context.query_expansion is not None,
             "interpret_filters": search_context.query_interpretation is not None,
             "rerank": search_context.reranking is not None,

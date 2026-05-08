@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
+from airweave.schemas.search import AirweaveTemporalConfig
 
 if TYPE_CHECKING:
     from airweave.search.emitter import EventEmitter
@@ -37,6 +38,7 @@ class SearchContext(BaseModel):
     limit: int = Field()
 
     query: str = Field()
+    temporal_config: Optional[AirweaveTemporalConfig] = Field(default=None)
 
     emitter: EventEmitter = Field()
 

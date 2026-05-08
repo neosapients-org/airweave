@@ -26,6 +26,12 @@ class Collection(OrganizationBase, UserMixin):
         UUID, ForeignKey("vector_db_deployment_metadata.id"), nullable=False
     )
     sync_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+    temporal_config: Mapped[Optional[dict]] = mapped_column(
+        JSONB,
+        nullable=True,
+        default=None,
+        comment="Default temporal relevance config for searches against this collection",
+    )
 
     # Relationships
     vector_db_deployment_metadata: Mapped["VectorDbDeploymentMetadata"] = relationship(

@@ -148,13 +148,13 @@ class SearchRequest(BaseModel):
         description="Limit search to specific source connections within the collection.",
     )
 
-    temporal_relevance: Optional[float] = Field(
+    temporal_relevance: Optional[AirweaveTemporalConfig] = Field(
         default=None,
         description=(
-            "DEPRECATED: This field is accepted for backwards compatibility but ignored. "
-            "Temporal relevance has been removed."
+            "Optional temporal relevance configuration. When set, more recent documents "
+            "are boosted in ranking. A collection default may also be configured."
         ),
-        json_schema_extra={"example": 0.0},
+        json_schema_extra={"example": {"weight": 0.3, "reference_field": "updated_at"}},
     )
 
     expand_query: Optional[bool] = Field(

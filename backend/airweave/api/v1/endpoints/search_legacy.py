@@ -220,17 +220,6 @@ async def search(
         requested_response_type = search_request.response_type
         search_request = convert_legacy_request_to_new(search_request)
 
-    # Warn if temporal_relevance was requested but is removed
-    if (
-        hasattr(search_request, "temporal_relevance")
-        and search_request.temporal_relevance is not None
-        and search_request.temporal_relevance > 0
-    ):
-        http_response.headers["X-Feature-Removed"] = "temporal_relevance"
-        http_response.headers["X-Feature-Removed-Message"] = (
-            "temporal_relevance has been removed and was ignored"
-        )
-
     search_response = await service.search(
         request_id=ctx.request_id,
         readable_collection_id=readable_id,

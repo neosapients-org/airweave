@@ -4,7 +4,7 @@ This module provides backwards compatibility by converting old search
 request/response formats to the new implementation.
 """
 
-from airweave.schemas.search import SearchRequest, SearchResponse
+from airweave.schemas.search import AirweaveTemporalConfig, SearchRequest, SearchResponse
 from airweave.schemas.search_legacy import (
     LegacySearchRequest,
     LegacySearchResponse,
@@ -56,6 +56,11 @@ def convert_legacy_request_to_new(legacy_request: LegacySearchRequest) -> Search
         filter=legacy_request.filter,
         offset=legacy_request.offset,
         limit=legacy_request.limit,
+        temporal_relevance=(
+            AirweaveTemporalConfig(weight=legacy_request.recency_bias)
+            if legacy_request.recency_bias is not None
+            else None
+        ),
         expand_query=expand_query,
         interpret_filters=interpret_filters,
         rerank=rerank,
