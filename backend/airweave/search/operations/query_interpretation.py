@@ -14,6 +14,7 @@ from airweave.api.context import ApiContext
 # [code blue] todo: inject source_registry via Inject() instead of container access
 from airweave.core import container as container_mod
 from airweave.db.session import get_db_context
+from airweave.schemas.search import AirweaveTemporalConfig
 from airweave.search.context import SearchContext
 from airweave.search.prompts import QUERY_INTERPRETATION_SYSTEM_PROMPT
 from airweave.search.providers._base import BaseProvider
@@ -65,6 +66,16 @@ class ExtractedFilters(BaseModel):
 
     filters: List[FilterCondition] = Field(default_factory=list)
     confidence: float = Field(ge=0.0, le=1.0)
+    temporal_weight: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description=(
+            "Weight to apply to temporal relevance (0-1). Set when query contains "
+            "recency signals like 'last', 'most recent', 'latest', or 'newest'. "
+            "None means no temporal boosting."
+        ),
+    )
 
     @field_validator("filters", mode="before")
     @classmethod
@@ -179,6 +190,7 @@ class QueryInterpretation(SearchOperation):
         # Validate and map filter conditions
         validated_filters = self._validate_filters(result.filters, available_fields)
         ctx.logger.debug(f"[QueryInterpretation] Validated filters: {validated_filters}")
+        await self._apply_temporal_detection(result.temporal_weight, state, context, ctx)
 
         if not validated_filters:
             # No valid filters to apply
@@ -219,6 +231,31 @@ class QueryInterpretation(SearchOperation):
         await context.emitter.emit(
             "filter_applied",
             {"filter": filter_dict},
+            op_name=self.__class__.__name__,
+        )
+
+    async def _apply_temporal_detection(
+        self,
+        temporal_weight: Optional[float],
+        state: "SearchState",
+        context: SearchContext,
+        ctx: ApiContext,
+    ) -> None:
+        """Write detected temporal relevance config into state when present."""
+        if temporal_weight is None:
+            return
+
+        state.detected_temporal_config = AirweaveTemporalConfig(
+            weight=temporal_weight,
+            reference_field="updated_at",
+        )
+        ctx.logger.debug(
+            "[QueryInterpretation] Detected temporal intent with weight "
+            f"{temporal_weight} for query '{context.query[:100]}'"
+        )
+        await context.emitter.emit(
+            "temporal_detected",
+            {"temporal_weight": temporal_weight, "reference_field": "updated_at"},
             op_name=self.__class__.__name__,
         )
 

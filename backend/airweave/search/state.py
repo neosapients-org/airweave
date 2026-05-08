@@ -7,6 +7,7 @@ used to pass state between search operations.
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
+from airweave.schemas.search import AirweaveTemporalConfig
 
 
 class SearchState(BaseModel):
@@ -56,6 +57,10 @@ class SearchState(BaseModel):
     )
     filter: Optional[Dict[str, Any]] = Field(
         default=None, description="Final merged filter (user + interpreted + acl)"
+    )
+    detected_temporal_config: Optional[AirweaveTemporalConfig] = Field(
+        default=None,
+        description="Temporal relevance config detected from natural language query intent",
     )
 
     # =========================================================================

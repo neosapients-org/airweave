@@ -104,6 +104,7 @@ class Retrieval(SearchOperation):
         )
 
         has_reranking = context.reranking is not None
+        effective_temporal_config = state.detected_temporal_config or context.temporal_config
 
         # Calculate fetch limit
         fetch_limit = self._calculate_fetch_limit(has_reranking, include_offset=True)
@@ -124,7 +125,7 @@ class Retrieval(SearchOperation):
             dense_embeddings=dense_embeddings,
             sparse_embeddings=sparse_embeddings,
             retrieval_strategy=retrieval_strategy,
-            temporal_config=context.temporal_config,
+            temporal_config=effective_temporal_config,
         )
 
         # Convert AirweaveSearchResult objects to dicts for downstream compatibility
@@ -174,8 +175,8 @@ class Retrieval(SearchOperation):
             final_count=final_count,
             search_method=retrieval_strategy,
             has_filter=filter_obj is not None,
-            has_temporal_decay=context.temporal_config is not None,
-            decay_weight=context.temporal_config.weight if context.temporal_config else 0.0,
+            has_temporal_decay=effective_temporal_config is not None,
+            decay_weight=effective_temporal_config.weight if effective_temporal_config else 0.0,
             prefetch_multiplier=self.RERANK_PREFETCH_MULTIPLIER if has_reranking else 1.0,
             actual_fetch_limit=fetch_limit,
             embeddings_used=num_embeddings,
