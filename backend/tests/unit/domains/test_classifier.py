@@ -2,13 +2,13 @@
 
 Tests cover:
 - Disabled processor returns entities unchanged
-- Successful text classification sets doc_category and prefixes textual_representation
-- Invalid LLM category defaults to "other"
+- Successful text classification sets doc_categories and prefixes textual_representation
+- Invalid LLM categories are dropped and default to "other" when nothing valid remains
 - Malformed JSON from LLM raises ValueError (caught at batch level → defaults to "other")
 - Classification failure for one entity defaults it to "other" without affecting others
 - Vision OCR replaces textual_representation for image entities
 - Vision OCR result of NO_TEXT_FOUND leaves textual_representation unchanged
-- Non-FileEntity entities are classified but not given doc_category (no attribute)
+- Non-FileEntity entities are classified but not given doc_categories (no attribute)
 """
 
 import json
@@ -40,7 +40,7 @@ def _make_file_entity(
         mime_type=mime_type,
         textual_representation=text,
         local_path=None,
-        doc_category=None,
+        doc_categories=None,
     )
 
 
@@ -51,14 +51,14 @@ def _make_image_entity(name="scan.png", entity_id="ent:img") -> FileEntity:
         mime_type="image/png",
         textual_representation="base64garbagedata==",
         local_path=None,
-        doc_category=None,
+        doc_categories=None,
     )
 
 
-def _llm_response(category: str) -> MagicMock:
-    """Build a mock OpenAI chat completion response for the given category."""
+def _llm_response(categories: list[str] | str) -> MagicMock:
+    """Build a mock OpenAI chat completion response for the given categories."""
     msg = MagicMock()
-    msg.content = json.dumps({"doc_category": category})
+    msg.content = json.dumps({"doc_categories": categories})
     choice = MagicMock()
     choice.message = msg
     resp = MagicMock()
@@ -93,7 +93,7 @@ class TestClassifierProcessorDisabled:
             result = await processor.process([entity])
 
         assert result == [entity]
-        assert entity.doc_category is None
+        assert entity.doc_categories is None
         assert entity.textual_representation == "Some document content"
 
     @pytest.mark.asyncio
@@ -110,7 +110,7 @@ class TestClassifierProcessorEnabled:
     """When CLASSIFICATION_ENABLED=true, entities are classified via OpenAI."""
 
     @pytest.mark.asyncio
-    async def test_sets_doc_category_on_file_entity(self):
+    async def test_sets_doc_categories_on_file_entity(self):
         entity = _make_file_entity(text="Quarterly balance sheet and P&L report")
         processor = ClassifierProcessor()
         mock_client = AsyncMock()
@@ -122,7 +122,7 @@ class TestClassifierProcessorEnabled:
             with patch.object(processor, "_get_client", return_value=mock_client):
                 await processor.process([entity])
 
-        assert entity.doc_category == "financial_report"
+        assert entity.doc_categories == ["financial_report"]
 
     @pytest.mark.asyncio
     async def test_prepends_category_to_textual_representation(self):
@@ -137,7 +137,7 @@ class TestClassifierProcessorEnabled:
             with patch.object(processor, "_get_client", return_value=mock_client):
                 await processor.process([entity])
 
-        assert entity.textual_representation.startswith("[Category: contract]")
+        assert entity.textual_representation.startswith("[Categories: contract]")
         assert "NDA between parties A and B" in entity.textual_representation
 
     @pytest.mark.asyncio
@@ -153,7 +153,7 @@ class TestClassifierProcessorEnabled:
             with patch.object(processor, "_get_client", return_value=mock_client):
                 await processor.process([entity])
 
-        assert entity.doc_category == "other"
+        assert entity.doc_categories == ["other"]
 
     @pytest.mark.asyncio
     async def test_other_with_description_is_accepted(self):
@@ -162,14 +162,14 @@ class TestClassifierProcessorEnabled:
         processor = ClassifierProcessor()
         mock_client = AsyncMock()
         mock_client.chat.completions.create = AsyncMock(
-            return_value=_llm_response("other:internal_memo")
+            return_value=_llm_response(["other:internal_memo"])
         )
 
         with patch.object(type(processor), "enabled", new_callable=lambda: property(lambda self: True)):
             with patch.object(processor, "_get_client", return_value=mock_client):
                 await processor.process([entity])
 
-        assert entity.doc_category == "other:internal_memo"
+        assert entity.doc_categories == ["other"]
 
     @pytest.mark.asyncio
     async def test_malformed_json_defaults_entity_to_other(self):
@@ -191,7 +191,7 @@ class TestClassifierProcessorEnabled:
             with patch.object(processor, "_get_client", return_value=mock_client):
                 await processor.process([entity])
 
-        assert entity.doc_category == "other"
+        assert entity.doc_categories == ["other"]
 
     @pytest.mark.asyncio
     async def test_one_entity_failure_does_not_affect_others(self):
@@ -217,8 +217,8 @@ class TestClassifierProcessorEnabled:
             with patch.object(processor, "_get_client", return_value=mock_client):
                 await processor.process([entity_ok, entity_fail])
 
-        assert entity_ok.doc_category == "financial_report"
-        assert entity_fail.doc_category == "other"  # defaulted on failure
+        assert entity_ok.doc_categories == ["financial_report"]
+        assert entity_fail.doc_categories == ["other"]
 
     @pytest.mark.asyncio
     async def test_returns_all_entities(self):
@@ -251,7 +251,29 @@ class TestClassifierProcessorEnabled:
                 with patch.object(processor, "_get_client", return_value=mock_client):
                     await processor.process([entity])
 
-            assert entity.doc_category == category, f"Category '{category}' was not accepted"
+            assert entity.doc_categories == [category], f"Category '{category}' was not accepted"
+
+    @pytest.mark.asyncio
+    async def test_accepts_multiple_categories(self):
+        entity = _make_file_entity(text="Signed contract email thread")
+        processor = ClassifierProcessor()
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_llm_response(["correspondence", "contract"])
+        )
+
+        with patch.object(type(processor), "enabled", new_callable=lambda: property(lambda self: True)):
+            with patch.object(processor, "_get_client", return_value=mock_client):
+                await processor.process([entity])
+
+        assert entity.doc_categories == ["correspondence", "contract"]
+        assert entity.textual_representation.startswith("[Categories: correspondence, contract]")
+
+    def test_prompt_requests_multiple_categories(self):
+        from airweave.domains.sync_pipeline.processors.classifier import CLASSIFICATION_PROMPT
+
+        assert "1 to 3" in CLASSIFICATION_PROMPT
+        assert "doc_categories" in CLASSIFICATION_PROMPT
 
 
 class TestVisionOCR:
@@ -327,4 +349,4 @@ class TestVisionOCR:
                 await processor.process([entity])
 
         assert mock_client.chat.completions.create.call_count == 1
-        assert entity.doc_category == "presentation"
+        assert entity.doc_categories == ["presentation"]

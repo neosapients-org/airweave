@@ -486,6 +486,16 @@ class TestFilterTranslator:
         assert "access_is_public" in result
         assert "access_viewers" in result
 
+    def test_field_name_mapping_doc_category_to_doc_categories(self, filter_translator):
+        """Test doc_category API field maps to the Vespa doc_categories field."""
+        filter_dict = {
+            "must": [
+                {"key": "doc_category", "match": {"value": "contract"}}
+            ]
+        }
+        result = filter_translator.translate(filter_dict)
+        assert 'doc_categories contains "contract"' in result
+
     def test_unmapped_field_passthrough(self, filter_translator):
         """Test that unmapped fields pass through unchanged."""
         filter_dict = {
@@ -564,4 +574,3 @@ class TestFieldNameMapping:
         assert FIELD_NAME_MAP["collection_id"] == "airweave_system_metadata_collection_id"
         assert FIELD_NAME_MAP["source_name"] == "airweave_system_metadata_source_name"
         assert FIELD_NAME_MAP["access.is_public"] == "access_is_public"
-

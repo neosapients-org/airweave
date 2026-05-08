@@ -28,6 +28,7 @@ FIELD_NAME_MAP = {
     "airweave_system_metadata.hash": "airweave_system_metadata_hash",
     "airweave_system_metadata.original_entity_id": "airweave_system_metadata_original_entity_id",
     "airweave_system_metadata.source_name": "airweave_system_metadata_source_name",
+    "doc_category": "doc_categories",
     # Access control fields (dot notation -> flat field)
     "access.is_public": "access_is_public",
     "access.viewers": "access_viewers",

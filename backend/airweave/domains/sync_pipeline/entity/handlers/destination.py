@@ -156,7 +156,7 @@ class DestinationHandler(EntityActionHandler):
         """Process entities through ChunkEmbedProcessor and insert into destinations."""
         copies = [e.model_copy(deep=True) for e in entities]
 
-        # Classify documents before chunking so doc_category is baked into embeddings
+        # Classify documents before chunking so doc_categories are baked into embeddings
         if self._classifier.enabled:
             try:
                 copies = await self._classifier.process(copies)

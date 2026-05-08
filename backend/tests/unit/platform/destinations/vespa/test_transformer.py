@@ -373,6 +373,47 @@ class TestEntityTransformer:
         assert result.fields["entity_id"] == "file-123"
         assert "file-123" in result.id
 
+    def test_transform_file_entity_writes_doc_categories(self, transformer):
+        """Test transform writes doc_categories as an array field."""
+        from airweave.platform.entities._base import FileEntity
+
+        entity = MagicMock(spec=FileEntity)
+        entity.entity_id = "file-123"
+        entity.name = "document.pdf"
+        entity.textual_representation = "File content"
+        entity.created_at = datetime(2024, 1, 1)
+        entity.updated_at = datetime(2024, 1, 1)
+        entity.entity_type = "file"
+        entity.url = "https://example.com/document.pdf"
+        entity.size = 123
+        entity.file_type = "pdf"
+        entity.mime_type = "application/pdf"
+        entity.local_path = None
+        entity.doc_categories = ["correspondence", "contract"]
+        entity.breadcrumbs = []
+        entity.access = MagicMock()
+        entity.access.is_public = True
+        entity.access.viewers = []
+        entity.access.editors = []
+        entity.access.owners = []
+        entity.airweave_system_metadata = MagicMock()
+        entity.airweave_system_metadata.entity_type = "file"
+        entity.airweave_system_metadata.source_name = "FileSystem"
+        entity.airweave_system_metadata.sync_id = "sync-1"
+        entity.airweave_system_metadata.sync_job_id = None
+        entity.airweave_system_metadata.hash = "hash-1"
+        entity.airweave_system_metadata.collection_id = UUID("12345678-1234-1234-1234-123456789abc")
+        entity.airweave_system_metadata.chunk_index = None
+        entity.airweave_system_metadata.original_entity_id = "orig-1"
+        entity.airweave_system_metadata.dense_embedding = None
+        entity.airweave_system_metadata.sparse_embedding = None
+        entity.to_dict.return_value = {"entity_id": "file-123"}
+
+        result = transformer.transform(entity)
+
+        assert result.fields["doc_categories"] == ["correspondence", "contract"]
+        assert "doc_category" not in result.fields
+
     def test_transform_code_file_entity_type(self, transformer):
         """Test transform with CodeFileEntity type."""
         from airweave.platform.entities._base import CodeFileEntity
@@ -727,4 +768,3 @@ class TestTransformSanitizesNameField:
 
         assert result.fields["name"] == "Fix bug in login"
         assert "\x08" not in result.fields["name"]
-
