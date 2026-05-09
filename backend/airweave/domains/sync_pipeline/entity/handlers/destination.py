@@ -154,7 +154,26 @@ class DestinationHandler(EntityActionHandler):
         runtime: "SyncRuntime",
     ) -> None:
         """Process entities through ChunkEmbedProcessor and insert into destinations."""
-        copies = [e.model_copy(deep=True) for e in entities]
+        # Skip image entities — Docling emits base64-encoded markdown for images
+        # which the chunker splits into many noisy chunks. Until OCR fully replaces
+        # the chunkable content, ignore images outright to keep Vespa clean.
+        filtered: List["BaseEntity"] = []
+        skipped_images = 0
+        for e in entities:
+            mime = getattr(e, "mime_type", None) or ""
+            if mime.startswith("image/"):
+                skipped_images += 1
+                continue
+            filtered.append(e)
+        if skipped_images:
+            sync_context.logger.info(
+                f"[{self.name}] Skipped {skipped_images} image entit"
+                f"{'y' if skipped_images == 1 else 'ies'} — image ingestion disabled"
+            )
+        if not filtered:
+            return
+
+        copies = [e.model_copy(deep=True) for e in filtered]
 
         # Classify documents before chunking so doc_categories are baked into embeddings
         if self._classifier.enabled:
