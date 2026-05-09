@@ -44,6 +44,11 @@ schema base_entity {
             attribute: fast-search
         }
 
+        field doc_categories type array<string> {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
         # Breadcrumbs for hierarchy navigation
         field breadcrumbs type array<breadcrumb> {
             indexing: summary
