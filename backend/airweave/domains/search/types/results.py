@@ -114,6 +114,11 @@ class SearchResult(BaseModel):
         description="Download URL for file entities. Only present for FileEntity types.",
     )
 
+    doc_categories: Optional[list[str]] = Field(
+        default=None,
+        description="LLM-assigned document categories (1-3). None for non-file entities.",
+    )
+
     raw_source_fields: dict[str, Any] = Field(
         ...,
         description="All source-specific fields.",

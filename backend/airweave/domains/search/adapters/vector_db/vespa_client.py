@@ -418,6 +418,7 @@ class VespaVectorDB:
                 access=self._extract_access_control(fields),
                 web_url=self._get_required_field(raw_source_fields, "web_url", entity_id),
                 url=fields.get("url"),
+                doc_categories=fields.get("doc_categories") or None,
                 raw_source_fields=raw_source_fields,
             )
             results.append(result)

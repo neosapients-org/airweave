@@ -78,6 +78,12 @@ class AirweaveSearchResult(BaseModel):
         description="All source-specific fields (e.g., issue_key, summary for Jira)",
     )
 
+    # Document categories from LLM classifier (file entities only)
+    doc_categories: Optional[List[str]] = Field(
+        default=None,
+        description="LLM-assigned document categories (1-3). None for non-file entities.",
+    )
+
     @classmethod
     def format_results_for_logging(cls, results: List["AirweaveSearchResult"]) -> str:
         """Format a list of search results for readable logging.

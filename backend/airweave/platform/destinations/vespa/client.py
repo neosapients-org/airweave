@@ -681,6 +681,7 @@ class VespaClient:
                 system_metadata=self._extract_system_metadata(fields),
                 access=self._extract_access_control(fields),
                 source_fields=self._parse_payload(fields.get("payload")),
+                doc_categories=fields.get("doc_categories") or None,
             )
             results.append(result)
 
