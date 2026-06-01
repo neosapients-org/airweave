@@ -1,0 +1,41 @@
+# Dev environment overrides for airweave-svc
+# Only values that differ from values.yaml
+
+replicaCount: 1
+
+image:
+  pullPolicy: Always
+  tag: "latest"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 768Mi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+
+env:
+  LOG_LEVEL: debug
+  ENVIRONMENT: development
+  CLASSIFICATION_ENABLED: 'false'
+
+ingress:
+  enabled: true
+  annotations:
+    alb.ingress.kubernetes.io/load-balancer-name: dev-use1-shared1-shared-alb
+    alb.ingress.kubernetes.io/group.name: dev-use1-shared1-internal
+    alb.ingress.kubernetes.io/group.order: "20"
+    alb.ingress.kubernetes.io/certificate-arn: PLACEHOLDER_ACM_CERT_ARN
+
+nodeSelector:
+  karpenter.sh/nodepool: dev-use1-shared1-generic-arm64-w50
+
+tolerations:
+  - key: kubernetes.io/arch
+    operator: Equal
+    value: arm64
+    effect: NoExecute
