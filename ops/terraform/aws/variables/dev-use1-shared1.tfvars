@@ -6,11 +6,12 @@ name                   = "airweave-svc-dev-use1-shared1"
 ecr_create             = true
 secrets_manager_create = true
 s3_storage_bucket_create = true
-s3_storage_bucket_name   = "airweave-storage-dev-use1-shared1"
+s3_storage_bucket_name   = "airweave-dev-use1-shared1"
 
 additional_tags = {
   Project     = "airweave-svc"
   Environment = "development"
-  ManagedBy   = "terraform"
+  ManagedBy   = "Terraform"
   Repository  = "airweave"
+  Service     = "airweave-svc"
 }

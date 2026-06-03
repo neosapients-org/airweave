@@ -26,10 +26,10 @@ env:
 ingress:
   enabled: true
   annotations:
-    alb.ingress.kubernetes.io/load-balancer-name: dev-use1-shared1-shared-alb
-    alb.ingress.kubernetes.io/group.name: dev-use1-shared1-internal
+    alb.ingress.kubernetes.io/load-balancer-name: dev-use1-shared-alb
+    alb.ingress.kubernetes.io/group.name: shared-alb
     alb.ingress.kubernetes.io/group.order: "20"
-    alb.ingress.kubernetes.io/certificate-arn: PLACEHOLDER_ACM_CERT_ARN
+    alb.ingress.kubernetes.io/certificate-arn: 'arn:aws:acm:us-east-1:679451892000:certificate/679d14b9-7d7a-4553-aeeb-8141824de212'
 
 nodeSelector:
   karpenter.sh/nodepool: dev-use1-shared1-generic-arm64-w50
@@ -39,3 +39,52 @@ tolerations:
     operator: Equal
     value: arm64
     effect: NoExecute
+
+postgresql:
+  storage: 5Gi
+  resources:
+    limits:
+      cpu: 250m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+redis:
+  storage: 1Gi
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 25m
+      memory: 64Mi
+
+temporal:
+  resources:
+    limits:
+      cpu: 250m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+vespa:
+  storage: 10Gi
+  resources:
+    limits:
+      cpu: '1'
+      memory: 2Gi
+    requests:
+      cpu: 250m
+      memory: 1Gi
+
+worker:
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 250m
+      memory: 512Mi
+    requests:
+      cpu: 50m
+      memory: 256Mi

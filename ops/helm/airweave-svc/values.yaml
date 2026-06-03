@@ -143,26 +143,26 @@ env:
   ENABLE_INTERNAL_SOURCES: 'false'
 
   # PostgreSQL (host/port/db/user — password in secrets)
-  POSTGRES_HOST: postgres.neo-datastore.svc.cluster.local
+  POSTGRES_HOST: postgres
   POSTGRES_PORT: '5432'
   POSTGRES_DB: airweave
   POSTGRES_USER: airweave
   POSTGRES_SSLMODE: disable
 
   # Redis (host/port — password in secrets)
-  REDIS_HOST: redis.neo-datastore.svc.cluster.local
+  REDIS_HOST: redis
   REDIS_PORT: '6379'
   REDIS_DB: '2'
 
   # Vespa
-  VESPA_URL: http://vespa.neo-datastore.svc.cluster.local
-  VESPA_PORT: '8080'
+  VESPA_URL: http://vespa
+  VESPA_PORT: '8081'
   VESPA_CLUSTER: airweave
 
   # Temporal
-  TEMPORAL_HOST: temporal.neo-datastore.svc.cluster.local
+  TEMPORAL_HOST: temporal
   TEMPORAL_PORT: '7233'
-  TEMPORAL_NAMESPACE: airweave
+  TEMPORAL_NAMESPACE: default
   TEMPORAL_TASK_QUEUE: airweave-sync-queue
 
   # Embedding configuration
@@ -189,11 +189,11 @@ env:
   OPENAI_MAX_CONCURRENT: '20'
 
   # Svix webhooks
-  SVIX_URL: http://svix.airweave-svc.svc.cluster.local:8071
+  SVIX_URL: http://svix:8071
   WEBHOOK_VERIFY_ENDPOINTS: 'true'
 
   # Observability
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-otel-collector:4318
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-otel-collector.observability.svc.cluster.local:4318
   OTEL_SERVICE_NAME: airweave-svc
   OTEL_LOGS_EXPORTER: otlp
   OTEL_RESOURCE_ATTRIBUTES: service.name=airweave-svc,service.version=1.0.0,deployment.environment=production,service.namespace=neo-platform
@@ -214,3 +214,241 @@ externalSecrets:
   secretName: airweave-svc-dev-use1-shared1-secrets
   refreshInterval: 0
   secretVersion: "AWSCURRENT"
+
+# =============================================================================
+# Temporal Worker
+# =============================================================================
+worker:
+  enabled: true
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 500m
+      memory: 768Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+# =============================================================================
+# PostgreSQL
+# =============================================================================
+postgresql:
+  enabled: true
+  image: postgres:16
+  replicas: 1
+  database: airweave
+  username: airweave
+  storage: 10Gi
+  storageClassName: gp3
+  service:
+    port: 5432
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  args:
+    - -c
+    - max_connections=200
+    - -c
+    - shared_buffers=256MB
+  env:
+    POSTGRES_DB: airweave
+    POSTGRES_USER: airweave
+    PGDATA: /var/lib/postgresql/data/pgdata
+  secretEnv:
+    - name: POSTGRES_PASSWORD
+      key: POSTGRES_PASSWORD
+  livenessProbe:
+    exec:
+      command: ["pg_isready", "-U", "airweave"]
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    exec:
+      command: ["pg_isready", "-U", "airweave"]
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# =============================================================================
+# Redis
+# =============================================================================
+redis:
+  enabled: true
+  image: redis:7-alpine
+  replicas: 1
+  storage: 2Gi
+  storageClassName: gp3
+  service:
+    port: 6379
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+  command:
+    - redis-server
+    - --requirepass
+    - $(REDIS_PASSWORD)
+    - --appendonly
+    - "yes"
+  env: {}
+  secretEnv:
+    - name: REDIS_PASSWORD
+      key: REDIS_PASSWORD
+  livenessProbe:
+    exec:
+      command: ["redis-cli", "--no-auth-warning", "-a", "$(REDIS_PASSWORD)", "ping"]
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    exec:
+      command: ["redis-cli", "--no-auth-warning", "-a", "$(REDIS_PASSWORD)", "ping"]
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# =============================================================================
+# Temporal
+# =============================================================================
+temporal:
+  enabled: true
+  image: temporalio/auto-setup:1.24.2
+  initImage: temporalio/admin-tools:1.27.2-tctl-1.18.2-cli-1.3.0
+  service:
+    port: 7233
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  env:
+    DB: postgres12
+    DB_PORT: '5432'
+    POSTGRES_SEEDS: postgres
+    POSTGRES_USER: airweave
+    TEMPORAL_NAMESPACE: default
+  secretEnv:
+    - name: POSTGRES_PWD
+      key: POSTGRES_PASSWORD
+  livenessProbe:
+    tcpSocket:
+      port: 7233
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    tcpSocket:
+      port: 7233
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  searchAttributes:
+    - name: SyncId
+      type: Keyword
+    - name: SyncJobId
+      type: Keyword
+    - name: SourceConnectionId
+      type: Keyword
+    - name: OrganizationId
+      type: Keyword
+  initJob:
+    backoffLimit: 5
+    ttlSecondsAfterFinished: 3600
+
+# =============================================================================
+# Vespa
+# =============================================================================
+vespa:
+  enabled: true
+  image: vespaengine/vespa:8
+  storage: 20Gi
+  storageClassName: gp3
+  service:
+    queryPort: 8081
+    configPort: 19071
+  resources:
+    limits:
+      cpu: '2'
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 2Gi
+  env:
+    VESPA_IGNORE_NOT_ENOUGH_MEMORY: 'true'
+    VESPA_CONFIGSERVER_JVMARGS: '-Xms128m -Xmx512m'
+  initJob:
+    backoffLimit: 5
+    ttlSecondsAfterFinished: 3600
+  livenessProbe:
+    httpGet:
+      path: /state/v1/health
+      port: 19071
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readinessProbe:
+    httpGet:
+      path: /state/v1/health
+      port: 19071
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# =============================================================================
+# Svix
+# =============================================================================
+svix:
+  enabled: true
+  image: svix/svix-server
+  service:
+    port: 8071
+  resources:
+    limits:
+      cpu: 250m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+  env:
+    WAIT_FOR: 'true'
+    SVIX_REDIS_DSN: redis://redis:6379
+    SVIX_QUEUE_TYPE: redis
+    SVIX_CACHE_TYPE: none
+    SVIX_WHITELIST_SUBNETS: '[0.0.0.0/0, ::/0]'
+  secretEnv:
+    - name: SVIX_DB_DSN
+      key: SVIX_DB_DSN
+    - name: SVIX_JWT_SECRET
+      key: SVIX_JWT_SECRET
+  livenessProbe:
+    exec:
+      command: ["svix-server", "healthcheck", "http://localhost:8071"]
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    exec:
+      command: ["svix-server", "healthcheck", "http://localhost:8071"]
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3

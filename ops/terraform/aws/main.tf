@@ -36,61 +36,25 @@ module "secrets_manager" {
 
   # Ignore changes to secret value — values will be added manually in AWS Console
   ignore_secret_changes = true
-
-  tags = merge(
-    var.additional_tags,
-    {
-      Name      = "${var.name}-secrets"
-      Service   = "airweave-svc"
-      ManagedBy = "terraform"
-    }
-  )
 }
 
 # ===============================================================================
 # S3 Bucket for raw file storage
 # ===============================================================================
 
-resource "aws_s3_bucket" "storage" {
-  count  = var.s3_storage_bucket_create ? 1 : 0
+module "s3_storage" {
+  source  = "terraform-aws-modules/s3-bucket/aws"
+  version = "~> 4.0"
+
+  create_bucket = var.s3_storage_bucket_create
+
   bucket = var.s3_storage_bucket_name
 
-  tags = merge(
-    var.additional_tags,
-    {
-      Name      = var.s3_storage_bucket_name
-      Service   = "airweave-svc"
-      ManagedBy = "terraform"
-    }
-  )
-}
-
-resource "aws_s3_bucket_versioning" "storage" {
-  count  = var.s3_storage_bucket_create ? 1 : 0
-  bucket = aws_s3_bucket.storage[0].id
-
-  versioning_configuration {
-    status = "Enabled"
-  }
-}
-
-resource "aws_s3_bucket_server_side_encryption_configuration" "storage" {
-  count  = var.s3_storage_bucket_create ? 1 : 0
-  bucket = aws_s3_bucket.storage[0].id
-
-  rule {
-    apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+  server_side_encryption_configuration = {
+    rule = {
+      apply_server_side_encryption_by_default = {
+        sse_algorithm = "AES256"
+      }
     }
   }
-}
-
-resource "aws_s3_bucket_public_access_block" "storage" {
-  count  = var.s3_storage_bucket_create ? 1 : 0
-  bucket = aws_s3_bucket.storage[0].id
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
 }

@@ -14,6 +14,11 @@ variable "name" {
   description = "Resource name prefix (e.g. airweave-svc-<env>)"
   type        = string
   default     = ""
+
+  validation {
+    condition     = var.name != ""
+    error_message = "name must be set (e.g. airweave-svc-dev-use1-shared1)."
+  }
 }
 
 variable "repository_encryption_type" {
@@ -44,4 +49,9 @@ variable "s3_storage_bucket_name" {
   description = "S3 bucket name for Airweave raw file storage"
   type        = string
   default     = ""
+
+  validation {
+    condition     = !var.s3_storage_bucket_create || var.s3_storage_bucket_name != ""
+    error_message = "s3_storage_bucket_name must be set when s3_storage_bucket_create is true."
+  }
 }

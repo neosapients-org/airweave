@@ -1,0 +1,46 @@
+{{- if .Values.temporal.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "airweave-svc.fullname" . }}-temporal-init
+  labels:
+    {{- include "airweave-svc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: temporal-init
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: {{ .Values.temporal.initJob.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.temporal.initJob.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "airweave-svc.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: temporal-init
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "airweave-svc.serviceAccountName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: temporal-init
+          image: {{ .Values.temporal.initImage }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              {{- range .Values.temporal.searchAttributes }}
+              temporal operator search-attribute create \
+                --name {{ .name }} --type {{ .type }} \
+                --namespace {{ $.Values.temporal.env.TEMPORAL_NAMESPACE | default "default" }} \
+                --address temporal:7233 || true
+              {{- end }}
+              echo "All search attributes registered."
+{{- end }}

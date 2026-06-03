@@ -58,3 +58,107 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Common StatefulSet template for stateful infra components (postgres, redis, vespa, temporal).
+Usage: {{ include "airweave-svc.statefulset" (dict "root" . "name" "postgres" "config" .Values.postgresql) }}
+*/}}
+{{- define "airweave-svc.statefulset" -}}
+{{- $root := .root -}}
+{{- $name := .name -}}
+{{- $cfg := .config -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "airweave-svc.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "airweave-svc.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: {{ $name }}
+  template:
+    metadata:
+      labels:
+        {{- include "airweave-svc.selectorLabels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $name }}
+    spec:
+      securityContext:
+        {{- toYaml $cfg.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ $name }}
+          image: {{ $cfg.image }}
+          {{- with $cfg.command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $cfg.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $cfg.env }}
+          env:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          ports:
+            - containerPort: {{ $cfg.port }}
+          {{- with $cfg.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $cfg.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml $cfg.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: {{ $cfg.dataMount }}
+            {{- with $cfg.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      {{- with $cfg.extraVolumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ $cfg.storageClassName }}
+        resources:
+          requests:
+            storage: {{ $cfg.storage }}
+{{- end }}
+
+{{/*
+Common ClusterIP Service for infra components.
+Usage: {{ include "airweave-svc.infraservice" (dict "root" . "name" "postgres" "port" 5432) }}
+*/}}
+{{- define "airweave-svc.infraservice" -}}
+{{- $root := .root -}}
+{{- $name := .name -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "airweave-svc.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "airweave-svc.selectorLabels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+  ports:
+    - port: {{ .port }}
+      targetPort: {{ .port }}
+{{- end }}

@@ -1,0 +1,70 @@
+{{- if .Values.svix.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: svix
+  labels:
+    app: svix
+    component: webhooks
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  type: ClusterIP
+  selector:
+    app: svix
+  ports:
+    - port: {{ .Values.svix.service.port }}
+      name: svix
+      targetPort: 8071
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: svix
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: svix
+  template:
+    metadata:
+      labels:
+        app: svix
+        component: webhooks
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: svix
+          image: {{ .Values.svix.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8071
+              name: svix
+          env:
+            {{- range $key, $value := .Values.svix.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range .Values.svix.secretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "airweave-svc.fullname" $ }}
+                  key: {{ .key }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.svix.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.svix.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.svix.readinessProbe | nindent 12 }}
+{{- end }}

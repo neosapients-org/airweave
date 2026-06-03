@@ -1,11 +1,11 @@
 output "repository_url" {
   description = "ECR repository URL for airweave-svc"
-  value       = module.ecr.repository_url
+  value       = var.ecr_create ? module.ecr.repository_url : null
 }
 
 output "repository_arn" {
   description = "ECR repository ARN"
-  value       = module.ecr.repository_arn
+  value       = var.ecr_create ? module.ecr.repository_arn : null
 }
 
 output "secrets_manager_arn" {
@@ -15,10 +15,10 @@ output "secrets_manager_arn" {
 
 output "s3_storage_bucket_arn" {
   description = "S3 storage bucket ARN"
-  value       = var.s3_storage_bucket_create ? aws_s3_bucket.storage[0].arn : ""
+  value       = module.s3_storage.s3_bucket_arn
 }
 
 output "s3_storage_bucket_name" {
   description = "S3 storage bucket name"
-  value       = var.s3_storage_bucket_create ? aws_s3_bucket.storage[0].id : ""
+  value       = module.s3_storage.s3_bucket_id
 }

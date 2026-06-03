@@ -1,0 +1,74 @@
+{{- if .Values.vespa.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "airweave-svc.fullname" . }}-vespa-init
+  labels:
+    {{- include "airweave-svc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vespa-init
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: {{ .Values.vespa.initJob.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.vespa.initJob.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        {{- include "airweave-svc.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: vespa-init
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "airweave-svc.serviceAccountName" . }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: wait-for-vespa
+          image: alpine:3.19
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until curl -sf http://vespa:19071/state/v1/health | grep -q '"up"'; do
+                echo "Waiting for Vespa config server..."; sleep 5
+              done
+              echo "Vespa is ready."
+      containers:
+        - name: vespa-init
+          image: alpine:3.19
+          env:
+            - name: VESPA_CONFIG_SERVER
+              value: http://vespa:19071
+            - name: EMBEDDING_DIMENSIONS
+              value: {{ .Values.env.EMBEDDING_DIMENSIONS | quote }}
+            - name: VERSION
+              value: {{ .Chart.AppVersion | quote }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              apk add --no-cache curl zip > /dev/null 2>&1
+              # Reconstruct app directory structure from ConfigMap
+              mkdir -p /app/schemas /app/search/query-profiles
+              cp /vespa-app/services.xml /vespa-app/hosts.xml /vespa-app/validation-overrides.xml /app/
+              cp /vespa-app/base_entity.sd /vespa-app/file_entity.sd /vespa-app/code_file_entity.sd \
+                 /vespa-app/email_entity.sd /vespa-app/web_entity.sd /app/schemas/
+              cp /vespa-app/default.xml /vespa-app/hybrid.xml /app/search/query-profiles/
+              chmod +x /vespa-app/init-vespa.sh
+              APP_DIR=/app exec /vespa-app/init-vespa.sh
+          volumeMounts:
+            - name: vespa-app
+              mountPath: /vespa-app
+      volumes:
+        - name: vespa-app
+          configMap:
+            name: {{ include "airweave-svc.fullname" . }}-vespa-app
+            defaultMode: 0755
+{{- end }}

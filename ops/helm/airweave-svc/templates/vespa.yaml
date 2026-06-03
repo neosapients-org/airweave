@@ -1,0 +1,83 @@
+{{- if .Values.vespa.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: vespa
+  labels:
+    app: vespa
+    component: search
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  ports:
+    - port: {{ .Values.vespa.service.queryPort }}
+      name: query
+      targetPort: 8081
+    - port: {{ .Values.vespa.service.configPort }}
+      name: config
+      targetPort: 19071
+  clusterIP: None
+  selector:
+    app: vespa
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: vespa
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  serviceName: vespa
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vespa
+  template:
+    metadata:
+      labels:
+        app: vespa
+        component: search
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: vespa
+          image: {{ .Values.vespa.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8081
+              name: query
+            - containerPort: 19071
+              name: config
+          {{- with .Values.vespa.env }}
+          env:
+            {{- range $key, $value := . }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.vespa.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.vespa.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.vespa.readinessProbe | nindent 12 }}
+          volumeMounts:
+            - name: vespa-data
+              mountPath: /opt/vespa/var
+  volumeClaimTemplates:
+    - metadata:
+        name: vespa-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: {{ .Values.vespa.storageClassName }}
+        resources:
+          requests:
+            storage: {{ .Values.vespa.storage }}
+{{- end }}
