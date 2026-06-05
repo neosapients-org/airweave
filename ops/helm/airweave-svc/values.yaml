@@ -174,9 +174,9 @@ env:
   TEMPORAL_TASK_QUEUE: airweave-sync-queue
 
   # Embedding configuration
-  DENSE_EMBEDDER: openai
+  DENSE_EMBEDDER: openai_text_embedding_3_small
   EMBEDDING_DIMENSIONS: '1536'
-  SPARSE_EMBEDDER: bm25
+  SPARSE_EMBEDDER: fastembed_bm25
 
   # Classification (LLM-based document categorisation during sync)
   CLASSIFICATION_ENABLED: 'true'
