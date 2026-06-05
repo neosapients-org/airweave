@@ -26,7 +26,7 @@ module "secrets_manager" {
 
   create = var.secrets_manager_create
 
-  name        = "${var.name}-secrets"
+  name        = "neo-${var.name}-secrets"
   description = "Secrets for ${var.name} service"
 
   # Placeholder — populate actual values manually in AWS Console after apply

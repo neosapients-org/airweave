@@ -1,7 +1,7 @@
 # Airweave Service — AWS Secrets Manager Keys
 
 All keys must be populated in the AWS Secrets Manager secret created by Terraform:
-- **Dev**: `airweave-svc-dev-use1-shared1-secrets`
+- **Dev**: `neo-airweave-svc-dev-use1-shared1-secrets`
 
 The Helm `ExternalSecret` pulls the entire secret via `dataFrom.extract` and injects every key as an env var into the pod. Keys must match the backend env var names in `backend/airweave/core/config/settings.py`.
 

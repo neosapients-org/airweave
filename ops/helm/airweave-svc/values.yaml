@@ -216,7 +216,7 @@ env:
 externalSecrets:
   enabled: true
   secretStoreName: aws-secrets-manager
-  secretName: airweave-svc-dev-use1-shared1-secrets
+  secretName: neo-airweave-svc-dev-use1-shared1-secrets
   refreshInterval: 0
   secretVersion: "AWSCURRENT"
 
