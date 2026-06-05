@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: airweave-svc-dev-use1-shared1
+  name: neo-airweave-svc-dev-use1-shared1
 spec:
   source:
     repoURL: https://github.com/neosapients-org/airweave.git
