@@ -39,6 +39,10 @@ spec:
         app: vespa
         component: search
     spec:
+      securityContext:
+        fsGroup: 1000
+        runAsUser: 1000
+        runAsGroup: 1000
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
