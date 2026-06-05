@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <hosts>
-  <!-- Single-node development setup: all services on one host -->
-  <host name="localhost">
+  <!-- K8s StatefulSet pod FQDN: <pod>.<service>.<namespace>.svc.cluster.local -->
+  <host name="vespa-0.vespa.airweave-svc.svc.cluster.local">
     <alias>config0</alias>
     <alias>container0</alias>
     <alias>content0</alias>
