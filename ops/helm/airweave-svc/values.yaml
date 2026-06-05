@@ -201,6 +201,9 @@ env:
   WEB_FETCHER_MAX_CONCURRENT: '10'
   OPENAI_MAX_CONCURRENT: '20'
 
+  # Docling OCR
+  DOCLING_BASE_URL: http://docling:5001
+
   # Svix webhooks
   SVIX_URL: http://svix:8071
   WEBHOOK_VERIFY_ENDPOINTS: 'true'
@@ -467,3 +470,39 @@ svix:
     periodSeconds: 5
     timeoutSeconds: 3
     failureThreshold: 3
+
+# =============================================================================
+# Docling (OCR / document conversion)
+# =============================================================================
+docling:
+  enabled: true
+  image: ghcr.io/docling-project/docling-serve:latest
+  service:
+    port: 5001
+  resources:
+    limits:
+      cpu: '2'
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 2Gi
+  env:
+    DOCLING_SERVE_ENABLE_UI: 'false'
+    DOCLING_NUM_THREADS: '4'
+    DOCLING_SERVE_MAX_SYNC_WAIT: '300'
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 5001
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 5001
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 5
