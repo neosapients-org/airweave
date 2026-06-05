@@ -21,7 +21,7 @@ autoscaling:
 env:
   LOG_LEVEL: debug
   ENVIRONMENT: dev
-  CLASSIFICATION_ENABLED: 'false'
+  CLASSIFICATION_ENABLED: 'true'
   AUTH_ENABLED: 'false'
 
 ingress:
