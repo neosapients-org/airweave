@@ -18,6 +18,18 @@ resources:
 autoscaling:
   enabled: false
 
+command:
+  - poetry
+  - run
+  - uvicorn
+  - airweave.main:app
+  - --host
+  - "0.0.0.0"
+  - --port
+  - "8001"
+  - --workers
+  - "2"
+
 env:
   LOG_LEVEL: debug
   ENVIRONMENT: dev
