@@ -100,12 +100,16 @@ volumes:
     emptyDir: {}
   - name: local-storage
     emptyDir: {}
+  - name: cache
+    emptyDir: {}
 
 volumeMounts:
   - name: tmp
     mountPath: /tmp
   - name: local-storage
     mountPath: /data/airweave-storage
+  - name: cache
+    mountPath: /.cache
 
 nodeSelector:
   karpenter.sh/nodepool: dev-use1-shared1-generic-arm64-w50
@@ -435,11 +439,12 @@ svix:
       memory: 128Mi
   env:
     WAIT_FOR: 'true'
-    SVIX_REDIS_DSN: redis://redis:6379
     SVIX_QUEUE_TYPE: redis
     SVIX_CACHE_TYPE: none
     SVIX_WHITELIST_SUBNETS: '[0.0.0.0/0, ::/0]'
   secretEnv:
+    - name: SVIX_REDIS_DSN
+      key: SVIX_REDIS_DSN
     - name: SVIX_DB_DSN
       key: SVIX_DB_DSN
     - name: SVIX_JWT_SECRET
