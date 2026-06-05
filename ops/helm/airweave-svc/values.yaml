@@ -142,7 +142,7 @@ env:
   POETRY_CACHE_DIR: /tmp/poetry-cache
 
   # Application
-  ENVIRONMENT: production
+  ENVIRONMENT: dev
   LOG_LEVEL: info
   LOCAL_DEVELOPMENT: 'false'
   AUTH_ENABLED: 'true'

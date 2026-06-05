@@ -20,7 +20,7 @@ autoscaling:
 
 env:
   LOG_LEVEL: debug
-  ENVIRONMENT: development
+  ENVIRONMENT: dev
   CLASSIFICATION_ENABLED: 'false'
   AUTH_ENABLED: 'false'
 
