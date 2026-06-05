@@ -25,12 +25,7 @@ env:
   AUTH_ENABLED: 'false'
 
 ingress:
-  enabled: true
-  annotations:
-    alb.ingress.kubernetes.io/load-balancer-name: dev-use1-shared-alb
-    alb.ingress.kubernetes.io/group.name: shared-alb
-    alb.ingress.kubernetes.io/group.order: "20"
-    alb.ingress.kubernetes.io/certificate-arn: 'arn:aws:acm:us-east-1:679451892000:certificate/679d14b9-7d7a-4553-aeeb-8141824de212'
+  enabled: false
 
 nodeSelector:
   karpenter.sh/nodepool: dev-use1-shared1-generic-arm64-w50
