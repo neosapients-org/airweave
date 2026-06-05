@@ -5,7 +5,7 @@ metadata:
 spec:
   source:
     repoURL: https://github.com/neosapients-org/airweave.git
-    targetRevision: main
+    targetRevision: feat/document-classification
     path: ops/helm/airweave-svc
     helm:
       valueFiles:

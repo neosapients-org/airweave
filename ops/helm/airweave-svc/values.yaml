@@ -178,6 +178,11 @@ env:
   # Storage backend
   STORAGE_BACKEND: aws
   STORAGE_AWS_REGION: us-east-1
+  STORAGE_AWS_BUCKET: airweave-dev-use1-shared1
+
+  # Public URLs (required for OAuth redirect_uri and post-OAuth browser redirect)
+  API_FULL_URL: https://airweave.internal
+  APP_FULL_URL: https://neo-sapients.neosapientai.com/meridian-mesh/connectors
 
   # Auth0
   AUTH0_RULE_NAMESPACE: https://airweave.ai
