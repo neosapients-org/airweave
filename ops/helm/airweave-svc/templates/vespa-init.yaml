@@ -36,7 +36,7 @@ spec:
             - /bin/sh
             - -c
             - |
-              until curl -sf http://vespa:19071/state/v1/health | grep -q '"up"'; do
+              until wget -qO- http://vespa:19071/state/v1/health 2>/dev/null | grep -q '"up"'; do
                 echo "Waiting for Vespa config server..."; sleep 5
               done
               echo "Vespa is ready."
