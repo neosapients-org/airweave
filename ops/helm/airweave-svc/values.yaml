@@ -244,7 +244,7 @@ postgresql:
   database: airweave
   username: airweave
   storage: 10Gi
-  storageClassName: gp3
+  storageClassName: gp2
   service:
     port: 5432
   resources:
@@ -289,7 +289,7 @@ redis:
   image: redis:7-alpine
   replicas: 1
   storage: 2Gi
-  storageClassName: gp3
+  storageClassName: gp2
   service:
     port: 6379
   resources:
@@ -383,7 +383,7 @@ vespa:
   enabled: true
   image: vespaengine/vespa:8
   storage: 20Gi
-  storageClassName: gp3
+  storageClassName: gp2
   service:
     queryPort: 8081
     configPort: 19071
