@@ -39,6 +39,24 @@ env:
 ingress:
   enabled: false
 
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 120
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
 nodeSelector:
   karpenter.sh/nodepool: dev-use1-shared1-generic-arm64-w50
 
