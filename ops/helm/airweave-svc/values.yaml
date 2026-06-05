@@ -137,6 +137,10 @@ affinity:
 # Non-sensitive environment variables (ConfigMap)
 # =============================================================================
 env:
+  # Poetry — disable virtualenv creation so installed packages are used directly
+  POETRY_VIRTUALENVS_CREATE: '0'
+  POETRY_CACHE_DIR: /tmp/poetry-cache
+
   # Application
   ENVIRONMENT: production
   LOG_LEVEL: info
