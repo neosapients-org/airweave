@@ -22,6 +22,7 @@ env:
   LOG_LEVEL: debug
   ENVIRONMENT: development
   CLASSIFICATION_ENABLED: 'false'
+  AUTH_ENABLED: 'false'
 
 ingress:
   enabled: true
