@@ -23,6 +23,7 @@ env:
   ENVIRONMENT: dev
   CLASSIFICATION_ENABLED: 'true'
   AUTH_ENABLED: 'false'
+  API_FULL_URL: https://demo-dp.neosapientai.com/v1/meridian
 
 ingress:
   enabled: false
