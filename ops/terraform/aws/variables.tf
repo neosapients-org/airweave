@@ -55,3 +55,27 @@ variable "s3_storage_bucket_name" {
     error_message = "s3_storage_bucket_name must be set when s3_storage_bucket_create is true."
   }
 }
+
+variable "irsa_create" {
+  description = "Whether to create the IRSA IAM role for Airweave S3 access"
+  type        = bool
+  default     = false
+}
+
+variable "eks_oidc_provider_arn" {
+  description = "OIDC provider ARN for the EKS cluster — sourced from infra-core stack output"
+  type        = string
+  default     = ""
+}
+
+variable "k8s_namespace" {
+  description = "Kubernetes namespace where Airweave runs"
+  type        = string
+  default     = "airweave-svc"
+}
+
+variable "k8s_service_account_name" {
+  description = "Kubernetes service account name for Airweave"
+  type        = string
+  default     = ""
+}

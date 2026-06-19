@@ -22,3 +22,8 @@ output "s3_storage_bucket_name" {
   description = "S3 storage bucket name"
   value       = module.s3_storage.s3_bucket_id
 }
+
+output "irsa_role_arn" {
+  description = "ARN of the IRSA IAM role for Airweave S3 access (use in serviceAccount.annotations)"
+  value       = var.irsa_create ? module.irsa.iam_role_arn : null
+}
