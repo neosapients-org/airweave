@@ -63,13 +63,18 @@ tolerations:
 
 postgresql:
   storage: 5Gi
+  args:
+    - -c
+    - max_connections=50
+    - -c
+    - shared_buffers=64MB
   resources:
     limits:
       cpu: 250m
-      memory: 256Mi
+      memory: 512Mi
     requests:
       cpu: 50m
-      memory: 128Mi
+      memory: 256Mi
 
 redis:
   storage: 1Gi

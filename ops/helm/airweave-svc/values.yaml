@@ -269,7 +269,7 @@ postgresql:
     - -c
     - max_connections=200
     - -c
-    - shared_buffers=256MB
+    - shared_buffers=128MB
   env:
     POSTGRES_DB: airweave
     POSTGRES_USER: airweave
