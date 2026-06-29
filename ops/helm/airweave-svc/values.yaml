@@ -209,7 +209,7 @@ env:
   WEBHOOK_VERIFY_ENDPOINTS: 'true'
 
   # Observability
-  OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-otel-collector.observability.svc.cluster.local:4318
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-otel-collector.signoz.svc.cluster.local:4318
   OTEL_SERVICE_NAME: airweave-svc
   OTEL_LOGS_EXPORTER: otlp
   OTEL_RESOURCE_ATTRIBUTES: service.name=airweave-svc,service.version=1.0.0,deployment.environment=production,service.namespace=neo-platform
