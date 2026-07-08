@@ -483,9 +483,11 @@ docling:
     limits:
       cpu: '2'
       memory: 4Gi
+      ephemeral-storage: 10Gi
     requests:
       cpu: 500m
       memory: 2Gi
+      ephemeral-storage: 2Gi
   env:
     DOCLING_SERVE_ENABLE_UI: 'false'
     DOCLING_NUM_THREADS: '4'
