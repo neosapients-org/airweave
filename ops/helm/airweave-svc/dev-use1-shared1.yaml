@@ -63,18 +63,21 @@ tolerations:
 
 postgresql:
   storage: 5Gi
+  # Shared by the airweave backend, worker, Temporal, and Svix. 50 was too low:
+  # a node reschedule caused a simultaneous reconnect that exhausted the pool
+  # ("FATAL: sorry, too many clients already") and 500'd all DB-backed endpoints.
   args:
     - -c
-    - max_connections=50
+    - max_connections=200
     - -c
-    - shared_buffers=64MB
+    - shared_buffers=128MB
   resources:
     limits:
       cpu: 250m
-      memory: 512Mi
+      memory: 1Gi
     requests:
       cpu: 50m
-      memory: 256Mi
+      memory: 512Mi
 
 redis:
   storage: 1Gi
