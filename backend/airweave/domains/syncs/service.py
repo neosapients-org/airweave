@@ -49,6 +49,7 @@ from airweave.domains.temporal.protocols import (
     TemporalScheduleServiceProtocol,
     TemporalWorkflowServiceProtocol,
 )
+from airweave.platform.destinations.vespa.destination import VespaDestination
 from airweave.schemas.source_connection import ScheduleConfig
 from airweave.schemas.sync import SyncCreate
 from airweave.schemas.sync_job import SyncJobCreate
@@ -200,6 +201,9 @@ class SyncService(SyncServiceProtocol):
         needs_wait = await self._cancel_active_sync(db, sync_id, ctx)
         if needs_wait:
             await self._wait_for_terminal(db, sync_id, cancel_timeout_seconds, ctx)
+        # Purge Vespa inline first so a disconnected/deleted connection's data
+        # cannot be searched during the window before the async workflow runs.
+        await self._purge_vespa_now(sync_id, collection_id, organization_id, ctx)
         await self._schedule_cleanup(sync_id, collection_id, organization_id, ctx)
 
     # ------------------------------------------------------------------
@@ -576,6 +580,34 @@ class SyncService(SyncServiceProtocol):
             f"Sync {sync_id} did not reach terminal state "
             f"within {timeout_seconds}s -- proceeding with deletion anyway"
         )
+
+    async def _purge_vespa_now(
+        self,
+        sync_id: UUID,
+        collection_id: UUID,
+        organization_id: UUID,
+        ctx: ApiContext,
+    ) -> None:
+        """Delete this sync's Vespa docs inline so they are immediately un-searchable.
+
+        Best-effort and non-fatal: the async cleanup workflow remains the safety
+        net (retries + ARF + schedules), so a Vespa failure here must not fail the
+        delete. This only closes the window where a disconnected/deleted
+        connection's vectors would otherwise still be returned by search.
+        """
+        try:
+            vespa = await VespaDestination.create(
+                collection_id=collection_id,
+                organization_id=organization_id,
+                logger=ctx.logger,
+                soft_fail=True,
+            )
+            await vespa.delete_by_sync_id(sync_id)
+            ctx.logger.info(f"Purged Vespa data inline for sync {sync_id}")
+        except Exception as e:
+            ctx.logger.error(
+                f"Inline Vespa purge failed for sync {sync_id}: {e}. Async cleanup will retry."
+            )
 
     async def _schedule_cleanup(
         self,
