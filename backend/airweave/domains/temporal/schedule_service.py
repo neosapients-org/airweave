@@ -539,7 +539,7 @@ class TemporalScheduleService(TemporalScheduleServiceProtocol):
             schedule_id="cleanup-stuck-sync-jobs",
             workflow_cls=CleanupStuckSyncJobsWorkflow,
             workflow_id="cleanup-workflow",
-            interval=timedelta(seconds=150),
+            interval=timedelta(minutes=10),
             note="Periodic cleanup of stuck sync jobs",
         )
 
