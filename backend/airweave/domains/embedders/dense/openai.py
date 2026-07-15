@@ -16,6 +16,7 @@ from airweave.domains.embedders.exceptions import (
     EmbedderDimensionError,
     EmbedderInputError,
     EmbedderProviderError,
+    EmbedderQuotaError,
     EmbedderRateLimitError,
     EmbedderResponseError,
     EmbedderTimeoutError,
@@ -172,7 +173,9 @@ class OpenAIDenseEmbedder(DenseEmbedderProtocol):
 
         Raises:
             EmbedderAuthError: On authentication failure.
-            EmbedderRateLimitError: On rate limit (HTTP 429).
+            EmbedderQuotaError: On quota/billing exhaustion (HTTP 429,
+                code ``insufficient_quota``) — terminal, non-retryable.
+            EmbedderRateLimitError: On transient rate limit (HTTP 429).
             EmbedderTimeoutError: On request timeout.
             EmbedderConnectionError: On connection failure.
             EmbedderProviderError: On other API errors.
@@ -192,6 +195,11 @@ class OpenAIDenseEmbedder(DenseEmbedderProtocol):
                 provider=_PROVIDER,
             ) from e
         except openai.RateLimitError as e:
+            if self._is_insufficient_quota(e):
+                raise EmbedderQuotaError(
+                    f"OpenAI quota exhausted (insufficient_quota): {e}",
+                    provider=_PROVIDER,
+                ) from e
             retry_after = self._parse_retry_after(e)
             raise EmbedderRateLimitError(
                 f"OpenAI rate limit exceeded: {e}",
@@ -214,6 +222,19 @@ class OpenAIDenseEmbedder(DenseEmbedderProtocol):
                 provider=_PROVIDER,
                 retryable=e.status_code >= 500,
             ) from e
+
+    @staticmethod
+    def _is_insufficient_quota(exc: Exception) -> bool:
+        """Detect OpenAI's terminal ``insufficient_quota`` 429 (billing exhausted).
+
+        OpenAI returns quota exhaustion with the same HTTP 429 status as a
+        transient rate limit, distinguished only by the error ``code``. The SDK
+        surfaces that code on the exception; we also fall back to the message
+        string to stay robust across SDK versions.
+        """
+        if getattr(exc, "code", None) == "insufficient_quota":
+            return True
+        return "insufficient_quota" in str(exc).lower()
 
     @staticmethod
     def _parse_retry_after(exc: Exception) -> float | None:

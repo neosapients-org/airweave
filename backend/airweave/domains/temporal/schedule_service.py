@@ -56,6 +56,9 @@ SYNC_ID_SEARCH_ATTRIBUTE = SearchAttributeKey.for_keyword("SyncId")
 
 _MINUTE_LEVEL_RE = re.compile(r"^(\*/([1-5]?\d)|([0-5]?\d)) \* \* \* \*$")
 
+# Safe fallback if SYNC_ORPHAN_CLEANUP_CRON is unset/invalid: weekly, Sun 03:00 UTC.
+_DEFAULT_ORPHAN_CLEANUP_CRON = "0 3 * * 0"
+
 
 @dataclass(frozen=True)
 class ScheduleTypeSpec:
@@ -333,24 +336,40 @@ class TemporalScheduleService(TemporalScheduleServiceProtocol):
         """Return all schedule specs required for a cron pattern.
 
         Minute-level crons produce incremental syncs that skip orphan cleanup.
-        A daily forced-full-sync companion ensures orphans are cleaned up.
-        Regular crons do full traversals each run — cleanup happens naturally.
+        A forced-full-sync companion (cron: ``settings.SYNC_ORPHAN_CLEANUP_CRON``,
+        weekly by default) reconciles source deletions. Regular crons do full
+        traversals each run — cleanup happens naturally.
         """
         match = _MINUTE_LEVEL_RE.match(cron_schedule)
         is_minute = match and ((match.group(2) and int(match.group(2)) < 60) or match.group(3))
 
         if is_minute:
-            now = datetime.now(timezone.utc)
-            daily_cleanup_cron = f"{now.minute} {(now.hour + 12) % 24} * * *"
             return [
                 ScheduleTypeSpec(schedule_type="minute"),
                 ScheduleTypeSpec(
                     schedule_type="cleanup",
                     force_full_sync=True,
-                    cron_override=daily_cleanup_cron,
+                    cron_override=TemporalScheduleService._orphan_cleanup_cron(),
                 ),
             ]
         return [ScheduleTypeSpec(schedule_type="regular")]
+
+    @staticmethod
+    def _orphan_cleanup_cron() -> str:
+        """Resolve the orphan-cleanup companion cron from settings.
+
+        Falls back to a safe weekly default if the configured value is not a
+        valid cron expression, so a misconfigured env var never breaks
+        schedule creation.
+        """
+        configured = settings.SYNC_ORPHAN_CLEANUP_CRON
+        if configured and croniter.is_valid(configured):
+            return configured
+        logger.warning(
+            f"Invalid SYNC_ORPHAN_CLEANUP_CRON '{configured}', "
+            f"falling back to weekly default '{_DEFAULT_ORPHAN_CLEANUP_CRON}'"
+        )
+        return _DEFAULT_ORPHAN_CLEANUP_CRON
 
     # ------------------------------------------------------------------
     # Public API (protocol surface)

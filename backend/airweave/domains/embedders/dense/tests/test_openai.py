@@ -15,6 +15,7 @@ from airweave.domains.embedders.exceptions import (
     EmbedderDimensionError,
     EmbedderInputError,
     EmbedderProviderError,
+    EmbedderQuotaError,
     EmbedderRateLimitError,
     EmbedderResponseError,
     EmbedderTimeoutError,
@@ -390,6 +391,63 @@ async def test_status_error_500_is_retryable():
     with pytest.raises(EmbedderProviderError) as exc_info:
         await embedder.embed("test")
 
+    assert exc_info.value.retryable is True
+
+
+def _make_insufficient_quota_error():
+    import openai
+
+    # OpenAI nests the error body; the SDK surfaces the inner object, so
+    # ``.code`` resolves to "insufficient_quota" on the raised exception.
+    response = MagicMock(status_code=429, headers={})
+    return openai.RateLimitError(
+        message=(
+            "Error code: 429 - {'error': {'message': 'You exceeded your current quota', "
+            "'type': 'insufficient_quota', 'code': 'insufficient_quota'}}"
+        ),
+        response=response,
+        body={"code": "insufficient_quota", "type": "insufficient_quota", "message": "quota"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_insufficient_quota_raises_quota_error():
+    """A 429 with code=insufficient_quota is a terminal quota error, not a rate limit."""
+    client = AsyncMock()
+    client.embeddings.create.side_effect = _make_insufficient_quota_error()
+
+    embedder = _build_embedder(client_mock=client)
+
+    with pytest.raises(EmbedderQuotaError, match="quota"):
+        await embedder.embed("test")
+
+
+@pytest.mark.asyncio
+async def test_insufficient_quota_error_is_non_retryable():
+    """Quota exhaustion must be non-retryable so callers fail fast instead of looping."""
+    client = AsyncMock()
+    client.embeddings.create.side_effect = _make_insufficient_quota_error()
+
+    embedder = _build_embedder(client_mock=client)
+
+    with pytest.raises(EmbedderQuotaError) as exc_info:
+        await embedder.embed("test")
+
+    assert exc_info.value.retryable is False
+
+
+@pytest.mark.asyncio
+async def test_transient_rate_limit_still_maps_to_rate_limit_error():
+    """A 429 without an insufficient_quota code stays a retryable rate-limit error."""
+    client = AsyncMock()
+    client.embeddings.create.side_effect = _make_rate_limit_error()
+
+    embedder = _build_embedder(client_mock=client)
+
+    with pytest.raises(EmbedderRateLimitError) as exc_info:
+        await embedder.embed("test")
+
+    assert not isinstance(exc_info.value, EmbedderQuotaError)
     assert exc_info.value.retryable is True
 
 

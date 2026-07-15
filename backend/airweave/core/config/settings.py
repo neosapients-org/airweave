@@ -220,6 +220,14 @@ class Settings(BaseSettings):
     TEMPORAL_DISABLE_SANDBOX: bool = False
     TEMPORAL_SDK_METRICS_PORT: int = 9090
 
+    # Cron for the forced-full orphan-cleanup companion attached to minute-level
+    # sync schedules. This is the ONLY run that reconciles source deletions
+    # (removes entities/vectors/graph nodes for docs deleted at the source), so
+    # it must stay a full sync. Incremental runs skip orphan cleanup by design.
+    # It does NOT re-embed unchanged docs (hash comparison still yields KEEP),
+    # so its embedding cost is ~zero. Default: weekly, Sundays 03:00 UTC.
+    SYNC_ORPHAN_CLEANUP_CRON: str = "0 3 * * 0"
+
     # Health probe configuration
     HEALTH_CHECK_TIMEOUT: float = 5.0
     HEALTH_CRITICAL_PROBES: str = "postgres"

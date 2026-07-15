@@ -198,6 +198,9 @@ env:
   # Sync tuning
   SYNC_MAX_WORKERS: '20'
   SYNC_THREAD_POOL_SIZE: '100'
+  # Forced-full orphan-cleanup companion cadence (reconciles source deletions;
+  # does not re-embed unchanged docs). Weekly, Sundays 03:00 UTC.
+  SYNC_ORPHAN_CLEANUP_CRON: '0 3 * * 0'
   WEB_FETCHER_MAX_CONCURRENT: '10'
   OPENAI_MAX_CONCURRENT: '20'
 
