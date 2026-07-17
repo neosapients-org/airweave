@@ -13,7 +13,7 @@ from airweave.domains.source_connections.protocols import (
     SourceConnectionDeletionServiceProtocol,
     SourceConnectionRepositoryProtocol,
 )
-from airweave.domains.syncs.protocols import SyncServiceProtocol
+from airweave.domains.syncs.protocols import SyncRepositoryProtocol, SyncServiceProtocol
 from airweave.schemas.source_connection import SourceConnection as SourceConnectionSchema
 
 
@@ -21,8 +21,10 @@ class SourceConnectionDeletionService(SourceConnectionDeletionServiceProtocol):
     """Deletes a source connection and all related data.
 
     The flow is:
-    1. Delegate cancel + wait + cleanup scheduling to SyncService.delete.
-    2. CASCADE-delete the DB records (source connection, sync, jobs, entities).
+    1. Delegate cancel + wait + Vespa purge + cleanup scheduling to SyncService.delete.
+    2. Remove the source connection row.
+    3. Remove the sync row, which CASCADE-deletes its entities, jobs, entity
+       counts, cursor, and sync connections via the ``ondelete="CASCADE"`` FKs.
     """
 
     def __init__(  # noqa: D107
@@ -31,11 +33,13 @@ class SourceConnectionDeletionService(SourceConnectionDeletionServiceProtocol):
         collection_repo: CollectionRepositoryProtocol,
         response_builder: ResponseBuilderProtocol,
         sync_service: SyncServiceProtocol,
+        sync_repo: SyncRepositoryProtocol,
     ) -> None:
         self._sc_repo = sc_repo
         self._collection_repo = collection_repo
         self._response_builder = response_builder
         self._sync_service = sync_service
+        self._sync_repo = sync_repo
 
     async def delete(
         self,
@@ -68,7 +72,14 @@ class SourceConnectionDeletionService(SourceConnectionDeletionServiceProtocol):
                 ctx=ctx,
                 cancel_timeout_seconds=15,
             )
-
-        await self._sc_repo.remove(db, id=id, ctx=ctx)
+            # Removing the sync row hard-deletes everything hanging off it via the
+            # ``ondelete="CASCADE"`` FKs: the source connection (its ``sync_id`` FK
+            # cascades), entities, sync jobs, entity counts, cursor, and sync
+            # connections. This is what prevents orphaned entity/job rows.
+            await self._sync_repo.remove(db, id=sync_id, ctx=ctx)
+        else:
+            # No sync attached (e.g. an unauthenticated connection): just remove
+            # the source connection row directly.
+            await self._sc_repo.remove(db, id=id, ctx=ctx)
 
         return response

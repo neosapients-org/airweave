@@ -22,6 +22,7 @@ from airweave.domains.source_connections.fakes.repository import (
     FakeSourceConnectionRepository,
 )
 from airweave.domains.source_connections.fakes.response import FakeResponseBuilder
+from airweave.domains.syncs.fakes.repository import FakeSyncRepository
 from airweave.domains.syncs.fakes.service import FakeSyncService
 from airweave.models.collection import Collection
 from airweave.models.source_connection import SourceConnection
@@ -65,6 +66,7 @@ def _make_collection(*, id=None, readable_id="test-col"):
     col.organization_id = ORG_ID
     col.vector_db_deployment_metadata_id = uuid4()
     col.sync_config = None
+    col.temporal_config = None
     col.created_at = NOW
     col.modified_at = NOW
     col.created_by_email = None
@@ -77,12 +79,14 @@ def _build_service(
     collection_repo=None,
     response_builder=None,
     sync_service=None,
+    sync_repo=None,
 ):
     return SourceConnectionDeletionService(
         sc_repo=sc_repo or FakeSourceConnectionRepository(),
         collection_repo=collection_repo or FakeCollectionRepository(),
         response_builder=response_builder or FakeResponseBuilder(),
         sync_service=sync_service or FakeSyncService(),
+        sync_repo=sync_repo or FakeSyncRepository(),
     )
 
 
@@ -116,22 +120,32 @@ async def test_delete_happy_path(case: DeleteCase):
     col_repo.seed_readable(sc.readable_collection_id, col)
 
     sync_service = FakeSyncService()
+    sync_repo = FakeSyncRepository()
 
     svc = _build_service(
         sc_repo=sc_repo,
         collection_repo=col_repo,
         sync_service=sync_service,
+        sync_repo=sync_repo,
     )
 
     result = await svc.delete(AsyncMock(), id=sc.id, ctx=_make_ctx())
 
     assert result.id == sc.id
-    assert sc_repo._store.get(sc.id) is None
 
     if case.expect_sync_delete:
+        # Sync workflow cancel + Vespa purge, then remove the sync ROW so its
+        # CASCADE FKs hard-delete the source connection, entities, and jobs.
         assert any(c[0] == "delete" for c in sync_service._calls)
+        assert any(c[0] == "remove" and c[2] == sync_id for c in sync_repo._calls)
+        # The source connection row is not removed directly — the sync's CASCADE
+        # FK takes care of it (modelled at the DB level, not in the fake).
+        assert not any(c[0] == "remove" for c in sc_repo._calls)
     else:
+        # No sync: remove the source connection row directly.
         assert not any(c[0] == "delete" for c in sync_service._calls)
+        assert not any(c[0] == "remove" for c in sync_repo._calls)
+        assert sc_repo._store.get(sc.id) is None
 
 
 # ---------------------------------------------------------------------------

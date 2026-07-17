@@ -94,3 +94,15 @@ class FakeSyncRepository:
         for k, v in obj_in.model_dump(exclude_unset=True).items():
             setattr(db_obj, k, v)
         return db_obj
+
+    async def remove(
+        self,
+        db: AsyncSession,
+        id: UUID,
+        ctx: ApiContext,
+        uow: Optional[UnitOfWork] = None,
+    ) -> Optional[schemas.Sync]:
+        """Record call and drop the sync from both stores."""
+        self._calls.append(("remove", db, id, ctx, uow))
+        self._models.pop(id, None)
+        return self._store.pop(id, None)

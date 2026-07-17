@@ -419,6 +419,7 @@ def create_container(settings: Settings) -> Container:
         collection_repo=source_deps["collection_repo"],
         response_builder=sync_deps["response_builder"],
         sync_service=sync_service,
+        sync_repo=source_deps["sync_repo"],
     )
     update_service = SourceConnectionUpdateService(
         sc_repo=source_deps["sc_repo"],
