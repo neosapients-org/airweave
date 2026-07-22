@@ -68,6 +68,16 @@ class SyncRepositoryProtocol(Protocol):
         """Update an existing sync."""
         ...
 
+    async def remove(
+        self,
+        db: AsyncSession,
+        id: UUID,
+        ctx: ApiContext,
+        uow: Optional[UnitOfWork] = None,
+    ) -> Optional[schemas.Sync]:
+        """Remove a sync row (CASCADE-deletes its entities, jobs, counts, cursor)."""
+        ...
+
 
 class SyncCursorRepositoryProtocol(Protocol):
     """Data access for sync cursor records."""

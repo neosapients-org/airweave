@@ -3,6 +3,7 @@
 import pytest
 from typing import Any, Dict, List
 
+from airweave.schemas.search import AirweaveTemporalConfig
 from airweave.search.state import SearchState
 
 
@@ -19,6 +20,7 @@ class TestSearchState:
         assert state.sparse_embeddings is None
         assert state.interpreted_filter is None
         assert state.filter is None
+        assert state.detected_temporal_config is None
         assert state.completion is None
         
         # List fields should be empty
@@ -86,6 +88,15 @@ class TestSearchState:
         state.filter = filter_dict
         
         assert state.filter == filter_dict
+
+    def test_detected_temporal_config_assignment(self):
+        """Test setting detected_temporal_config field."""
+        state = SearchState()
+        temporal = AirweaveTemporalConfig(weight=0.7, reference_field="updated_at")
+        state.detected_temporal_config = temporal
+
+        assert state.detected_temporal_config == temporal
+        assert state.detected_temporal_config.weight == 0.7
 
     def test_results_assignment(self):
         """Test setting results field."""
@@ -287,4 +298,3 @@ class TestSearchState:
         
         assert "results" in fields
         assert fields["results"].description == "Search results as dicts"
-

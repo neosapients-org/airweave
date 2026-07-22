@@ -50,4 +50,22 @@ Be conservative with confidence:
 - Medium confidence (0.5-0.8): Likely filters but field names might vary
 - Low confidence (<0.5): Unclear or ambiguous, no matching fields
 
+Temporal relevance:
+- If the query contains recency signals, set `temporal_weight` to activate recency boosting.
+- "last", "most recent", "latest", "newest" -> use 0.7
+- "recent", "recently" -> use 0.5
+- "today", "this week", "this month" -> use 0.6
+- No recency signal -> temporal_weight should be null
+- Example: "last conversation with John" -> temporal_weight 0.7
+- Example: "most recent invoice" -> temporal_weight 0.7
+- Example: "recent market reports" -> temporal_weight 0.5
+- Example: "all contracts with Acme" -> temporal_weight null
+
+The JSON output schema is:
+{{
+  "filters": [...],
+  "confidence": 0.0-1.0,
+  "temporal_weight": 0.7
+}}
+
 The refined query should remove filter terms but keep the semantic search intent."""

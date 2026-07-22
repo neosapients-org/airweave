@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from airweave.domains.converters.fakes.registry import FakeConverterRegistry
-from airweave.domains.embedders.exceptions import EmbedderProviderError
+from airweave.domains.embedders.exceptions import EmbedderProviderError, EmbedderQuotaError
+from airweave.domains.sync_pipeline.exceptions import SyncFailureError
 from airweave.domains.sync_pipeline.processors.chunk_embed import ChunkEmbedProcessor
 
 _TEXT_BUILDER_CLS = (
@@ -559,3 +560,45 @@ class TestDenseEmbedFallback:
         assert len(result) == 2
         # embed_many called exactly once (batch), not per-entity
         assert mock_dense_embedder.embed_many.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_quota_error_aborts_sync_without_fallback(
+        self, processor, mock_sync_context, mock_dense_embedder
+    ):
+        """A provider quota error must fail the whole sync fast — no per-entity
+        fallback loop that would burn more of the exhausted quota."""
+        e1 = _make_entity("q-1")
+        e2 = _make_entity("q-2")
+
+        mock_dense_embedder.embed_many = AsyncMock(
+            side_effect=EmbedderQuotaError("quota exhausted", provider="openai")
+        )
+
+        with pytest.raises(SyncFailureError, match="quota"):
+            await processor._embed_entities([e1, e2], mock_sync_context)
+
+        # Only the single batch attempt — the individual fallback must NOT run.
+        assert mock_dense_embedder.embed_many.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_quota_error_surfaces_clean_message_not_raw_provider_json(
+        self, processor, mock_sync_context, mock_dense_embedder
+    ):
+        """The user-facing (root-cause) message must be our clean text, not the
+        raw provider 429 body chained under the quota error."""
+        from airweave.platform.utils.error_utils import get_error_message
+
+        raw = RuntimeError(
+            "Error code: 429 - {'error': {'code': 'insufficient_quota'}}"
+        )
+        quota = EmbedderQuotaError("OpenAI quota exhausted", provider="openai")
+        quota.__cause__ = raw  # mimic the real chain: quota wraps the raw 429
+        mock_dense_embedder.embed_many = AsyncMock(side_effect=quota)
+
+        with pytest.raises(SyncFailureError) as exc_info:
+            await processor._embed_entities([_make_entity("q-1")], mock_sync_context)
+
+        surfaced = get_error_message(exc_info.value)
+        assert "quota exhausted" in surfaced
+        assert "insufficient_quota" not in surfaced
+        assert "429" not in surfaced

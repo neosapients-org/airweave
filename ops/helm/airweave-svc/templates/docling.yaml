@@ -1,0 +1,65 @@
+{{- if .Values.docling.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: docling
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: docling
+    component: ocr
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  type: ClusterIP
+  selector:
+    app: docling
+  ports:
+    - port: {{ .Values.docling.service.port }}
+      name: docling
+      targetPort: 5001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docling
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: docling
+  template:
+    metadata:
+      labels:
+        app: docling
+        component: ocr
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: docling
+          image: {{ .Values.docling.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5001
+              name: docling
+          env:
+            {{- range $key, $value := .Values.docling.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.docling.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.docling.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.docling.readinessProbe | nindent 12 }}
+{{- end }}

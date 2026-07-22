@@ -66,3 +66,18 @@ class SyncRepository(SyncRepositoryProtocol):
     ) -> Sync:
         """Update an existing sync."""
         return await crud.sync.update(db=db, db_obj=db_obj, obj_in=obj_in, ctx=ctx, uow=uow)
+
+    async def remove(
+        self,
+        db: AsyncSession,
+        id: UUID,
+        ctx: ApiContext,
+        uow: Optional[UnitOfWork] = None,
+    ) -> Optional[schemas.Sync]:
+        """Remove a sync row.
+
+        Deleting the sync row CASCADE-deletes its dependent records (entities,
+        sync jobs, entity counts, sync cursor, sync connections) via the
+        ``ondelete="CASCADE"`` foreign keys on those tables.
+        """
+        return await crud.sync.remove(db, id=id, ctx=ctx, uow=uow)

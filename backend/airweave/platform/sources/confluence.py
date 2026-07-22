@@ -87,7 +87,35 @@ class ConfluenceSource(BaseSource):
         config: ConfluenceConfig,
     ) -> ConfluenceSource:
         """Create a new Confluence source instance."""
-        return cls(auth=auth, logger=logger, http_client=http_client)
+        instance = cls(auth=auth, logger=logger, http_client=http_client)
+        instance._site_filter = (config.site or "").strip().lower()
+        return instance
+
+    def _select_resource(self, resources: list[dict]) -> dict:
+        """Pick the accessible Atlassian resource to sync.
+
+        When the authorized account can reach multiple sites, ``accessible-resources``
+        returns all of them, so blindly taking the first can sync the wrong site. If a
+        site is configured, select the resource whose ``url`` matches it; otherwise fall
+        back to the first resource.
+
+        :param resources: Non-empty accessible-resources list from the Atlassian API.
+        :returns: The chosen resource dict.
+        :raises SourceAuthError: If a site is configured but no resource matches it.
+        """
+        site = getattr(self, "_site_filter", "")
+        if not site:
+            return resources[0]
+
+        for resource in resources:
+            if site in (resource.get("url", "").lower()):
+                return resource
+
+        available = ", ".join(r.get("url", "") for r in resources) or "none"
+        raise SourceAuthError(
+            f"Configured Confluence site '{site}' not found among accessible sites "
+            f"({available}). Check the site config value and OAuth authorization."
+        )
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -268,7 +296,12 @@ class ConfluenceSource(BaseSource):
     ) -> AsyncGenerator[BaseEntity, None]:
         """Generate ConfluenceCommentEntity objects for a page."""
         limit = 50
-        url = f"{self._base_url}/wiki/api/v2/pages/{page_id}/inline-comments?limit={limit}"
+        # ``body-format=storage`` is required for the API to return the comment body;
+        # without it ``body.storage.value`` is absent and the comment text is empty.
+        url = (
+            f"{self._base_url}/wiki/api/v2/pages/{page_id}"
+            f"/inline-comments?limit={limit}&body-format=storage"
+        )
         while url:
             try:
                 data = await self._get(url)
@@ -284,6 +317,9 @@ class ConfluenceSource(BaseSource):
                     breadcrumbs=parent_breadcrumbs,
                     parent_space_key=parent_space_key,
                     site_url=site_url,
+                    # The v2 inline-comments response omits ``container``; pass the
+                    # known parent page id so web_url resolves instead of falling back.
+                    parent_content_id=page_id,
                 )
             next_link = data.get("_links", {}).get("next")
             url = f"{self._base_url}{next_link}" if next_link else None
@@ -335,6 +371,8 @@ class ConfluenceSource(BaseSource):
         resources = await self._get_accessible_resources()
         if not resources:
             raise SourceAuthError("Confluence validation failed: no accessible resources found")
+        # Fail fast if a specific site is configured but not reachable by this token.
+        self._select_resource(resources)
 
     async def generate_entities(  # noqa: C901
         self,
@@ -349,11 +387,15 @@ class ConfluenceSource(BaseSource):
         resources = await self._get_accessible_resources()
         if not resources:
             raise ValueError("No accessible resources found")
-        cloud_id = resources[0]["id"]
-        site_url = resources[0].get("url", "")
+        resource = self._select_resource(resources)
+        cloud_id = resource["id"]
+        site_url = resource.get("url", "")
 
         self._base_url = f"https://api.atlassian.com/ex/confluence/{cloud_id}"
-        self.logger.debug(f"Base URL: {self._base_url}, Site URL: {site_url}")
+        self.logger.info(
+            f"Syncing Confluence site '{site_url}' (cloud_id={cloud_id}) "
+            f"out of {len(resources)} accessible site(s)"
+        )
 
         async for space_entity in self._generate_space_entities(site_url):
             yield space_entity

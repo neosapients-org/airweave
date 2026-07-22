@@ -14,6 +14,7 @@ orchestration layer that delegates to domain-specific components.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -21,6 +22,11 @@ from uuid import UUID
 from airweave.core.config import settings
 from airweave.core.logging import ContextualLogger
 from airweave.core.logging import logger as default_logger
+from airweave.domains.sync_pipeline.processors.classifier import (
+    classify_text,
+    prepend_categories_prefix,
+    strip_category_prefix,
+)
 from airweave.platform.decorators import destination
 from airweave.platform.destinations._base import VectorDBDestination
 from airweave.platform.destinations.vespa.client import VespaClient
@@ -46,7 +52,7 @@ class VespaTransientFeedError(ConnectionError):
     "vespa",
     supports_vector=True,
     requires_client_embedding=True,
-    supports_temporal_relevance=False,
+    supports_temporal_relevance=True,
 )
 class VespaDestination(VectorDBDestination):
     """Vespa destination with chunk-as-document model.
@@ -259,6 +265,80 @@ class VespaDestination(VectorDBDestination):
 
         await self._client.delete_by_original_entity_ids(parent_ids, self.collection_id)
 
+    async def reclassify_collection_documents(
+        self,
+        collection_id: UUID,
+        batch_size: int = 25,
+    ) -> Dict[str, int]:
+        """Re-classify existing Vespa documents without re-embedding them."""
+        if not self._client:
+            raise RuntimeError("Vespa client not initialized")
+
+        docs = await self._client.scroll_all_documents(collection_id)
+        processed = 0
+        skipped = 0
+        failed = 0
+
+        for i in range(0, len(docs), batch_size):
+            batch = docs[i : i + batch_size]
+            results = await asyncio.gather(
+                *(self._reclassify_one(doc) for doc in batch),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, Exception):
+                    failed += 1
+                elif result == "ok":
+                    processed += 1
+                else:
+                    skipped += 1
+
+        self.logger.info(
+            f"[VespaDestination] Reclassify complete: "
+            f"processed={processed}, skipped={skipped}, failed={failed}"
+        )
+        return {"processed": processed, "skipped": skipped, "failed": failed}
+
+    async def _reclassify_one(self, doc: Dict[str, Any]) -> str:
+        """Reclassify a single Vespa document and write back category fields."""
+        if not self._client:
+            raise RuntimeError("Vespa client not initialized")
+
+        fields = doc.get("fields", {})
+        text = fields.get("textual_representation") or ""
+        name = fields.get("name") or ""
+        mime_type = fields.get("mime_type") or ""
+        full_id = doc.get("id", "")
+
+        if not text:
+            return "skipped"
+
+        schema, doc_id = self._client._parse_vespa_document_id(full_id)
+        if not schema or not doc_id:
+            return "skipped"
+
+        raw_text = strip_category_prefix(text)
+        if not raw_text:
+            return "skipped"
+
+        categories = await classify_text(
+            text=raw_text,
+            filename=name,
+            mime_type=mime_type,
+        )
+        if not categories:
+            return "skipped"
+
+        await self._client.partial_update_fields(
+            schema=schema,
+            doc_id=doc_id,
+            fields={
+                "doc_categories": categories,
+                "textual_representation": prepend_categories_prefix(raw_text, categories),
+            },
+        )
+        return "ok"
+
     async def search(
         self,
         queries: List[str],
@@ -282,7 +362,7 @@ class VespaDestination(VectorDBDestination):
             dense_embeddings: Pre-computed dense embeddings for neural/hybrid search
             sparse_embeddings: Pre-computed sparse embeddings for keyword scoring
             retrieval_strategy: Search strategy - "hybrid", "neural", or "keyword"
-            temporal_config: Ignored (not yet supported)
+            temporal_config: Optional temporal relevance configuration
 
         Returns:
             List of AirweaveSearchResult objects (unified format)
@@ -324,8 +404,15 @@ class VespaDestination(VectorDBDestination):
         yql = self._query_builder.build_yql(
             queries, airweave_collection_id, filter, retrieval_strategy
         )
+        temporal_params = self.translate_temporal(temporal_config)
         query_params = self._query_builder.build_params(
-            queries, limit, offset, dense_embeddings, sparse_embeddings, retrieval_strategy
+            queries,
+            limit,
+            offset,
+            dense_embeddings,
+            sparse_embeddings,
+            retrieval_strategy,
+            temporal_params=temporal_params,
         )
         query_params["yql"] = yql
 
@@ -361,15 +448,21 @@ class VespaDestination(VectorDBDestination):
     def translate_temporal(
         self, config: Optional[AirweaveTemporalConfig]
     ) -> Optional[Dict[str, Any]]:
-        """Translate temporal config (not yet implemented).
+        """Translate temporal config to Vespa ranking parameters.
 
         Args:
             config: Temporal relevance configuration
 
         Returns:
-            None - temporal relevance not yet supported
+            Vespa temporal ranking parameters, or None
         """
-        return None
+        if config is None:
+            return None
+
+        return {
+            "freshness_weight": config.weight,
+            "freshness_field": config.reference_field,
+        }
 
     # -------------------------------------------------------------------------
     # Utility Methods

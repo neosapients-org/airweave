@@ -97,6 +97,8 @@ class FilterTranslator:
         """
         if field.startswith("breadcrumbs."):
             return field
+        if field == "doc_category":
+            return "doc_categories"
         return field.replace(".", "_")
 
     def _is_datetime_field(self, field: str) -> bool:

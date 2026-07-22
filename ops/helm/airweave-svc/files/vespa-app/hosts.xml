@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<hosts>
+  <!-- K8s StatefulSet pod FQDN: <pod>.<service>.<namespace>.svc.cluster.local -->
+  <host name="vespa-0.vespa.airweave-svc.svc.cluster.local">
+    <alias>config0</alias>
+    <alias>container0</alias>
+    <alias>content0</alias>
+  </host>
+</hosts>

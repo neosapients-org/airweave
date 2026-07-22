@@ -97,6 +97,25 @@ class EmbedderRateLimitError(EmbedderProviderError):
         super().__init__(message, provider=provider, retryable=True)
 
 
+class EmbedderQuotaError(EmbedderProviderError):
+    """Provider quota/billing exhausted (e.g. OpenAI ``insufficient_quota``).
+
+    Distinct from :class:`EmbedderRateLimitError`: a rate limit is transient and
+    clears on its own, whereas quota exhaustion is a standing account condition
+    that retrying cannot resolve. Marked non-retryable so callers fail the sync
+    fast instead of re-issuing (and paying for) doomed requests batch by batch.
+    """
+
+    def __init__(
+        self,
+        message: str = "Embedder quota exhausted",
+        *,
+        provider: str = "unknown",
+    ):
+        """Initialize with message and provider name."""
+        super().__init__(message, provider=provider, retryable=False)
+
+
 class EmbedderTimeoutError(EmbedderProviderError):
     """Connection or request timeout."""
 

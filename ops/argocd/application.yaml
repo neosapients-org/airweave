@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: neo-airweave-svc-dev-use1-shared1
+spec:
+  source:
+    repoURL: https://github.com/neosapients-org/airweave.git
+    targetRevision: feat/document-classification
+    path: ops/helm/airweave-svc
+    helm:
+      valueFiles:
+        - values.yaml
+        - dev-use1-shared1.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: airweave-svc
+  syncPolicy:
+    automated:
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+  project: default

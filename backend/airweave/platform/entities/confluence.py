@@ -24,6 +24,7 @@ Reference:
 
 from __future__ import annotations
 
+import html as html_lib
 import re
 from typing import Any, Dict, List, Optional
 
@@ -32,10 +33,34 @@ from pydantic import computed_field
 from airweave.platform.entities._airweave_field import AirweaveField
 from airweave.platform.entities._base import BaseEntity, Breadcrumb, FileEntity
 
+# Confluence storage-format tags (e.g. <ac:structured-macro>, <ri:page>) and
+# standard HTML tags. Matches an opening/closing/self-closing tag of any name.
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
 
-def _strip_html(html: str) -> str:
-    """Remove HTML tags, returning plain text."""
-    return re.sub(r"<[^>]+>", "", html)
+
+def _strip_html(html: Optional[str]) -> str:
+    """Convert Confluence storage-format HTML to plain text.
+
+    Removes ``<script>``/``<style>`` blocks (tag *and* contents), strips all
+    remaining HTML/XML tags, decodes HTML entities (``&amp;``, ``&nbsp;`` …),
+    and collapses runs of whitespace. Safe on any input, including ``None``.
+
+    :param html: Raw HTML/storage-format string (or ``None``).
+    :returns: Plain-text representation with no markup; ``""`` when input is empty.
+    :example:
+        >>> _strip_html("<p>Hello&nbsp;<b>world</b></p>")
+        'Hello world'
+    """
+    if not html:
+        return ""
+    # Drop script/style element contents entirely before stripping tags.
+    without_blocks = re.sub(
+        r"<(script|style)\b[^>]*>.*?</\1>", " ", html, flags=re.IGNORECASE | re.DOTALL
+    )
+    text = _HTML_TAG_RE.sub(" ", without_blocks)
+    text = html_lib.unescape(text)
+    return _WHITESPACE_RE.sub(" ", text).strip()
 
 
 class ConfluenceSpaceEntity(BaseEntity):
@@ -144,7 +169,10 @@ class ConfluencePageEntity(FileEntity):
         None, description="Key of the space this page belongs to.", embeddable=False
     )
     body: Optional[str] = AirweaveField(
-        None, description="HTML body or excerpt of the page.", embeddable=True
+        None,
+        description="Raw HTML body of the page; used to build the downloadable "
+        "file that is converted to markdown for indexing (not embedded directly).",
+        embeddable=False,
     )
     version: Optional[int] = AirweaveField(
         None, description="Page version number.", embeddable=False
@@ -260,7 +288,7 @@ class ConfluenceBlogPostEntity(BaseEntity):
             title=data.get("title"),
             space_id=data.get("spaceId"),
             space_key=space_key,
-            body=data.get("body", {}).get("storage", {}).get("value"),
+            body=_strip_html(data.get("body", {}).get("storage", {}).get("value")),
             version=data.get("version", {}).get("number"),
             status=data.get("status"),
             site_url=site_url,
@@ -319,10 +347,16 @@ class ConfluenceCommentEntity(BaseEntity):
         breadcrumbs: List[Breadcrumb],
         parent_space_key: Optional[str] = None,
         site_url: Optional[str] = None,
+        parent_content_id: Optional[str] = None,
     ) -> ConfluenceCommentEntity:
-        """Build from a Confluence API inline-comment JSON object."""
-        comment_text = data.get("body", {}).get("storage", {}).get("value", "")
-        text_preview = _strip_html(comment_text)[:50]
+        """Build from a Confluence API inline-comment JSON object.
+
+        :param parent_content_id: ID of the page/blog the comment belongs to. The v2
+            inline-comments response omits ``container``, so callers pass the known
+            parent id; falls back to ``container.id`` when not supplied.
+        """
+        comment_text = _strip_html(data.get("body", {}).get("storage", {}).get("value", ""))
+        text_preview = comment_text[:50]
         name = text_preview + "..." if len(text_preview) == 50 else text_preview
         if not name:
             name = f"Comment {data['id']}"
@@ -334,7 +368,7 @@ class ConfluenceCommentEntity(BaseEntity):
             created_at=data.get("createdAt"),
             updated_at=data.get("updatedAt"),
             comment_id=data["id"],
-            parent_content_id=data.get("container", {}).get("id"),
+            parent_content_id=parent_content_id or data.get("container", {}).get("id"),
             parent_space_key=parent_space_key,
             text=comment_text,
             created_by=data.get("createdBy"),

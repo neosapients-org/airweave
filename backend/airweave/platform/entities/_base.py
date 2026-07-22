@@ -224,6 +224,12 @@ class FileEntity(BaseEntity):
 
     local_path: Optional[str] = Field(None, description="Local path of the file.")
 
+    doc_categories: Optional[List[str]] = Field(
+        None,
+        description="Document categories assigned by LLM classification during sync (1-3 values).",
+        json_schema_extra={"embeddable": True},
+    )
+
 
 class CodeFileEntity(FileEntity):
     """Code file entity schema."""

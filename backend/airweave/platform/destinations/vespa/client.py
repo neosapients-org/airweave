@@ -4,6 +4,7 @@ This module encapsulates all direct communication with Vespa, including:
 - Connection management
 - Document feeding (bulk insert)
 - Document deletion
+- Partial document updates
 - Query execution
 """
 
@@ -46,6 +47,12 @@ from airweave.schemas.search_result import (
 
 if TYPE_CHECKING:
     from vespa.application import Vespa
+
+
+RECLASSIFIABLE_VESPA_SCHEMAS = [
+    "file_entity",
+    "email_entity",
+]
 
 
 class VespaClient:
@@ -580,6 +587,71 @@ class VespaClient:
             query_time_ms=query_time_ms,
         )
 
+    async def partial_update_fields(
+        self,
+        schema: str,
+        doc_id: str,
+        fields: Dict[str, Any],
+    ) -> None:
+        """Partially update specific fields on an existing Vespa document."""
+        base_url = f"{settings.VESPA_URL}:{settings.VESPA_PORT}"
+        url = f"{base_url}/document/v1/airweave/{schema}/docid/{quote(doc_id, safe='')}"
+        body = {"fields": fields}
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.put(url, json=body)
+
+        if resp.status_code not in (200, 204):
+            raise RuntimeError(
+                f"Vespa partial update failed for {doc_id}: "
+                f"status={resp.status_code}, body={resp.text[:200]}"
+            )
+
+        self._logger.debug(
+            f"[VespaClient] Partial update OK: schema={schema}, doc_id={doc_id}, "
+            f"fields={list(fields.keys())}"
+        )
+
+    async def scroll_all_documents(
+        self,
+        collection_id: UUID,
+        page_size: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Fetch all reclassifiable documents for a collection using Vespa document API."""
+        base_url = f"{settings.VESPA_URL}:{settings.VESPA_PORT}"
+        all_docs: List[Dict[str, Any]] = []
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for schema in RECLASSIFIABLE_VESPA_SCHEMAS:
+                continuation: Optional[str] = None
+                selection = quote(
+                    f"{schema}.airweave_system_metadata_collection_id=='{collection_id}'",
+                    safe="",
+                )
+
+                while True:
+                    url = (
+                        f"{base_url}/document/v1/airweave/{schema}/docid"
+                        f"?selection={selection}&wantedDocumentCount={page_size}"
+                    )
+                    if continuation:
+                        url += f"&continuation={quote(continuation, safe='')}"
+
+                    resp = await client.get(url)
+                    if resp.status_code != 200:
+                        raise RuntimeError(
+                            f"Vespa scroll failed for schema={schema}: "
+                            f"status={resp.status_code}, body={resp.text[:200]}"
+                        )
+
+                    data = resp.json()
+                    all_docs.extend(data.get("documents", []))
+                    continuation = data.get("continuation")
+                    if not continuation:
+                        break
+
+        return all_docs
+
     def convert_hits_to_results(self, hits: List[Dict[str, Any]]) -> List[AirweaveSearchResult]:
         """Convert Vespa hits to AirweaveSearchResult objects.
 
@@ -609,6 +681,7 @@ class VespaClient:
                 system_metadata=self._extract_system_metadata(fields),
                 access=self._extract_access_control(fields),
                 source_fields=self._parse_payload(fields.get("payload")),
+                doc_categories=fields.get("doc_categories") or None,
             )
             results.append(result)
 

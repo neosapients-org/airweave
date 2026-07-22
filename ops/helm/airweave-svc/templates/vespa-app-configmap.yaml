@@ -1,0 +1,22 @@
+{{- if .Values.vespa.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "airweave-svc.fullname" . }}-vespa-app
+  labels:
+    {{- include "airweave-svc.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+binaryData:
+  services.xml: {{ .Files.Get "files/vespa-app/services.xml" | b64enc }}
+  hosts.xml: {{ .Files.Get "files/vespa-app/hosts.xml" | b64enc }}
+  validation-overrides.xml: {{ .Files.Get "files/vespa-app/validation-overrides.xml" | b64enc }}
+  default.xml: {{ .Files.Get "files/vespa-app/search/query-profiles/default.xml" | b64enc }}
+  hybrid.xml: {{ .Files.Get "files/vespa-app/search/query-profiles/hybrid.xml" | b64enc }}
+  base_entity.sd: {{ .Files.Get "files/vespa-app/schemas/base_entity.sd" | b64enc }}
+  file_entity.sd: {{ .Files.Get "files/vespa-app/schemas/file_entity.sd" | b64enc }}
+  code_file_entity.sd: {{ .Files.Get "files/vespa-app/schemas/code_file_entity.sd" | b64enc }}
+  email_entity.sd: {{ .Files.Get "files/vespa-app/schemas/email_entity.sd" | b64enc }}
+  web_entity.sd: {{ .Files.Get "files/vespa-app/schemas/web_entity.sd" | b64enc }}
+  init-vespa.sh: {{ .Files.Get "files/vespa-app/init-vespa.sh" | b64enc }}
+{{- end }}

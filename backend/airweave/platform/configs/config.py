@@ -120,7 +120,15 @@ class CodaConfig(SourceConfig):
 class ConfluenceConfig(SourceConfig):
     """Confluence configuration schema."""
 
-    pass
+    site: str = Field(
+        default="",
+        title="Site",
+        description=(
+            "Atlassian site to sync when the authorized account can access more than one "
+            "(e.g. 'sapientneo-1' or 'sapientneo-1.atlassian.net'). Matched against the "
+            "accessible-resources URL. If empty, the first accessible site is used."
+        ),
+    )
 
 
 class DropboxConfig(SourceConfig):

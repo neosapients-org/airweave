@@ -119,6 +119,13 @@ class Settings(BaseSettings):
 
     CODE_SUMMARIZER_ENABLED: bool = False
 
+    # Document classification during sync pipeline
+    CLASSIFICATION_ENABLED: bool = False
+    CLASSIFICATION_MODEL: str = "gpt-4o-mini"
+    CLASSIFICATION_VISION_MODEL: str = "gpt-4o"
+    CLASSIFICATION_BATCH_SIZE: int = 25
+    CLASSIFICATION_RATE_LIMIT_PER_HOUR: int = 1000  # Max documents classified per org per hour
+
     # Debug configuration
     DEBUG: bool = False
 
@@ -212,6 +219,14 @@ class Settings(BaseSettings):
     TEMPORAL_TASK_QUEUE: str = "airweave-sync-queue"
     TEMPORAL_DISABLE_SANDBOX: bool = False
     TEMPORAL_SDK_METRICS_PORT: int = 9090
+
+    # Cron for the forced-full orphan-cleanup companion attached to minute-level
+    # sync schedules. This is the ONLY run that reconciles source deletions
+    # (removes entities/vectors/graph nodes for docs deleted at the source), so
+    # it must stay a full sync. Incremental runs skip orphan cleanup by design.
+    # It does NOT re-embed unchanged docs (hash comparison still yields KEEP),
+    # so its embedding cost is ~zero. Default: weekly, Sundays 03:00 UTC.
+    SYNC_ORPHAN_CLEANUP_CRON: str = "0 3 * * 0"
 
     # Health probe configuration
     HEALTH_CHECK_TIMEOUT: float = 5.0

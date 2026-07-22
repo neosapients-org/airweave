@@ -1,0 +1,71 @@
+{{- if .Values.temporal.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: temporal
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: temporal
+    component: workflow
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  ports:
+    - port: {{ .Values.temporal.service.port }}
+      name: temporal
+      targetPort: 7233
+  clusterIP: None
+  selector:
+    app: temporal
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: temporal
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: temporal
+  template:
+    metadata:
+      labels:
+        app: temporal
+        component: workflow
+    spec:
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: temporal
+          image: {{ .Values.temporal.image }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 7233
+              name: temporal
+          env:
+            {{- range $key, $value := .Values.temporal.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+            {{- range .Values.temporal.secretEnv }}
+            - name: {{ .name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "airweave-svc.fullname" $ }}
+                  key: {{ .key }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.temporal.resources | nindent 12 }}
+          livenessProbe:
+            {{- toYaml .Values.temporal.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.temporal.readinessProbe | nindent 12 }}
+{{- end }}

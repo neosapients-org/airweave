@@ -520,16 +520,19 @@ class TestVespaDestination:
             assert result == "name == 'test'"
             mock_builder.filter_translator.translate.assert_called_once_with(filter_dict)
 
-    def test_translate_temporal_returns_none(self, collection_id):
-        """Test translate_temporal() returns None (not implemented)."""
+    def test_translate_temporal_returns_params(self, collection_id):
+        """Test translate_temporal() returns Vespa temporal params."""
         dest = VespaDestination()
 
         from airweave.schemas.search import AirweaveTemporalConfig
-        config = MagicMock(spec=AirweaveTemporalConfig)
+        config = AirweaveTemporalConfig(weight=0.4, reference_field="updated_at")
 
         result = dest.translate_temporal(config)
 
-        assert result is None
+        assert result == {
+            "freshness_weight": 0.4,
+            "freshness_field": "updated_at",
+        }
 
     @pytest.mark.asyncio
     async def test_get_vector_config_names(self, collection_id):

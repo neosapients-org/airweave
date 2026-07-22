@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, mo
 from airweave.core.readable_id import generate_readable_id
 from airweave.core.shared_models import CollectionStatus
 from airweave.domains.sync_pipeline.config.base import SyncConfig
+from airweave.schemas.search import AirweaveTemporalConfig
 
 
 class SourceConnectionSummary(BaseModel):
@@ -90,6 +91,13 @@ class CollectionCreate(CollectionBase):
             "This provides collection-level defaults that can be overridden at sync or job level."
         ),
     )
+    temporal_config: Optional[AirweaveTemporalConfig] = Field(
+        None,
+        description=(
+            "Default temporal relevance configuration for searches in this collection. "
+            "Requests may override this per search."
+        ),
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -131,6 +139,13 @@ class CollectionUpdate(BaseModel):
         description=(
             "Default sync configuration for all syncs in this collection. "
             "This provides collection-level defaults that can be overridden at sync or job level."
+        ),
+    )
+    temporal_config: Optional[AirweaveTemporalConfig] = Field(
+        None,
+        description=(
+            "Default temporal relevance configuration for searches in this collection. "
+            "Requests may override this per search."
         ),
     )
 
@@ -179,6 +194,10 @@ class CollectionInDBBase(CollectionBase):
             "Default sync configuration for all syncs in this collection. "
             "Overridable at sync and job level."
         ),
+    )
+    temporal_config: Optional[AirweaveTemporalConfig] = Field(
+        None,
+        description="Default temporal relevance configuration for this collection.",
     )
     created_at: datetime = Field(
         ...,

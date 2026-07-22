@@ -792,6 +792,7 @@ async def test_delete_delegates():
     svc = _build_svc()
     svc._cancel_active_sync = AsyncMock(return_value=True)
     svc._wait_for_terminal = AsyncMock()
+    svc._purge_vespa_now = AsyncMock()
     svc._schedule_cleanup = AsyncMock()
 
     await svc.delete(
@@ -803,7 +804,72 @@ async def test_delete_delegates():
     )
     svc._cancel_active_sync.assert_awaited_once()
     svc._wait_for_terminal.assert_awaited_once()
+    svc._purge_vespa_now.assert_awaited_once()
     svc._schedule_cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_delete_purges_vespa_before_scheduling_cleanup():
+    """Inline purge must run before the async cleanup to close the stale-data window."""
+    svc = _build_svc()
+    svc._cancel_active_sync = AsyncMock(return_value=False)
+    svc._wait_for_terminal = AsyncMock()
+    svc._purge_vespa_now = AsyncMock()
+    svc._schedule_cleanup = AsyncMock()
+
+    order = MagicMock()
+    order.attach_mock(svc._purge_vespa_now, "purge")
+    order.attach_mock(svc._schedule_cleanup, "schedule")
+
+    sync_id, collection_id, organization_id = uuid4(), uuid4(), uuid4()
+    ctx = _mock_ctx()
+    await svc.delete(
+        AsyncMock(),
+        sync_id=sync_id,
+        collection_id=collection_id,
+        organization_id=organization_id,
+        ctx=ctx,
+    )
+
+    svc._purge_vespa_now.assert_awaited_once_with(sync_id, collection_id, organization_id, ctx)
+    assert [call[0] for call in order.mock_calls] == ["purge", "schedule"]
+
+
+@pytest.mark.asyncio
+async def test_purge_vespa_now_deletes_by_sync_id():
+    svc = _build_svc()
+    sync_id, collection_id, organization_id = uuid4(), uuid4(), uuid4()
+    ctx = _mock_ctx()
+
+    vespa = AsyncMock()
+    with patch(
+        "airweave.domains.syncs.service.VespaDestination.create",
+        new_callable=AsyncMock,
+        return_value=vespa,
+    ) as create:
+        await svc._purge_vespa_now(sync_id, collection_id, organization_id, ctx)
+
+    create.assert_awaited_once_with(
+        collection_id=collection_id,
+        organization_id=organization_id,
+        logger=ctx.logger,
+        soft_fail=True,
+    )
+    vespa.delete_by_sync_id.assert_awaited_once_with(sync_id)
+
+
+@pytest.mark.asyncio
+async def test_purge_vespa_now_swallows_errors():
+    """A Vespa failure must not fail the delete — the async workflow retries."""
+    svc = _build_svc()
+    ctx = _mock_ctx()
+    with patch(
+        "airweave.domains.syncs.service.VespaDestination.create",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("vespa down"),
+    ):
+        await svc._purge_vespa_now(uuid4(), uuid4(), uuid4(), ctx)
+    ctx.logger.error.assert_called()
 
 
 # ---------------------------------------------------------------------------

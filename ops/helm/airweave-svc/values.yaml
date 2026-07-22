@@ -1,0 +1,513 @@
+# Default values for airweave-svc
+# This is a YAML-formatted file.
+
+replicaCount: 1
+
+image:
+  repository: 679451892000.dkr.ecr.us-east-1.amazonaws.com/airweave-svc-dev-use1-shared1
+  pullPolicy: Always
+  tag: latest
+
+imagePullSecrets: []
+nameOverride: ''
+fullnameOverride: ''
+
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ''
+
+podAnnotations:
+  prometheus.io/scrape: 'true'
+  prometheus.io/port: '8001'
+  prometheus.io/path: '/metrics'
+
+podLabels:
+  app.kubernetes.io/component: airweave
+  app.kubernetes.io/part-of: neo-platform
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  port: 8001
+  targetPort: 8001
+  annotations: {}
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/backend-protocol: HTTP
+  hosts:
+    - host: airweave.internal
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  limits:
+    cpu: '1'
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+volumes:
+  - name: tmp
+    emptyDir: {}
+  - name: local-storage
+    emptyDir: {}
+  - name: cache
+    emptyDir: {}
+
+volumeMounts:
+  - name: tmp
+    mountPath: /tmp
+  - name: local-storage
+    mountPath: /data/airweave-storage
+  - name: cache
+    mountPath: /.cache
+
+nodeSelector:
+  karpenter.sh/nodepool: dev-use1-shared1-generic-arm64-w50
+
+tolerations:
+  - key: kubernetes.io/arch
+    operator: Equal
+    value: arm64
+    effect: NoExecute
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - airweave-svc
+          topologyKey: kubernetes.io/hostname
+
+# =============================================================================
+# Non-sensitive environment variables (ConfigMap)
+# =============================================================================
+env:
+  # Poetry — disable virtualenv creation so installed packages are used directly
+  POETRY_VIRTUALENVS_CREATE: '0'
+  POETRY_CACHE_DIR: /tmp/poetry-cache
+
+  # Application
+  ENVIRONMENT: dev
+  LOG_LEVEL: info
+  LOCAL_DEVELOPMENT: 'false'
+  AUTH_ENABLED: 'true'
+  RUN_ALEMBIC_MIGRATIONS: 'true'
+  RUN_DB_SYNC: 'true'
+  ENABLE_INTERNAL_SOURCES: 'false'
+
+  # PostgreSQL (host/port/db/user — password in secrets)
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: '5432'
+  POSTGRES_DB: airweave
+  POSTGRES_USER: airweave
+  POSTGRES_SSLMODE: disable
+
+  # Redis (host/port — password in secrets)
+  REDIS_HOST: redis
+  REDIS_PORT: '6379'
+  REDIS_DB: '2'
+
+  # Vespa
+  VESPA_URL: http://vespa
+  VESPA_PORT: '8081'
+  VESPA_CLUSTER: airweave
+
+  # Temporal
+  TEMPORAL_HOST: temporal
+  TEMPORAL_PORT: '7233'
+  TEMPORAL_NAMESPACE: default
+  TEMPORAL_TASK_QUEUE: airweave-sync-queue
+
+  # Embedding configuration
+  DENSE_EMBEDDER: openai_text_embedding_3_small
+  EMBEDDING_DIMENSIONS: '1536'
+  SPARSE_EMBEDDER: fastembed_bm25
+
+  # Classification (LLM-based document categorisation during sync)
+  CLASSIFICATION_ENABLED: 'true'
+  CLASSIFICATION_MODEL: gpt-4o-mini
+  CLASSIFICATION_BATCH_SIZE: '25'
+
+  # Storage backend
+  STORAGE_BACKEND: aws
+  STORAGE_AWS_REGION: us-east-1
+  STORAGE_AWS_BUCKET: airweave-dev-use1-shared1
+
+  # Public URLs (required for OAuth redirect_uri and post-OAuth browser redirect)
+  API_FULL_URL: https://airweave.internal
+  APP_FULL_URL: https://neo-sapients.neosapientai.com/meridian-mesh/connectors
+
+  # Auth0
+  AUTH0_RULE_NAMESPACE: https://airweave.ai
+
+  # Sync tuning
+  SYNC_MAX_WORKERS: '20'
+  SYNC_THREAD_POOL_SIZE: '100'
+  # Forced-full orphan-cleanup companion cadence (reconciles source deletions;
+  # does not re-embed unchanged docs). Weekly, Sundays 03:00 UTC.
+  SYNC_ORPHAN_CLEANUP_CRON: '0 3 * * 0'
+  WEB_FETCHER_MAX_CONCURRENT: '10'
+  OPENAI_MAX_CONCURRENT: '20'
+
+  # Docling OCR
+  DOCLING_BASE_URL: http://docling:5001
+
+  # Svix webhooks
+  SVIX_URL: http://svix:8071
+  WEBHOOK_VERIFY_ENDPOINTS: 'true'
+
+  # Observability
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://signoz-otel-collector.signoz.svc.cluster.local:4318
+  OTEL_SERVICE_NAME: airweave-svc
+  OTEL_LOGS_EXPORTER: otlp
+  OTEL_RESOURCE_ATTRIBUTES: service.name=airweave-svc,service.version=1.0.0,deployment.environment=production,service.namespace=neo-platform
+
+  # SSRF protection
+  SSRF_ALLOW_PRIVATE_NETWORKS: 'false'
+
+  # PostHog (public key, non-sensitive)
+  POSTHOG_HOST: https://eu.i.posthog.com
+  ANALYTICS_ENABLED: 'true'
+
+# =============================================================================
+# External Secrets configuration
+# =============================================================================
+externalSecrets:
+  enabled: true
+  secretStoreName: aws-secrets-manager
+  secretName: neo-airweave-svc-dev-use1-shared1-secrets
+  refreshInterval: 0
+  secretVersion: "AWSCURRENT"
+
+# =============================================================================
+# Temporal Worker
+# =============================================================================
+worker:
+  enabled: true
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: 500m
+      memory: 768Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+# =============================================================================
+# PostgreSQL
+# =============================================================================
+postgresql:
+  enabled: true
+  image: postgres:16
+  replicas: 1
+  database: airweave
+  username: airweave
+  storage: 10Gi
+  storageClassName: gp2
+  service:
+    port: 5432
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  args:
+    - -c
+    - max_connections=200
+    - -c
+    - shared_buffers=128MB
+  env:
+    POSTGRES_DB: airweave
+    POSTGRES_USER: airweave
+    PGDATA: /var/lib/postgresql/data/pgdata
+  secretEnv:
+    - name: POSTGRES_PASSWORD
+      key: POSTGRES_PASSWORD
+  livenessProbe:
+    exec:
+      command: ["pg_isready", "-U", "airweave"]
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    exec:
+      command: ["pg_isready", "-U", "airweave"]
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# =============================================================================
+# Redis
+# =============================================================================
+redis:
+  enabled: true
+  image: redis:7-alpine
+  replicas: 1
+  storage: 2Gi
+  storageClassName: gp2
+  service:
+    port: 6379
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+  command:
+    - redis-server
+    - --requirepass
+    - $(REDIS_PASSWORD)
+    - --appendonly
+    - "yes"
+  env: {}
+  secretEnv:
+    - name: REDIS_PASSWORD
+      key: REDIS_PASSWORD
+  livenessProbe:
+    exec:
+      command: ["redis-cli", "--no-auth-warning", "-a", "$(REDIS_PASSWORD)", "ping"]
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    exec:
+      command: ["redis-cli", "--no-auth-warning", "-a", "$(REDIS_PASSWORD)", "ping"]
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# =============================================================================
+# Temporal
+# =============================================================================
+temporal:
+  enabled: true
+  image: temporalio/auto-setup:1.24.2
+  initImage: temporalio/admin-tools:1.27.2-tctl-1.18.2-cli-1.3.0
+  service:
+    port: 7233
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+  env:
+    DB: postgres12
+    DB_PORT: '5432'
+    POSTGRES_SEEDS: postgres
+    POSTGRES_USER: airweave
+    TEMPORAL_NAMESPACE: default
+  secretEnv:
+    - name: POSTGRES_PWD
+      key: POSTGRES_PASSWORD
+  livenessProbe:
+    tcpSocket:
+      port: 7233
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    tcpSocket:
+      port: 7233
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  searchAttributes:
+    - name: SyncId
+      type: Keyword
+    - name: SyncJobId
+      type: Keyword
+    - name: SourceConnectionId
+      type: Keyword
+    - name: OrganizationId
+      type: Keyword
+  initJob:
+    backoffLimit: 5
+    ttlSecondsAfterFinished: 3600
+
+# =============================================================================
+# Vespa
+# =============================================================================
+vespa:
+  enabled: true
+  image: vespaengine/vespa:8
+  storage: 20Gi
+  storageClassName: gp2
+  service:
+    queryPort: 8081
+    configPort: 19071
+  resources:
+    limits:
+      cpu: '2'
+      memory: 4Gi
+    requests:
+      cpu: 500m
+      memory: 2Gi
+  env:
+    VESPA_IGNORE_NOT_ENOUGH_MEMORY: 'true'
+    VESPA_CONFIGSERVER_JVMARGS: '-Xms128m -Xmx512m'
+    VESPA_CONFIGSERVERS: vespa-0.vespa.airweave-svc.svc.cluster.local
+  initJob:
+    backoffLimit: 5
+    ttlSecondsAfterFinished: 3600
+  livenessProbe:
+    httpGet:
+      path: /state/v1/health
+      port: 19071
+    initialDelaySeconds: 60
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readinessProbe:
+    httpGet:
+      path: /state/v1/health
+      port: 19071
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
+# =============================================================================
+# Svix
+# =============================================================================
+svix:
+  enabled: true
+  image: svix/svix-server
+  service:
+    port: 8071
+  resources:
+    limits:
+      cpu: 250m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+  env:
+    WAIT_FOR: 'true'
+    SVIX_QUEUE_TYPE: redis
+    SVIX_CACHE_TYPE: none
+    SVIX_WHITELIST_SUBNETS: '[0.0.0.0/0, ::/0]'
+  secretEnv:
+    - name: SVIX_REDIS_DSN
+      key: SVIX_REDIS_DSN
+    - name: SVIX_DB_DSN
+      key: SVIX_DB_DSN
+    - name: SVIX_JWT_SECRET
+      key: SVIX_JWT_SECRET
+  livenessProbe:
+    exec:
+      command: ["svix-server", "healthcheck", "http://localhost:8071"]
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    exec:
+      command: ["svix-server", "healthcheck", "http://localhost:8071"]
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+# =============================================================================
+# Docling (OCR / document conversion)
+# =============================================================================
+docling:
+  enabled: true
+  image: ghcr.io/docling-project/docling-serve:latest
+  service:
+    port: 5001
+  resources:
+    limits:
+      cpu: '2'
+      memory: 4Gi
+      ephemeral-storage: 10Gi
+    requests:
+      cpu: 500m
+      memory: 2Gi
+      ephemeral-storage: 2Gi
+  env:
+    DOCLING_SERVE_ENABLE_UI: 'false'
+    DOCLING_NUM_THREADS: '4'
+    DOCLING_SERVE_MAX_SYNC_WAIT: '300'
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 5001
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 5001
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    timeoutSeconds: 10
+    failureThreshold: 5

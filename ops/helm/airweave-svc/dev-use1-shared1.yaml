@@ -1,0 +1,119 @@
+# Dev environment overrides for airweave-svc
+# Only values that differ from values.yaml
+
+replicaCount: 1
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::679451892000:role/airweave-svc-dev-use1-shared1-irsa
+
+image:
+  pullPolicy: Always
+  tag: "latest"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 2Gi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+
+env:
+  LOG_LEVEL: debug
+  ENVIRONMENT: dev
+  CLASSIFICATION_ENABLED: 'true'
+  AUTH_ENABLED: 'false'
+  API_FULL_URL: https://dev-dp.neosapientai.com/v1/meridian
+  HF_HOME: /tmp/hf_cache
+  XDG_CACHE_HOME: /tmp/cache
+
+ingress:
+  enabled: false
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 120
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+nodeSelector:
+  karpenter.sh/nodepool: dev-use1-shared1-generic-arm64-w50
+
+tolerations:
+  - key: kubernetes.io/arch
+    operator: Equal
+    value: arm64
+    effect: NoExecute
+
+postgresql:
+  storage: 5Gi
+  # Shared by the airweave backend, worker, Temporal, and Svix. 50 was too low:
+  # a node reschedule caused a simultaneous reconnect that exhausted the pool
+  # ("FATAL: sorry, too many clients already") and 500'd all DB-backed endpoints.
+  args:
+    - -c
+    - max_connections=200
+    - -c
+    - shared_buffers=128MB
+  resources:
+    limits:
+      cpu: 250m
+      memory: 1Gi
+    requests:
+      cpu: 50m
+      memory: 512Mi
+
+redis:
+  storage: 1Gi
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi 
+    requests:
+      cpu: 25m
+      memory: 64Mi
+
+temporal:
+  resources:
+    limits:
+      cpu: 250m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+vespa:
+  storage: 10Gi
+  resources:
+    limits:
+      cpu: '1'
+      memory: 6Gi
+    requests:
+      cpu: 250m
+      memory: 3Gi
+
+worker:
+  replicaCount: 1
+  resources:
+    limits:
+      cpu: '2'
+      memory: 3Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi

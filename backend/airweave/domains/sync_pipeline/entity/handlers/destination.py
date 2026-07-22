@@ -18,6 +18,7 @@ from airweave.domains.sync_pipeline.entity.actions import (
 )
 from airweave.domains.sync_pipeline.entity.handlers.protocol import EntityActionHandler
 from airweave.domains.sync_pipeline.exceptions import SyncFailureError
+from airweave.domains.sync_pipeline.processors.classifier import ClassifierProcessor
 from airweave.domains.sync_pipeline.protocols import ChunkEmbedProcessorProtocol
 from airweave.platform.destinations._base import BaseDestination
 
@@ -48,6 +49,7 @@ class DestinationHandler(EntityActionHandler):
         """Initialize with destination list and chunk/embed processor."""
         self._destinations = destinations
         self._processor = processor
+        self._classifier = ClassifierProcessor()
 
     @property
     def name(self) -> str:
@@ -152,7 +154,36 @@ class DestinationHandler(EntityActionHandler):
         runtime: "SyncRuntime",
     ) -> None:
         """Process entities through ChunkEmbedProcessor and insert into destinations."""
-        copies = [e.model_copy(deep=True) for e in entities]
+        # Skip image entities — Docling emits base64-encoded markdown for images
+        # which the chunker splits into many noisy chunks. Until OCR fully replaces
+        # the chunkable content, ignore images outright to keep Vespa clean.
+        filtered: List["BaseEntity"] = []
+        skipped_images = 0
+        for e in entities:
+            mime = getattr(e, "mime_type", None) or ""
+            if mime.startswith("image/"):
+                skipped_images += 1
+                continue
+            filtered.append(e)
+        if skipped_images:
+            sync_context.logger.info(
+                f"[{self.name}] Skipped {skipped_images} image entit"
+                f"{'y' if skipped_images == 1 else 'ies'} — image ingestion disabled"
+            )
+        if not filtered:
+            return
+
+        copies = [e.model_copy(deep=True) for e in filtered]
+
+        # Classify documents before chunking so doc_categories are baked into embeddings
+        if self._classifier.enabled:
+            try:
+                copies = await self._classifier.process(copies)
+            except Exception as e:
+                sync_context.logger.warning(
+                    f"[{self.name}] Classification failed, continuing without: {e}"
+                )
+
         proc_start = asyncio.get_running_loop().time()
         processed = await self._processor.process(copies, sync_context, runtime)
         proc_elapsed = asyncio.get_running_loop().time() - proc_start

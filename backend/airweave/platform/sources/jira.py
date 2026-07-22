@@ -19,6 +19,7 @@ from airweave.core.shared_models import RateLimitLevel
 from airweave.domains.browse_tree.types import NodeSelectionData
 from airweave.domains.sources.exceptions import SourceAuthError
 from airweave.domains.sources.token_providers.protocol import TokenProviderProtocol
+from airweave.domains.storage import FileSkippedException
 from airweave.domains.storage.file_service import FileService
 from airweave.domains.syncs.cursors.cursor import SyncCursor
 from airweave.platform.configs.auth import JiraAuthConfig
@@ -294,9 +295,14 @@ class JiraSource(BaseSource):
             page += 1
 
     async def _generate_issue_entities(
-        self, project: JiraProjectEntity
+        self, project: JiraProjectEntity, files: FileService | None = None
     ) -> AsyncGenerator[JiraIssueEntity, None]:
-        """Generate JiraIssueEntity for each issue in the given project using JQL search."""
+        """Generate JiraIssueEntity for each issue in the given project using JQL search.
+
+        Each issue is materialized into a synthesized Markdown file via ``files`` so it
+        flows through the standard document pipeline (chunking, classification, embedding,
+        search) exactly like Confluence pages and other document entities.
+        """
         project_key = project.project_key
         self.logger.info(
             f"Starting issue entity generation for project: {project_key} ({project.name})"
@@ -329,12 +335,34 @@ class JiraSource(BaseSource):
             self.logger.info(f"Found {len(issues)} issues (total available: {total})")
 
             for issue_data in issues:
-                yield JiraIssueEntity.from_api(
+                issue_entity = JiraIssueEntity.from_api(
                     issue_data,
                     project_breadcrumb=project_breadcrumb,
                     project_key=project_key,
                     site_url=self.site_url,
                 )
+
+                if files is None:
+                    # Without a FileService the issue cannot be materialized into a
+                    # searchable document, so skip it rather than emit an unprocessable
+                    # FileEntity with no local_path.
+                    self.logger.warning(
+                        f"No file service available; skipping issue {issue_entity.issue_key}"
+                    )
+                    continue
+
+                try:
+                    await files.save_bytes(
+                        entity=issue_entity,
+                        content=issue_entity.build_document_content().encode("utf-8"),
+                        filename_with_extension=f"{issue_entity.issue_key}.md",
+                        logger=self.logger,
+                    )
+                except FileSkippedException as e:
+                    self.logger.debug(f"Skipping issue {issue_entity.issue_key}: {e.reason}")
+                    continue
+
+                yield issue_entity
 
             is_last = data.get("isLast", True)
             next_page_token = data.get("nextPageToken")
@@ -580,7 +608,7 @@ class JiraSource(BaseSource):
             yield project_entity
 
             project_issue_count = 0
-            async for issue_entity in self._generate_issue_entities(project_entity):
+            async for issue_entity in self._generate_issue_entities(project_entity, files):
                 issue_identifier = (issue_entity.entity_id, issue_entity.issue_key)
 
                 if issue_identifier in processed_entities:

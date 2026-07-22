@@ -15,7 +15,12 @@ from airweave.core.protocols.pubsub import PubSub
 from airweave.domains.embedders.protocols import DenseEmbedderProtocol, SparseEmbedderProtocol
 from airweave.platform.destinations._base import BaseDestination
 from airweave.platform.sources._base import BaseSource
-from airweave.schemas.search import RetrievalStrategy, SearchDefaults, SearchRequest
+from airweave.schemas.search import (
+    AirweaveTemporalConfig,
+    RetrievalStrategy,
+    SearchDefaults,
+    SearchRequest,
+)
 from airweave.search.context import SearchContext
 from airweave.search.emitter import EventEmitter
 from airweave.search.helpers import search_helpers
@@ -173,6 +178,10 @@ class SearchFactory:
             organization_id=collection.organization_id,
         )
 
+        effective_temporal = search_request.temporal_relevance
+        if effective_temporal is None and getattr(collection, "temporal_config", None):
+            effective_temporal = AirweaveTemporalConfig.model_validate(collection.temporal_config)
+
         search_context = SearchContext(
             request_id=request_id,
             collection_id=collection_id,
@@ -183,6 +192,7 @@ class SearchFactory:
             limit=params["limit"],
             emitter=emitter,
             query=search_request.query,
+            temporal_config=effective_temporal,
             **operations,
         )
 

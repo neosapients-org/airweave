@@ -139,14 +139,33 @@ def test_cleanup_spec_has_force_full_sync():
     assert specs[0].force_full_sync is False
 
 
-def test_cleanup_cron_is_daily():
-    """Verify cleanup cron_override matches daily pattern N H * * *."""
-    import re
-
+def test_cleanup_cron_comes_from_settings(monkeypatch):
+    """The cleanup companion cron is driven by SYNC_ORPHAN_CLEANUP_CRON."""
+    monkeypatch.setattr(
+        "airweave.domains.temporal.schedule_service.settings.SYNC_ORPHAN_CLEANUP_CRON",
+        "30 4 * * 3",
+    )
     specs = TemporalScheduleService._schedule_specs_for_cron("*/5 * * * *")
-    cleanup_spec = specs[1]
-    assert cleanup_spec.cron_override is not None
-    assert re.match(r"^\d{1,2} \d{1,2} \* \* \*$", cleanup_spec.cron_override)
+    assert specs[1].cron_override == "30 4 * * 3"
+
+
+def test_cleanup_cron_defaults_to_weekly():
+    """Default cleanup cadence is weekly (day-of-week field set, not '*')."""
+    specs = TemporalScheduleService._schedule_specs_for_cron("*/5 * * * *")
+    cron = specs[1].cron_override
+    assert cron is not None
+    # Weekly => 5 fields with a non-wildcard day-of-week (last field).
+    assert cron.split()[-1] != "*"
+
+
+def test_invalid_cleanup_cron_falls_back_to_weekly(monkeypatch):
+    """A malformed env value must not break scheduling — fall back to default."""
+    monkeypatch.setattr(
+        "airweave.domains.temporal.schedule_service.settings.SYNC_ORPHAN_CLEANUP_CRON",
+        "not-a-cron",
+    )
+    specs = TemporalScheduleService._schedule_specs_for_cron("*/5 * * * *")
+    assert specs[1].cron_override == "0 3 * * 0"
 
 
 # ---------------------------------------------------------------------------

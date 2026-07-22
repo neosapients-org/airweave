@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import computed_field
 
 from airweave.platform.entities._airweave_field import AirweaveField
-from airweave.platform.entities._base import BaseEntity, Breadcrumb
+from airweave.platform.entities._base import BaseEntity, Breadcrumb, FileEntity
 
 
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
@@ -77,12 +77,24 @@ class JiraProjectEntity(BaseEntity):
         return self.web_url_value or ""
 
 
-class JiraIssueEntity(BaseEntity):
-    """Schema for a Jira Issue.
+class JiraIssueEntity(FileEntity):
+    """Schema for a Jira Issue treated as a document.
+
+    Issues are stored as synthesized text documents so they integrate with the
+    standard document processing pipeline (chunking, categorization, search).
+    The text document is built from embeddable fields during entity creation.
 
     Reference:
         https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issues/
     """
+
+    # Inherited from FileEntity:
+    # - url: web link to the issue (set during sync)
+    # - size: 0 (content is materialized to a local file, not stored on entity fields)
+    # - file_type: "md"
+    # - mime_type: "text/markdown"
+    # - local_path: path to the synthesized .md file (set by the source via FileService)
+    # - doc_categories: assigned by LLM during classification
 
     issue_id: str = AirweaveField(
         ..., description="Unique identifier for the issue.", is_entity_id=True
@@ -120,6 +132,34 @@ class JiraIssueEntity(BaseEntity):
         """UI link for the Jira issue."""
         return self.web_url_value or ""
 
+    def build_document_content(self) -> str:
+        """Render the issue as a Markdown document for the indexing pipeline.
+
+        Jira issues have no downloadable file, so the source materializes this
+        text into a local file (via FileService) that flows through the standard
+        document pipeline (chunking, classification, embedding, search).
+
+        @returns: Markdown document combining the issue's key metadata and body.
+        @example:
+            >>> entity.build_document_content()
+            '# KAN-6: Login fails\\n\\n**Issue**: KAN-6\\n...'
+        """
+        heading = f"{self.issue_key}: {self.summary}" if self.issue_key else self.summary
+        lines: List[str] = [f"# {heading}", ""]
+
+        metadata = [
+            ("Issue", self.issue_key),
+            ("Project", self.project_key),
+            ("Type", self.issue_type),
+            ("Status", self.status),
+        ]
+        lines.extend(f"**{label}**: {value}" for label, value in metadata if value)
+
+        if self.description:
+            lines.extend(["", "## Description", "", self.description])
+
+        return "\n".join(lines)
+
     @classmethod
     def from_api(
         cls,
@@ -129,7 +169,12 @@ class JiraIssueEntity(BaseEntity):
         project_key: str,
         site_url: str | None = None,
     ) -> JiraIssueEntity:
-        """Build a JiraIssueEntity from the raw Jira API response dict."""
+        """Build a JiraIssueEntity from the raw Jira API response dict.
+
+        Jira issues are treated as documents for the indexing pipeline so they flow
+        through the same chunking, classification, and embedding processes as other
+        document entities (Confluence pages, Google Drive files, etc).
+        """
         fields = data.get("fields", {})
         issue_key = data.get("key", "unknown")
 
@@ -153,12 +198,19 @@ class JiraIssueEntity(BaseEntity):
         updated_time = _parse_datetime(fields.get("updated")) or created_time
         web_url_value = f"{site_url}/browse/{issue_key}" if site_url else None
 
+        # FileEntity fields: local_path is populated by the source once the
+        # synthesized Markdown document is written to disk via FileService.
         return cls(
             entity_id=issue_id,
             breadcrumbs=[project_breadcrumb],
             name=summary,
             created_at=created_time,
             updated_at=updated_time,
+            url=web_url_value or "",
+            size=0,
+            file_type="md",
+            mime_type="text/markdown",
+            local_path=None,
             issue_id=issue_id,
             issue_key=issue_key,
             summary=summary,

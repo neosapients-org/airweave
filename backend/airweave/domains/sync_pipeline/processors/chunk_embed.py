@@ -15,7 +15,7 @@ import json
 from typing import TYPE_CHECKING, Any, Dict, List, Tuple
 
 from airweave.domains.converters.protocols import ConverterRegistryProtocol
-from airweave.domains.embedders.exceptions import EmbedderProviderError
+from airweave.domains.embedders.exceptions import EmbedderProviderError, EmbedderQuotaError
 from airweave.domains.embedders.protocols import DenseEmbedderProtocol, SparseEmbedderProtocol
 from airweave.domains.sync_pipeline.exceptions import EntityProcessingError, SyncFailureError
 from airweave.domains.sync_pipeline.pipeline.text_builder import TextualRepresentationBuilder
@@ -305,6 +305,31 @@ class ChunkEmbedProcessor:
         try:
             results = await self._dense_embedder.embed_many(dense_texts)
             return results, chunk_entities
+        except EmbedderQuotaError as e:
+            # Quota exhaustion is a standing account condition, not a per-entity
+            # problem. Fail the whole sync fast instead of dropping into the
+            # per-entity fallback, which would keep hitting (and billing) the
+            # exhausted quota one request at a time.
+            # Full provider detail (incl. raw 429 body) stays in the logs.
+            sync_context.logger.error(
+                "[ChunkEmbedProcessor] Aborting sync — embedding provider quota "
+                "exhausted (%s): %s",
+                e.provider,
+                e.message,
+            )
+            # User-facing message: shown verbatim in the connector UI, so keep it
+            # clean and actionable — no internal prefixes or raw provider JSON.
+            provider_label = e.provider.capitalize() if e.provider else "The embedding provider"
+            # NOTE: no `from e` — the surfaced job error is resolved via
+            # get_error_message(), which walks __cause__ to the deepest link. The
+            # raw provider 429 (chained under EmbedderQuotaError) must NOT become
+            # the user-facing text, so we deliberately break the cause chain here.
+            # The full detail is already logged above.
+            raise SyncFailureError(
+                f"{provider_label} embedding quota exhausted. The API key for this "
+                f"deployment has no remaining quota — add billing/credits to the key, "
+                f"or switch the embedder (DENSE_EMBEDDER) to a local model, then re-sync."
+            )
         except EmbedderProviderError as e:
             if e.retryable:
                 raise

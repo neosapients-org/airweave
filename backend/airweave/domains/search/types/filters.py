@@ -26,6 +26,9 @@ class FilterableField(str, Enum):
     CREATED_AT = "created_at"
     UPDATED_AT = "updated_at"
 
+    # Document classification
+    DOC_CATEGORY = "doc_category"
+
     # Breadcrumb struct fields (for hierarchy navigation)
     BREADCRUMBS_ENTITY_ID = "breadcrumbs.entity_id"
     BREADCRUMBS_NAME = "breadcrumbs.name"
@@ -61,6 +64,7 @@ _TEXT_FIELDS: frozenset[FilterableField] = frozenset(
     {
         FilterableField.ENTITY_ID,
         FilterableField.NAME,
+        FilterableField.DOC_CATEGORY,
         FilterableField.BREADCRUMBS_ENTITY_ID,
         FilterableField.BREADCRUMBS_NAME,
         FilterableField.BREADCRUMBS_ENTITY_TYPE,

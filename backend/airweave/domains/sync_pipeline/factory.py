@@ -163,6 +163,7 @@ class SyncFactory(SyncFactoryProtocol):
 
         sc = await self._resolve_source_connection(db, sync, ctx)
         sc_id = sc.id  # extract before _build_source can expire the ORM instance via OAuth refresh
+        sc_short_name = sc.short_name  # extract before _build_source can expire the ORM instance via OAuth refresh
 
         # 2. Build source, destinations, tracker
         sync_logger = LoggerConfigurator.configure_logger(
@@ -184,7 +185,7 @@ class SyncFactory(SyncFactoryProtocol):
             execution_config=resolved_config,
             access_token=access_token,
         )
-        source_entry = self._source_registry.get(sc.short_name)
+        source_entry = self._source_registry.get(sc_short_name)
         destinations = await self._build_destinations(
             db=db,
             sync=sync,

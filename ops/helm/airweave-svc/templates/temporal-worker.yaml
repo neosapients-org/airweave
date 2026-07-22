@@ -1,0 +1,65 @@
+{{- if .Values.worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "airweave-svc.fullname" . }}-worker
+  labels:
+    {{- include "airweave-svc.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "airweave-svc.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.externalSecrets.enabled }}
+        checksum/external-secret: {{ include (print $.Template.BasePath "/external-secrets.yaml") . | sha256sum }}
+        {{- end }}
+      labels:
+        {{- include "airweave-svc.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: {{ include "airweave-svc.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: worker
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["python", "-m", "airweave.domains.temporal.worker"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "airweave-svc.fullname" . }}
+            {{- if .Values.externalSecrets.enabled }}
+            - secretRef:
+                name: {{ include "airweave-svc.fullname" . }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: local-storage
+              mountPath: /data/airweave-storage
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: local-storage
+          emptyDir: {}
+{{- end }}
