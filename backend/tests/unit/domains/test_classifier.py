@@ -124,6 +124,27 @@ class TestClassifierProcessorEnabled:
 
         assert entity.doc_categories == ["financial_report"]
 
+    def test_travel_and_personal_are_predefined_categories(self):
+        """travel and personal are first-class categories, not folded into 'other'."""
+        assert "travel" in PREDEFINED_CATEGORIES
+        assert "personal" in PREDEFINED_CATEGORIES
+
+    @pytest.mark.asyncio
+    async def test_accepts_travel_and_personal_classifications(self):
+        """A travel itinerary is classified as 'travel', not dropped to 'other'."""
+        entity = _make_file_entity(text="Europe backpacking itinerary: Day 1 Prague, Day 2 Vienna")
+        processor = ClassifierProcessor()
+        mock_client = AsyncMock()
+        mock_client.chat.completions.create = AsyncMock(
+            return_value=_llm_response(["travel", "personal"])
+        )
+
+        with patch.object(type(processor), "enabled", new_callable=lambda: property(lambda self: True)):
+            with patch.object(processor, "_get_client", return_value=mock_client):
+                await processor.process([entity])
+
+        assert entity.doc_categories == ["travel", "personal"]
+
     @pytest.mark.asyncio
     async def test_prepends_category_to_textual_representation(self):
         entity = _make_file_entity(text="NDA between parties A and B")

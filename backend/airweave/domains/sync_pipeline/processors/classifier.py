@@ -41,6 +41,8 @@ PREDEFINED_CATEGORIES: list[str] = [
     "presentation",
     "spreadsheet",
     "reference",
+    "travel",
+    "personal",
     "other",
 ]
 
@@ -62,6 +64,8 @@ Categories:
 - presentation: Slide decks, pitch decks, training presentations
 - spreadsheet: Data tables, CSV data, Excel workbooks, financial models
 - reference: Manuals, guides, FAQs, knowledge base articles, templates
+- travel: Itineraries, trip plans, tour packages, booking confirmations, travel guides
+- personal: Personal notes, journals, recipes, hobbies, non-work personal documents
 - other: If none of the above fit
 
 Rules:
