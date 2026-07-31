@@ -50,6 +50,7 @@ from airweave.platform.entities.sharepoint import (
 from airweave.platform.http_client.airweave_client import AirweaveHttpClient
 from airweave.platform.sources._base import BaseSource
 from airweave.platform.sources.http_helpers import raise_for_status
+from airweave.platform.sources.microsoft_sensitivity_labels import SensitivityLabelFilter
 from airweave.platform.sources.retry_helpers import (
     retry_if_rate_limit_or_timeout,
     wait_rate_limit_with_backoff,
@@ -84,6 +85,11 @@ class SharePointSource(BaseSource):
 
     GRAPH_BASE_URL = "https://graph.microsoft.com/v1.0"
 
+    _excluded_sensitivity_label_ids: list[str]
+    _skip_encrypted_files: bool
+    _skip_unlabeled_files: bool
+    _label_filter: Optional[SensitivityLabelFilter]
+
     @classmethod
     async def create(
         cls,
@@ -94,7 +100,39 @@ class SharePointSource(BaseSource):
         config: SharePointConfig,
     ) -> SharePointSource:
         """Create a new SharePoint source instance."""
-        return cls(auth=auth, logger=logger, http_client=http_client)
+        instance = cls(auth=auth, logger=logger, http_client=http_client)
+        instance._excluded_sensitivity_label_ids = list(config.excluded_sensitivity_label_ids)
+        instance._skip_encrypted_files = config.skip_encrypted_files
+        instance._skip_unlabeled_files = config.skip_unlabeled_files
+        instance._label_filter = None
+        return instance
+
+    def _get_label_filter(self) -> Optional["SensitivityLabelFilter"]:
+        """Lazily build a Purview sensitivity-label filter from config."""
+        if self._label_filter is not None:
+            return self._label_filter
+        if not self._excluded_sensitivity_label_ids and not self._skip_unlabeled_files:
+            return None
+        self._label_filter = SensitivityLabelFilter(
+            excluded_label_ids=self._excluded_sensitivity_label_ids,
+            skip_encrypted=self._skip_encrypted_files,
+            skip_unlabeled=self._skip_unlabeled_files,
+            http_client=self.http_client,
+            token_provider=self.get_access_token,
+            logger=self.logger,
+        )
+        return self._label_filter
+
+    @staticmethod
+    def _extract_group_id_from_drives(drives: list[Dict]) -> Optional[str]:
+        """Pull the backing M365 Group ID off any drive in the site, if present."""
+        for drive in drives:
+            owner = drive.get("owner") or {}
+            group = owner.get("group") if isinstance(owner, dict) else None
+            raw_id = group.get("id") if isinstance(group, dict) else None
+            if isinstance(raw_id, str) and raw_id:
+                return raw_id
+        return None
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -399,11 +437,23 @@ class SharePointSource(BaseSource):
             entity_type="SharePointDriveEntity",
         )
 
-        async for item in self._list_all_drive_items_recursively(drive_id, site_id):
-            try:
-                if "folder" in item:
-                    continue
+        label_filter = self._get_label_filter()
 
+        async for item in self._list_all_drive_items_recursively(drive_id, site_id):
+            if "folder" in item:
+                continue
+
+            # Run the label check outside the per-item try so that errors
+            # configured to fail loud (skip_encrypted_files=False) propagate
+            # instead of being swallowed by the broad exception handler below.
+            if label_filter is not None and await label_filter.should_skip_item(
+                drive_id=drive_id,
+                item_id=item["id"],
+                item_name=item.get("name", ""),
+            ):
+                continue
+
+            try:
                 download_url = self._get_download_url(drive_id, item["id"])
 
                 file_entity = SharePointDriveItemEntity.from_api(
@@ -696,6 +746,23 @@ class SharePointSource(BaseSource):
         """Generate drive entities and their files for a site."""
         self.logger.debug(f"Generating drive entities for site: {site_name}")
         current_count = start_count
+
+        # Container-label short-circuit: skip the whole site if its backing
+        # M365 Group carries a blocked Purview sensitivity label.
+        label_filter = self._get_label_filter()
+        if label_filter is not None:
+            try:
+                drives_data = await self._get(
+                    f"{self.GRAPH_BASE_URL}/sites/{site_id}/drives",
+                    params={"$select": "id,owner"},
+                )
+                group_id = self._extract_group_id_from_drives(drives_data.get("value", []))
+                if await label_filter.should_skip_site(site_id=site_id, group_id=group_id):
+                    return
+            except Exception as exc:  # noqa: BLE001
+                self.logger.warning(
+                    f"Could not pre-check container label for site {site_id}: {exc}"
+                )
 
         async for drive_entity in self._generate_drive_entities(site_id, site_name):
             current_count += 1

@@ -59,12 +59,15 @@ class VectorDBProtocol(Protocol):
         self,
         filter_groups: list[FilterGroup],
         collection_id: str,
+        name_substring: Optional[str] = None,
     ) -> int:
         """Count entities matching filters without retrieving content.
 
         Args:
             filter_groups: Filter groups to narrow the count.
             collection_id: Collection readable ID for tenant filtering.
+            name_substring: Optional case-insensitive substring match against
+                the entity name (proper substring, not token-match).
 
         Returns:
             Total number of matching entities.
@@ -77,6 +80,7 @@ class VectorDBProtocol(Protocol):
         collection_id: str,
         limit: int = 50,
         offset: int = 0,
+        name_substring: Optional[str] = None,
     ) -> list[SearchResult]:
         """Retrieve entities matching filters without embeddings or ranking.
 
@@ -85,6 +89,8 @@ class VectorDBProtocol(Protocol):
             collection_id: Collection readable ID for tenant filtering.
             limit: Maximum number of results to return.
             offset: Number of results to skip.
+            name_substring: Optional case-insensitive substring match against
+                the entity name (proper substring, not token-match).
 
         Returns:
             List of matching results (unranked).

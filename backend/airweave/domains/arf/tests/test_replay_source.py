@@ -11,18 +11,15 @@ Uses FakeArfReader to avoid real I/O.
 
 from dataclasses import dataclass
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Optional
 from uuid import uuid4
 
 import pytest
 
 from airweave.core.exceptions import NotFoundException
 from airweave.domains.arf.fakes.reader import FakeArfReader
-from airweave.domains.arf.reader import ArfReader
 from airweave.domains.arf.replay_source import ArfReplaySource
-from airweave.domains.storage.exceptions import StorageNotFoundError
 from airweave.domains.storage.fakes import FakeStorageBackend
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -103,6 +100,27 @@ async def test_generate_entities_empty():
     async for entity in source.generate_entities():
         results.append(entity)
     assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_entities_accepts_pipeline_kwargs():
+    # SyncFactory._build_stream always calls generate_entities with
+    # cursor=, files=, node_selections=. Replay ignores them but must
+    # accept them or the dst sync_job fails with TypeError.
+    source = ArfReplaySource(sync_id=SYNC_ID, storage=FakeStorageBackend())
+    fake_reader = FakeArfReader()
+    fake_reader.seed_entities([_make_entity("ent-0")])
+    source._reader = fake_reader
+
+    results = [
+        entity
+        async for entity in source.generate_entities(
+            cursor=object(),
+            files=object(),
+            node_selections=[object()],
+        )
+    ]
+    assert len(results) == 1
 
 
 # ---------------------------------------------------------------------------

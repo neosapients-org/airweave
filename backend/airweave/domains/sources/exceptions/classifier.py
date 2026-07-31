@@ -2,10 +2,13 @@
 
 Maps source exceptions to SourceConnectionErrorCategory values.
 
-Three exception hierarchies can signal credential errors:
-1. AuthProviderError  — raised by auth providers (Composio, Pipedream) directly
-2. TokenProviderError — raised by token providers wrapping auth provider errors
-3. SourceAuthError    — raised by sources on HTTP 401/403 responses
+Five exception hierarchies can signal user-actionable errors:
+1. AuthProviderError       — raised by auth providers (Composio, Pipedream) directly
+2. TokenProviderError      — raised by token providers wrapping auth provider errors
+3. SourceAuthError         — raised by sources on HTTP 401/403 responses
+4. UsageLimitExceededError — raised by the usage limit checker (billing)
+5. SourceRateLimitError /
+   SourceEntityForbiddenError("rate limit") — upstream rate-limit signals
 """
 
 from __future__ import annotations
@@ -17,7 +20,12 @@ from airweave.domains.auth_provider.exceptions import (
     AuthProviderError,
 )
 from airweave.domains.source_connections.types import ErrorClassification
-from airweave.domains.sources.exceptions import SourceAuthError, SourceTokenRefreshError
+from airweave.domains.sources.exceptions import (
+    SourceAuthError,
+    SourceEntityForbiddenError,
+    SourceRateLimitError,
+    SourceTokenRefreshError,
+)
 from airweave.domains.sources.token_providers.exceptions import (
     TokenCredentialsInvalidError,
     TokenExpiredError,
@@ -25,6 +33,7 @@ from airweave.domains.sources.token_providers.exceptions import (
     TokenProviderError,
 )
 from airweave.domains.sources.token_providers.protocol import AuthProviderKind
+from airweave.domains.usage.exceptions import UsageLimitExceededError
 
 # All exception types the classifier can recognise directly or via __cause__
 _CLASSIFIABLE = (
@@ -32,10 +41,13 @@ _CLASSIFIABLE = (
     SourceAuthError,
     SourceTokenRefreshError,
     TokenProviderError,
+    UsageLimitExceededError,
+    SourceRateLimitError,
+    SourceEntityForbiddenError,
 )
 
 
-def classify_error(exc: Exception) -> ErrorClassification:
+def classify_error(exc: Exception) -> ErrorClassification:  # noqa: C901
     """Classify an exception into an error category for UI remediation.
 
     Args:
@@ -101,8 +113,37 @@ def classify_error(exc: Exception) -> ErrorClassification:
     if isinstance(exc, TokenCredentialsInvalidError):
         return _classify_by_provider_kind(exc.provider_kind, exc)
 
-    # Not a credential error — return empty classification
+    # --- UsageLimitExceededError (billing / plan limit) ---
+    if isinstance(exc, UsageLimitExceededError):
+        return ErrorClassification(
+            category=SourceConnectionErrorCategory.USAGE_LIMIT_EXCEEDED,
+            message=str(exc),
+        )
+
+    # --- Rate-limit signals from upstream APIs ---
+    # SourceRateLimitError is the canonical 429 case. SourceEntityForbiddenError
+    # carries 403 messages, some of which are actually disguised rate limits
+    # (notably GitHub, which returns 403 with "API rate limit exceeded").
+    if isinstance(exc, SourceRateLimitError):
+        return ErrorClassification(
+            category=SourceConnectionErrorCategory.RATE_LIMITED,
+            message=str(exc),
+        )
+
+    if isinstance(exc, SourceEntityForbiddenError) and _is_rate_limit_403(str(exc)):
+        return ErrorClassification(
+            category=SourceConnectionErrorCategory.RATE_LIMITED,
+            message=str(exc),
+        )
+
+    # Not a classified error — return empty classification
     return ErrorClassification(category=None, message=None)
+
+
+def _is_rate_limit_403(message: str) -> bool:
+    """Detect APIs (notably GitHub) that return 403 for rate-limit responses."""
+    lowered = message.lower()
+    return "rate limit" in lowered or "abuse detection" in lowered
 
 
 def _classify_by_provider_kind(

@@ -107,6 +107,7 @@ from airweave.domains.search.adapters.vector_db.filter_translator import FilterT
 from airweave.domains.search.adapters.vector_db.vespa_client import VespaVectorDB
 from airweave.domains.search.agentic.service import AgenticSearchService
 from airweave.domains.search.agentic.subscribers.stream_relay import SearchStreamRelay
+from airweave.domains.search.browse.service import BrowseService
 from airweave.domains.search.builders.collection_metadata import CollectionMetadataBuilder
 from airweave.domains.search.classic.service import ClassicSearchService
 from airweave.domains.search.config import SearchConfig
@@ -616,6 +617,7 @@ def create_container(settings: Settings) -> Container:
         instant_search=search_deps["instant_search"],
         classic_search=search_deps["classic_search"],
         agentic_search=search_deps["agentic_search"],
+        browse_service=search_deps["browse_service"],
     )
 
 
@@ -808,6 +810,7 @@ def _create_dense_embedder(
             api_key=settings.MISTRAL_API_KEY,
             model=spec.api_model_name,
             dimensions=EMBEDDING_DIMENSIONS,
+            server_url=settings.MISTRAL_BASE_URL,
         )
 
     if spec.embedder_class_ref is LocalDenseEmbedder:
@@ -1356,11 +1359,16 @@ def _create_search_services(
         collection_repo=collection_repo,
         event_bus=event_bus,
     )
+    browse_service = BrowseService(
+        vector_db=vector_db,
+        collection_repo=collection_repo,
+    )
 
     return {
         "instant_search": instant_search,
         "classic_search": classic_search,
         "agentic_search": agentic_search,
+        "browse_service": browse_service,
     }
 
 

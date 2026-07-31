@@ -35,6 +35,7 @@ from airweave.platform.entities.onedrive import OneDriveDriveEntity, OneDriveDri
 from airweave.platform.http_client.airweave_client import AirweaveHttpClient
 from airweave.platform.sources._base import BaseSource
 from airweave.platform.sources.http_helpers import raise_for_status
+from airweave.platform.sources.microsoft_sensitivity_labels import SensitivityLabelFilter
 from airweave.platform.sources.retry_helpers import (
     retry_if_rate_limit_or_timeout,
     wait_rate_limit_with_backoff,
@@ -66,6 +67,11 @@ class OneDriveSource(BaseSource):
     personal drives, business drives, and app folder access with intelligent fallback handling.
     """
 
+    _excluded_sensitivity_label_ids: List[str]
+    _skip_encrypted_files: bool
+    _skip_unlabeled_files: bool
+    _label_filter: Optional[SensitivityLabelFilter]
+
     @classmethod
     async def create(
         cls,
@@ -76,7 +82,28 @@ class OneDriveSource(BaseSource):
         config: OneDriveConfig,
     ) -> "OneDriveSource":
         """Create a new OneDrive source instance."""
-        return cls(auth=auth, logger=logger, http_client=http_client)
+        instance = cls(auth=auth, logger=logger, http_client=http_client)
+        instance._excluded_sensitivity_label_ids = list(config.excluded_sensitivity_label_ids)
+        instance._skip_encrypted_files = config.skip_encrypted_files
+        instance._skip_unlabeled_files = config.skip_unlabeled_files
+        instance._label_filter = None
+        return instance
+
+    def _get_label_filter(self) -> Optional[SensitivityLabelFilter]:
+        """Lazily build a Purview sensitivity-label filter from config."""
+        if self._label_filter is not None:
+            return self._label_filter
+        if not self._excluded_sensitivity_label_ids and not self._skip_unlabeled_files:
+            return None
+        self._label_filter = SensitivityLabelFilter(
+            excluded_label_ids=self._excluded_sensitivity_label_ids,
+            skip_encrypted=self._skip_encrypted_files,
+            skip_unlabeled=self._skip_unlabeled_files,
+            http_client=self.http_client,
+            token_provider=self.get_access_token,
+            logger=self.logger,
+        )
+        return self._label_filter
 
     @retry(
         stop=stop_after_attempt(5),
@@ -278,11 +305,22 @@ class OneDriveSource(BaseSource):
     ) -> AsyncGenerator[BaseEntity, None]:
         """Generate OneDriveDriveItemEntity objects for files in the drive."""
         file_count = 0
+        label_filter = self._get_label_filter()
         async for item in self._list_all_drive_items_recursively(drive_id):
-            try:
-                if "folder" in item:
-                    continue
+            if "folder" in item:
+                continue
 
+            # Run the label check outside the per-item try so that errors
+            # configured to fail loud (skip_encrypted_files=False) propagate
+            # instead of being swallowed by the broad exception handler below.
+            if label_filter is not None and await label_filter.should_skip_item(
+                drive_id=drive_id,
+                item_id=item["id"],
+                item_name=item.get("name", ""),
+            ):
+                continue
+
+            try:
                 download_url = self._get_download_url(drive_id, item["id"])
 
                 file_entity = OneDriveDriveItemEntity.from_api(

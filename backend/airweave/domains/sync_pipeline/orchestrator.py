@@ -11,7 +11,11 @@ from airweave.core.events.sync import (
     AccessControlMembershipBatchProcessedEvent,
 )
 from airweave.core.protocols.event_bus import EventBus
-from airweave.core.shared_models import SyncJobStatus, SyncStatus
+from airweave.core.shared_models import (
+    SourceConnectionErrorCategory,
+    SyncJobStatus,
+    SyncStatus,
+)
 from airweave.db.session import get_db_context
 from airweave.domains.access_control.pipeline import AccessControlPipeline
 from airweave.domains.sources.exceptions.classifier import classify_error
@@ -25,6 +29,7 @@ from airweave.domains.syncs.cursors.service import SyncCursorService
 from airweave.domains.syncs.jobs.protocols import SyncJobStateMachineProtocol
 from airweave.domains.syncs.jobs.types import InvalidTransitionError, LifecycleData
 from airweave.domains.syncs.protocols import SyncStateMachineProtocol
+from airweave.domains.temporal.exceptions import classified_user_application_error
 from airweave.domains.temporal.metrics import worker_metrics
 from airweave.domains.usage.exceptions import (
     PaymentRequiredError,
@@ -143,7 +148,12 @@ class SyncOrchestrator:
             await self._handle_cancellation()
             raise
         except Exception as e:
-            await self._handle_sync_failure(e)
+            category = await self._handle_sync_failure(e)
+            # Classified user errors (expired credentials, usage limits,
+            # rate limits) are wrapped so the workflow can complete normally
+            # rather than incrementing temporal_workflow_failed.
+            if category is not None:
+                raise classified_user_application_error(e, category) from e
             raise
         finally:
             # Note: Removed aggregate metrics recording (histograms/counters)
@@ -655,14 +665,33 @@ class SyncOrchestrator:
                 exc_info=True,
             )
 
-    async def _handle_sync_failure(self, error: Exception) -> None:
-        """Handle sync failure by updating job status with error details."""
-        error_message = get_error_message(error)
-        self.sync_context.logger.error(
-            f"Sync job {self.sync_context.sync_job.id} failed: {error_message}", exc_info=True
-        )
+    async def _handle_sync_failure(
+        self, error: Exception
+    ) -> Optional[SourceConnectionErrorCategory]:
+        """Handle sync failure by updating job status with error details.
 
+        Returns the classified error category, or None for unclassified
+        (true system) failures. Callers use the return value to decide
+        whether to wrap the exception as a classified user error before
+        re-raising.
+        """
+        error_message = get_error_message(error)
         classification = classify_error(error)
+
+        # User-actionable failures (expired credentials, usage limits,
+        # rate limits) are logged at WARNING — they're not Airweave
+        # outages, they're customer integration state that the UI
+        # surfaces via NEEDS_REAUTH / billing.
+        if classification.category is not None:
+            self.sync_context.logger.warning(
+                f"Sync job {self.sync_context.sync_job.id} failed "
+                f"({classification.category.value}): {error_message}"
+            )
+        else:
+            self.sync_context.logger.error(
+                f"Sync job {self.sync_context.sync_job.id} failed: {error_message}",
+                exc_info=True,
+            )
 
         stats = self.runtime.entity_tracker.get_stats()
 
@@ -676,17 +705,22 @@ class SyncOrchestrator:
             error_category=classification.category,
         )
 
-        if classification.category is not None:
+        # Rate-limit hits are transient; the next scheduled run will
+        # likely succeed once the window resets. Don't pause the sync.
+        if (
+            classification.category is not None
+            and classification.category != SourceConnectionErrorCategory.RATE_LIMITED
+        ):
             try:
                 await self._sync_state_machine.transition(
                     sync_id=self.sync_context.sync.id,
                     target=SyncStatus.PAUSED,
                     ctx=self.sync_context,
-                    reason=f"Credential error: {classification.category.value}",
+                    reason=f"Classified error: {classification.category.value}",
                 )
             except Exception as pause_err:
                 self.sync_context.logger.warning(
-                    f"Failed to pause sync after credential error: {pause_err}",
+                    f"Failed to pause sync after classified error: {pause_err}",
                     exc_info=True,
                 )
 
@@ -709,6 +743,8 @@ class SyncOrchestrator:
             error=error_message,
             duration_ms=duration_ms,
         )
+
+        return classification.category
 
     async def _handle_cancellation(self) -> None:
         """Centralized cancellation handler - explicit and immediate."""

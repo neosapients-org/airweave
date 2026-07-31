@@ -82,8 +82,20 @@ class ArfReplaySource(BaseSource):
             original_short_name=original_short_name,
         )
 
-    async def generate_entities(self) -> AsyncGenerator[BaseEntity, None]:
-        """Generate entities from ARF storage."""
+    async def generate_entities(
+        self,
+        *,
+        cursor: object | None = None,
+        files: object | None = None,
+        node_selections: list | None = None,
+    ) -> AsyncGenerator[BaseEntity, None]:
+        """Generate entities from ARF storage.
+
+        Accepts the sync pipeline's standard generate_entities kwargs
+        (cursor, files, node_selections) but ignores them — replay reads
+        from the ARF store, not from a live source.
+        """
+        del cursor, files, node_selections  # unused; only present to match contract
         self.logger.info(f"ARF Replay: Reading entities from sync {self.sync_id}")
         async for entity in self.reader.iter_entities():
             yield entity

@@ -27,7 +27,10 @@ with workflow.unsafe.imports_passed_through():
         transition_sync_job_activity,
     )
     from airweave.domains.temporal.activity_results import CreateSyncJobResult
-    from airweave.domains.temporal.exceptions import ORPHANED_SYNC_ERROR_TYPE
+    from airweave.domains.temporal.exceptions import (
+        CLASSIFIED_USER_ERROR_TYPE,
+        ORPHANED_SYNC_ERROR_TYPE,
+    )
 
 # ---------------------------------------------------------------------------
 # Execution policies
@@ -102,6 +105,18 @@ class RunSourceConnectionWorkflow:
             if self._is_orphaned_sync_error(e):
                 reason = self._extract_orphaned_reason(e)
                 await self._self_destruct(sync_dict, ctx_dict, reason)
+                return
+            # Classified user errors (expired credentials, usage limits,
+            # rate limits) are not Airweave failures — the activity has
+            # already transitioned the sync_job to FAILED with the
+            # appropriate error_category. Returning here lets the
+            # workflow complete normally so temporal_workflow_failed
+            # only counts real system failures.
+            if self._is_classified_user_error(e):
+                workflow.logger.info(
+                    f"Sync job {sync_job_dict.get('id')} ended with "
+                    f"classified user error; workflow completing normally."
+                )
                 return
             await self._transition("failed", sync_job_dict, ctx_dict, lifecycle, error=str(e))
             raise
@@ -306,6 +321,19 @@ class RunSourceConnectionWorkflow:
         """
         if isinstance(error, ActivityError) and isinstance(error.cause, ApplicationError):
             return error.cause.type == ORPHANED_SYNC_ERROR_TYPE
+        return False
+
+    @staticmethod
+    def _is_classified_user_error(error: BaseException) -> bool:
+        """Check whether a Temporal ActivityError wraps a classified user error.
+
+        The activity converts classified user errors (expired credentials,
+        usage limits, rate limits) to an ApplicationError with
+        type=CLASSIFIED_USER_ERROR_TYPE so the workflow can complete
+        normally instead of counting toward temporal_workflow_failed.
+        """
+        if isinstance(error, ActivityError) and isinstance(error.cause, ApplicationError):
+            return error.cause.type == CLASSIFIED_USER_ERROR_TYPE
         return False
 
     @staticmethod

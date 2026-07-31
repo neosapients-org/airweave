@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -160,8 +161,15 @@ class VespaVectorDB:
         self,
         filter_groups: list,
         collection_id: str,
+        name_substring: str | None = None,
     ) -> int:
-        """Count entities matching filters without retrieving content."""
+        """Count entities matching filters without retrieving content.
+
+        If `name_substring` is provided, an additional case-insensitive substring
+        match against the `name` attribute is AND-ed in. This uses Vespa's
+        regex `matches` operator, since `contains` on an attribute is a token
+        (whole-word) match, not a substring match.
+        """
         where_parts = [
             f"airweave_system_metadata_collection_id contains '{collection_id}'",
         ]
@@ -169,6 +177,9 @@ class VespaVectorDB:
         filter_yql = self._filter_translator.translate(filter_groups)
         if filter_yql:
             where_parts.append(f"({filter_yql})")
+
+        if name_substring:
+            where_parts.append(self._build_name_substring_clause(name_substring))
 
         all_schemas = ", ".join(ALL_VESPA_SCHEMAS)
         yql = f"select * from sources {all_schemas} where {' AND '.join(where_parts)}"
@@ -197,8 +208,14 @@ class VespaVectorDB:
         collection_id: str,
         limit: int = 50,
         offset: int = 0,
+        name_substring: str | None = None,
     ) -> list:
-        """Retrieve entities matching filters without embeddings or ranking."""
+        """Retrieve entities matching filters without embeddings or ranking.
+
+        If `name_substring` is provided, an additional case-insensitive substring
+        match against the `name` attribute is AND-ed in. See `count` for the
+        rationale (Vespa `contains` on an attribute is token-match, not substring).
+        """
         where_parts = [
             f"airweave_system_metadata_collection_id contains '{collection_id}'",
         ]
@@ -206,6 +223,9 @@ class VespaVectorDB:
         filter_yql = self._filter_translator.translate(filter_groups)
         if filter_yql:
             where_parts.append(f"({filter_yql})")
+
+        if name_substring:
+            where_parts.append(self._build_name_substring_clause(name_substring))
 
         all_schemas = ", ".join(ALL_VESPA_SCHEMAS)
         yql = f"select * from sources {all_schemas} where {' AND '.join(where_parts)}"
@@ -280,6 +300,24 @@ class VespaVectorDB:
             clauses.append(f"access_viewers contains '{escaped}'")
 
         return " OR ".join(clauses)
+
+    def _build_name_substring_clause(self, substring: str) -> str:
+        """Build a case-insensitive substring match against the `name` attribute.
+
+        Vespa's `contains` on an attribute field is a token (whole-word) match,
+        not a substring match — so a query like "Qui" misses "Quick…". We use
+        the `matches` regex operator instead, which scans the full string.
+
+        Special regex characters in the user input are escaped so a query like
+        "1.5+ release" can't blow up the regex engine.
+        """
+        escaped_for_regex = re.escape(substring)
+        # YQL double-quoted string literal: escape backslashes first, then
+        # double quotes (the literal delimiter). `re.escape` does not escape
+        # `"` because it is not a regex metacharacter, so without this an
+        # input like `Quick "test"` would break the YQL parse.
+        escaped_for_yql = escaped_for_regex.replace("\\", "\\\\").replace('"', '\\"')
+        return f'name matches "(?i).*{escaped_for_yql}.*"'
 
     def _build_retrieval_clause(
         self,

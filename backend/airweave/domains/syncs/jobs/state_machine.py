@@ -135,7 +135,9 @@ class SyncJobStateMachine(SyncJobStateMachineProtocol):
         logger.info(f"Sync job {sync_job_id}: {current.value} → {target.value}")
 
         if lifecycle_data is not None:
-            await self._publish_lifecycle_event(target, lifecycle_data, error=error)
+            await self._publish_lifecycle_event(
+                target, lifecycle_data, error=error, error_category=error_category
+            )
 
         return TransitionResult(applied=True, previous=current, current=target)
 
@@ -199,6 +201,7 @@ class SyncJobStateMachine(SyncJobStateMachineProtocol):
         ld: LifecycleData,
         *,
         error: Optional[str] = None,
+        error_category: Optional[SourceConnectionErrorCategory] = None,
     ) -> None:
         """Publish the appropriate SyncLifecycleEvent for the target status."""
         factory = _LIFECYCLE_EVENT_FACTORY.get(target)
@@ -218,6 +221,9 @@ class SyncJobStateMachine(SyncJobStateMachineProtocol):
 
         if target == SyncJobStatus.FAILED and error is not None:
             kwargs["error"] = error
+
+        if target == SyncJobStatus.FAILED and error_category is not None:
+            kwargs["error_category"] = error_category
 
         try:
             await self.event_bus.publish(factory(**kwargs))
