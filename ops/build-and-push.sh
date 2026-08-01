@@ -26,7 +26,6 @@ set -e
 ECR_REGISTRY="679451892000.dkr.ecr.us-east-1.amazonaws.com"
 ECR_SUFFIX="${ECR_SUFFIX:-dev-use1-shared1}"
 ECR_TAG="${ECR_TAG:-latest}"
-K8S_NS="airweave-svc"
 RESTART=true
 NO_CACHE=""
 
@@ -50,7 +49,18 @@ done
 
 ECR_REPO="airweave-svc-${ECR_SUFFIX}"
 IMAGE="${ECR_REGISTRY}/${ECR_REPO}:${ECR_TAG}"
-K8S_DEPLOY="airweave-svc-${ECR_SUFFIX}"
+
+# Namespace and Deployment must be derived from the suffix, not hardcoded.
+# The Deployment is named after the ArgoCD Application (the Helm release):
+#   dev     -> ns airweave-svc          / neo-airweave-svc-dev-use1-shared1
+#   staging -> ns staging-airweave-svc  / neo-airweave-svc-staging-use1-shared1
+# Non-dev environments namespace-prefix with their env, matching every
+# neo-platform service on this cluster.
+K8S_DEPLOY="neo-airweave-svc-${ECR_SUFFIX}"
+case "${ECR_SUFFIX}" in
+  dev-*) K8S_NS="airweave-svc" ;;
+  *)     K8S_NS="${ECR_SUFFIX%%-*}-airweave-svc" ;;
+esac
 
 echo ""
 echo "========================================="

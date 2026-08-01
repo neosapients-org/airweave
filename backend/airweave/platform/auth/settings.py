@@ -215,11 +215,44 @@ class IntegrationSettings:
 
 current_file_path = Path(__file__)
 parent_directory = current_file_path.parent
-environment = core_settings.ENVIRONMENT
-if environment == "local":
-    env_prefix = "dev"
-else:
-    env_prefix = environment
-yaml_file_path = parent_directory / f"yaml/{env_prefix}.integrations.yaml"
+
+
+def _resolve_integrations_yaml(environment: str) -> Path:
+    """Pick the integrations YAML for an environment, falling back to dev's.
+
+    Only `dev`, `prd` and `self-hosted` ship a file. `local` has always borrowed
+    dev's, and any other deployment environment (`staging`, a per-tenant env,
+    ...) does the same rather than raising FileNotFoundError here — this runs at
+    import time, so a missing file crashes the whole app before it can serve a
+    single request.
+
+    Borrowing dev's file is safe because it carries integration *shape*
+    (oauth_type, scopes, endpoints), not credentials: client ids and secrets are
+    BYOC and come from environment variables per deployment.
+
+    Args:
+    ----
+        environment (str): The value of `core_settings.ENVIRONMENT`.
+
+    Returns:
+    -------
+        Path: Path to the YAML file to load.
+
+    """
+    candidate = parent_directory / f"yaml/{environment}.integrations.yaml"
+    if environment != "local" and candidate.is_file():
+        return candidate
+
+    if environment not in ("local", "dev"):
+        logger.warning(
+            f"No integrations YAML for ENVIRONMENT='{environment}' "
+            f"({candidate.name}); falling back to dev.integrations.yaml. "
+            "Add a dedicated file if this environment needs different "
+            "integration definitions."
+        )
+    return parent_directory / "yaml/dev.integrations.yaml"
+
+
+yaml_file_path = _resolve_integrations_yaml(core_settings.ENVIRONMENT)
 
 integration_settings = IntegrationSettings(yaml_file_path)

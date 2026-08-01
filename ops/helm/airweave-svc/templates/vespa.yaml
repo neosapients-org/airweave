@@ -60,13 +60,20 @@ spec:
               name: query
             - containerPort: 19071
               name: config
-          {{- with .Values.vespa.env }}
           env:
-            {{- range $key, $value := . }}
+            {{- /* Derived, not configured: Vespa matches this against the config
+                   server pod's own FQDN, so it must track the release namespace.
+                   It used to be pinned to `airweave-svc` in values.yaml, which
+                   silently broke every install into another namespace. An
+                   explicit vespa.env.VESPA_CONFIGSERVERS still wins if set. */}}
+            - name: VESPA_CONFIGSERVERS
+              value: {{ (.Values.vespa.env | default dict).VESPA_CONFIGSERVERS | default (printf "vespa-0.vespa.%s.svc.cluster.local" .Release.Namespace) | quote }}
+            {{- range $key, $value := (.Values.vespa.env | default dict) }}
+            {{- if ne $key "VESPA_CONFIGSERVERS" }}
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
-          {{- end }}
+            {{- end }}
           resources:
             {{- toYaml .Values.vespa.resources | nindent 12 }}
           livenessProbe:

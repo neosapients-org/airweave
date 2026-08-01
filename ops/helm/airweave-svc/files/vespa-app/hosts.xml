@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <hosts>
-  <!-- K8s StatefulSet pod FQDN: <pod>.<service>.<namespace>.svc.cluster.local -->
-  <host name="vespa-0.vespa.airweave-svc.svc.cluster.local">
+  <!-- K8s StatefulSet pod FQDN: <pod>.<service>.<namespace>.svc.cluster.local
+       Rendered through Helm's `tpl` — see templates/vespa-app-configmap.yaml.
+       Release.Namespace must stay the only template action in this file. -->
+  <host name="vespa-0.vespa.{{ .Release.Namespace }}.svc.cluster.local">
     <alias>config0</alias>
     <alias>container0</alias>
     <alias>content0</alias>

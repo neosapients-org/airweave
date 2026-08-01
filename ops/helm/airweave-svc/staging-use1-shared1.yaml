@@ -1,0 +1,184 @@
+# Staging environment overrides for airweave-svc
+# Only values that differ from values.yaml.
+#
+# Runs on the same EKS cluster as dev (dev-use1-shared1, account 679451892000)
+# in its own `staging-airweave-svc` namespace, on the staging Karpenter nodepool.
+# Every in-namespace dependency (postgres, redis, vespa, temporal, svix, docling)
+# is deployed by this chart, so all the plain service names below resolve inside
+# this namespace and never cross into dev.
+#
+# NOTE: values.yaml carries DEV defaults (dev ECR repo, dev secret name, dev S3
+# bucket, dev nodepool). Every one of those is overridden here — if you add a new
+# environment-specific default to values.yaml, mirror it in this file.
+
+replicaCount: 1
+
+image:
+  repository: 679451892000.dkr.ecr.us-east-1.amazonaws.com/airweave-svc-staging-use1-shared1
+  pullPolicy: Always
+  tag: 'staging-latest'
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::679451892000:role/airweave-svc-staging-use1-shared1-irsa
+
+# Sized from the dev deployment's measured behaviour, not from values.yaml —
+# the base numbers predate the OOM fixes below and are too small to run on.
+resources:
+  limits:
+    cpu: 500m
+    memory: 2Gi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+
+env:
+  ENVIRONMENT: staging
+  LOG_LEVEL: debug
+
+  # Airweave is reached only in-cluster, through neo-gateway-svc's
+  # /v1/meridian proxy (which presents SOURCE_CONNECTOR_API_KEY). Matches dev.
+  # Turning this on requires the AUTH0_* keys in Secrets Manager first —
+  # the settings validator raises on boot if they are empty.
+  AUTH_ENABLED: 'false'
+
+  CLASSIFICATION_ENABLED: 'true'
+
+  # Public base URL Airweave builds OAuth `redirect_uri`s from. It must be the
+  # staging data-plane gateway's /v1/meridian prefix, because the callback route
+  # (`GET /v1/meridian/source-connections/callback`) is served by neo-gateway-svc
+  # and proxied inward — Airweave has no ingress of its own.
+  #
+  # ⚠️ Every OAuth app used on staging (Google, Atlassian, Slack) must list
+  #    https://staging-dp.neosapientai.com/v1/meridian/source-connections/callback
+  #    as an authorised redirect URI, or the connect flow fails at the provider.
+  API_FULL_URL: https://staging-dp.neosapientai.com/v1/meridian
+
+  # Browser lands here once OAuth completes. staging.neosapientai.com is the
+  # host that resolves to staging-use1-shared-cp-alb (the wildcard
+  # *.neosapientai.com rule on neo-cp-frontend); do NOT reuse the dev tenant
+  # host, which points at the dev ALB.
+  APP_FULL_URL: https://staging.neosapientai.com/meridian-mesh/connectors
+
+  # Per-environment S3 bucket — raw ingested files must not co-mingle with dev.
+  # Access is via IRSA on the service account above, no static credentials.
+  STORAGE_AWS_BUCKET: airweave-staging-use1-shared1
+
+  OTEL_RESOURCE_ATTRIBUTES: service.name=airweave-svc,service.version=1.0.0,deployment.environment=staging,service.namespace=neo-platform
+
+  # Model caches must live under a writable path: the container runs with
+  # readOnlyRootFilesystem, and only /tmp, /.cache and the storage dir are
+  # writable emptyDirs. Without these HuggingFace writes to $HOME and crashes.
+  HF_HOME: /tmp/hf_cache
+  XDG_CACHE_HOME: /tmp/cache
+
+# No ingress: the only ingress path in is neo-gateway-svc's /v1/meridian proxy
+# on staging-dp.neosapientai.com. Exposing Airweave directly would bypass the
+# gateway's tenant/workspace scoping.
+ingress:
+  enabled: false
+
+# Cold start is slow (alembic migrations + db sync on boot). Same generous
+# delays dev needed to stop the kubelet killing the pod mid-migration.
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 120
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+externalSecrets:
+  secretName: neo-airweave-svc-staging-use1-shared1-secrets
+
+# Applies to every workload in the chart — the backend, worker, and all six
+# infra StatefulSets/Deployments inherit .Values.nodeSelector/.Values.tolerations.
+# The staging nodepool carries BOTH taints (kubernetes.io/arch=arm64 and
+# neo/env=staging, each NoExecute); missing either leaves every pod Pending.
+nodeSelector:
+  karpenter.sh/nodepool: staging-use1-shared1-generic-arm64-w50
+
+tolerations:
+  - key: kubernetes.io/arch
+    operator: Equal
+    value: arm64
+    effect: NoExecute
+  - key: neo/env
+    operator: Equal
+    value: staging
+    effect: NoExecute
+
+postgresql:
+  storage: 5Gi
+  # Shared by the airweave backend, worker, Temporal, and Svix. 50 was too low
+  # in dev: a node reschedule caused a simultaneous reconnect that exhausted the
+  # pool ("FATAL: sorry, too many clients already") and 500'd every DB-backed
+  # endpoint. Keep 200 here — staging has the same four consumers.
+  args:
+    - -c
+    - max_connections=200
+    - -c
+    - shared_buffers=128MB
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 512Mi
+
+redis:
+  storage: 1Gi
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 25m
+      memory: 64Mi
+
+temporal:
+  resources:
+    limits:
+      cpu: 250m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+vespa:
+  storage: 10Gi
+  # 4Gi (the values.yaml default) OOM-killed Vespa mid-sync in dev and left
+  # syncs failing; 6Gi is the level that held.
+  resources:
+    limits:
+      cpu: '1'
+      memory: 6Gi
+    requests:
+      cpu: 250m
+      memory: 3Gi
+
+worker:
+  replicaCount: 1
+  # Docling + embedding batches push well past the 768Mi values.yaml default;
+  # dev OOM-killed repeatedly until this was raised to 3Gi.
+  resources:
+    limits:
+      cpu: '2'
+      memory: 3Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi

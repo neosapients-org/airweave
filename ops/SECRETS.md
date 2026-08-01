@@ -2,6 +2,14 @@
 
 All keys must be populated in the AWS Secrets Manager secret created by Terraform:
 - **Dev**: `neo-airweave-svc-dev-use1-shared1-secrets`
+- **Staging**: `neo-airweave-svc-staging-use1-shared1-secrets`
+
+Generate a **fresh** value per environment for every generated secret
+(`ENCRYPTION_KEY`, `STATE_SECRET`, `SVIX_JWT_SECRET`, `POSTGRES_PASSWORD`,
+`REDIS_PASSWORD`). Do not copy dev's across. `ENCRYPTION_KEY` in particular is
+the Fernet key that stored source credentials are encrypted with — sharing it
+means a dev-side compromise decrypts staging's OAuth tokens. `SVIX_DB_DSN` embeds
+`POSTGRES_PASSWORD`, so regenerate the two together.
 
 The Helm `ExternalSecret` pulls the entire secret via `dataFrom.extract` and injects every key as an env var into the pod. Keys must match the backend env var names in `backend/airweave/core/config/settings.py`.
 
@@ -10,9 +18,15 @@ Non-sensitive config (hosts, ports, feature flags) lives in the Helm ConfigMap (
 ## How to populate
 
 ```bash
+# dev
 aws secretsmanager put-secret-value \
-  --secret-id airweave-svc-dev-use1-shared1-secrets \
+  --secret-id neo-airweave-svc-dev-use1-shared1-secrets \
   --secret-string file://secret-values.json
+
+# staging
+aws secretsmanager put-secret-value \
+  --secret-id neo-airweave-svc-staging-use1-shared1-secrets \
+  --secret-string file://secret-values.staging.json
 ```
 
 ## Required secrets
