@@ -43,9 +43,16 @@ aws secretsmanager put-secret-value \
 | `FIRST_SUPERUSER_PASSWORD` | Password for the bootstrap admin | Strong password, min 12 chars |
 | `OPENAI_API_KEY` | OpenAI key — embeddings (`text-embedding-3-small`) and classification (`gpt-4o-mini`) | OpenAI dashboard |
 
-## Auth0 (required — `AUTH_ENABLED=true` in values.yaml)
+## Auth0 (only when `AUTH_ENABLED=true`)
 
-The config validator raises if any of these are empty while `AUTH_ENABLED=true`.
+`values.yaml` defaults `AUTH_ENABLED` to `true`, but **both dev and staging
+override it to `false`** — Airweave has no ingress in either environment and is
+reached only through neo-gateway-svc's `/v1/meridian` proxy. These keys are
+therefore **not required to bring staging up**; skip them unless you are
+enabling Auth0.
+
+If you do set `AUTH_ENABLED=true`, populate all five first: the config
+validator raises on boot if any is empty, and the pod will crashloop.
 
 | Key | Description | Where to obtain |
 |-----|-------------|-----------------|
