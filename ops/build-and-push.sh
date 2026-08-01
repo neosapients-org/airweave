@@ -50,12 +50,7 @@ done
 ECR_REPO="airweave-svc-${ECR_SUFFIX}"
 IMAGE="${ECR_REGISTRY}/${ECR_REPO}:${ECR_TAG}"
 
-# Namespace and Deployment must be derived from the suffix, not hardcoded.
-# The Deployment is named after the ArgoCD Application (the Helm release):
-#   dev     -> ns airweave-svc          / neo-airweave-svc-dev-use1-shared1
-#   staging -> ns staging-airweave-svc  / neo-airweave-svc-staging-use1-shared1
-# Non-dev environments namespace-prefix with their env, matching every
-# neo-platform service on this cluster.
+# Deployment is named after the Helm release; only dev is an unprefixed namespace.
 K8S_DEPLOY="neo-airweave-svc-${ECR_SUFFIX}"
 case "${ECR_SUFFIX}" in
   dev-*) K8S_NS="airweave-svc" ;;

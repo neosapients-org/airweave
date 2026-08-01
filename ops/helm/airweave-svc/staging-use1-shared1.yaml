@@ -1,15 +1,8 @@
 # Staging environment overrides for airweave-svc
 # Only values that differ from values.yaml.
 #
-# Runs on the same EKS cluster as dev (dev-use1-shared1, account 679451892000)
-# in its own `staging-airweave-svc` namespace, on the staging Karpenter nodepool.
-# Every in-namespace dependency (postgres, redis, vespa, temporal, svix, docling)
-# is deployed by this chart, so all the plain service names below resolve inside
-# this namespace and never cross into dev.
-#
-# NOTE: values.yaml carries DEV defaults (dev ECR repo, dev secret name, dev S3
-# bucket, dev nodepool). Every one of those is overridden here — if you add a new
-# environment-specific default to values.yaml, mirror it in this file.
+# values.yaml carries DEV defaults (dev ECR repo, dev secret, dev S3 bucket, dev
+# nodepool) — all overridden below. Mirror any new env-specific default here.
 
 replicaCount: 1
 
@@ -22,8 +15,6 @@ serviceAccount:
   annotations:
     eks.amazonaws.com/role-arn: arn:aws:iam::679451892000:role/airweave-svc-staging-use1-shared1-irsa
 
-# Sized from the dev deployment's measured behaviour, not from values.yaml —
-# the base numbers predate the OOM fixes below and are too small to run on.
 resources:
   limits:
     cpu: 500m
@@ -39,50 +30,33 @@ env:
   ENVIRONMENT: staging
   LOG_LEVEL: debug
 
-  # Airweave is reached only in-cluster, through neo-gateway-svc's
-  # /v1/meridian proxy (which presents SOURCE_CONNECTOR_API_KEY). Matches dev.
-  # Turning this on requires the AUTH0_* keys in Secrets Manager first —
-  # the settings validator raises on boot if they are empty.
+  # Reached only in-cluster via neo-gateway-svc's /v1/meridian proxy. Enabling
+  # this requires the AUTH0_* keys in Secrets Manager or the pod fails to boot.
   AUTH_ENABLED: 'false'
 
   CLASSIFICATION_ENABLED: 'true'
 
-  # Public base URL Airweave builds OAuth `redirect_uri`s from. It must be the
-  # staging data-plane gateway's /v1/meridian prefix, because the callback route
-  # (`GET /v1/meridian/source-connections/callback`) is served by neo-gateway-svc
-  # and proxied inward — Airweave has no ingress of its own.
-  #
-  # ⚠️ Every OAuth app used on staging (Google, Atlassian, Slack) must list
-  #    https://staging-dp.neosapientai.com/v1/meridian/source-connections/callback
-  #    as an authorised redirect URI, or the connect flow fails at the provider.
+  # OAuth redirect_uri base. The callback route is served by neo-gateway-svc, so
+  # this is the gateway's public prefix, not an Airweave host.
+  # …/v1/meridian/source-connections/callback must be registered on each OAuth app.
   API_FULL_URL: https://staging-dp.neosapientai.com/v1/meridian
 
-  # Browser lands here once OAuth completes. staging.neosapientai.com is the
-  # host that resolves to staging-use1-shared-cp-alb (the wildcard
-  # *.neosapientai.com rule on neo-cp-frontend); do NOT reuse the dev tenant
-  # host, which points at the dev ALB.
+  # staging.neosapientai.com resolves to the staging cp ALB; neo-sapients.* is dev.
   APP_FULL_URL: https://staging.neosapientai.com/meridian-mesh/connectors
 
-  # Per-environment S3 bucket — raw ingested files must not co-mingle with dev.
-  # Access is via IRSA on the service account above, no static credentials.
   STORAGE_AWS_BUCKET: airweave-staging-use1-shared1
 
   OTEL_RESOURCE_ATTRIBUTES: service.name=airweave-svc,service.version=1.0.0,deployment.environment=staging,service.namespace=neo-platform
 
-  # Model caches must live under a writable path: the container runs with
-  # readOnlyRootFilesystem, and only /tmp, /.cache and the storage dir are
-  # writable emptyDirs. Without these HuggingFace writes to $HOME and crashes.
+  # readOnlyRootFilesystem: caches must point at the writable emptyDirs.
   HF_HOME: /tmp/hf_cache
   XDG_CACHE_HOME: /tmp/cache
 
-# No ingress: the only ingress path in is neo-gateway-svc's /v1/meridian proxy
-# on staging-dp.neosapientai.com. Exposing Airweave directly would bypass the
-# gateway's tenant/workspace scoping.
 ingress:
   enabled: false
 
-# Cold start is slow (alembic migrations + db sync on boot). Same generous
-# delays dev needed to stop the kubelet killing the pod mid-migration.
+# Alembic migrations run on boot; shorter delays let the kubelet kill the pod
+# mid-migration.
 livenessProbe:
   httpGet:
     path: /health
@@ -104,10 +78,8 @@ readinessProbe:
 externalSecrets:
   secretName: neo-airweave-svc-staging-use1-shared1-secrets
 
-# Applies to every workload in the chart — the backend, worker, and all six
-# infra StatefulSets/Deployments inherit .Values.nodeSelector/.Values.tolerations.
-# The staging nodepool carries BOTH taints (kubernetes.io/arch=arm64 and
-# neo/env=staging, each NoExecute); missing either leaves every pod Pending.
+# Inherited by all 10 workloads in this chart. The staging nodepool carries both
+# taints; missing either leaves every pod Pending.
 nodeSelector:
   karpenter.sh/nodepool: staging-use1-shared1-generic-arm64-w50
 
@@ -123,10 +95,8 @@ tolerations:
 
 postgresql:
   storage: 5Gi
-  # Shared by the airweave backend, worker, Temporal, and Svix. 50 was too low
-  # in dev: a node reschedule caused a simultaneous reconnect that exhausted the
-  # pool ("FATAL: sorry, too many clients already") and 500'd every DB-backed
-  # endpoint. Keep 200 here — staging has the same four consumers.
+  # Shared by the backend, worker, Temporal and Svix. 50 exhausted the pool in
+  # dev on a simultaneous reconnect and 500'd every DB-backed endpoint.
   args:
     - -c
     - max_connections=200
@@ -161,8 +131,7 @@ temporal:
 
 vespa:
   storage: 10Gi
-  # 4Gi (the values.yaml default) OOM-killed Vespa mid-sync in dev and left
-  # syncs failing; 6Gi is the level that held.
+  # 4Gi (values.yaml default) OOM-killed Vespa mid-sync in dev.
   resources:
     limits:
       cpu: '1'
@@ -173,8 +142,7 @@ vespa:
 
 worker:
   replicaCount: 1
-  # Docling + embedding batches push well past the 768Mi values.yaml default;
-  # dev OOM-killed repeatedly until this was raised to 3Gi.
+  # Docling + embedding batches OOM-killed the 768Mi values.yaml default in dev.
   resources:
     limits:
       cpu: '2'

@@ -412,9 +412,7 @@ vespa:
     VESPA_IGNORE_NOT_ENOUGH_MEMORY: 'true'
     VESPA_CONFIGSERVER_JVMARGS: '-Xms128m -Xmx512m'
     # VESPA_CONFIGSERVERS is derived from .Release.Namespace in
-    # templates/vespa.yaml — do not pin it here. It was hardcoded to
-    # `airweave-svc`, which made the content cluster fail to come up in any
-    # other namespace (e.g. staging-airweave-svc).
+    # templates/vespa.yaml — do not pin it here.
   initJob:
     backoffLimit: 5
     ttlSecondsAfterFinished: 3600

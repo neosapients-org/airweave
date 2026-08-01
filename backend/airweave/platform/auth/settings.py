@@ -220,15 +220,10 @@ parent_directory = current_file_path.parent
 def _resolve_integrations_yaml(environment: str) -> Path:
     """Pick the integrations YAML for an environment, falling back to dev's.
 
-    Only `dev`, `prd` and `self-hosted` ship a file. `local` has always borrowed
-    dev's, and any other deployment environment (`staging`, a per-tenant env,
-    ...) does the same rather than raising FileNotFoundError here — this runs at
-    import time, so a missing file crashes the whole app before it can serve a
-    single request.
-
-    Borrowing dev's file is safe because it carries integration *shape*
-    (oauth_type, scopes, endpoints), not credentials: client ids and secrets are
-    BYOC and come from environment variables per deployment.
+    Only `dev`, `prd` and `self-hosted` ship a file. Anything else falls back
+    rather than raising FileNotFoundError: this runs at import time, so a
+    missing file crashes the app before it serves a request. Safe because the
+    YAML holds integration shape, not credentials (those are BYOC env vars).
 
     Args:
     ----
