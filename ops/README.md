@@ -59,6 +59,17 @@ ops/
 | IRSA role | `airweave-svc-dev-use1-shared1-irsa` | `airweave-svc-staging-use1-shared1-irsa` |
 | Public entry point (via gateway) | `https://dev-dp.neosapientai.com/v1/meridian` | `https://staging-dp.neosapientai.com/v1/meridian` |
 | Post-OAuth frontend redirect | `https://neo-sapients.neosapientai.com/...` | `https://staging.neosapientai.com/...` |
+| `ENVIRONMENT` | `dev` | `dev` (see below) |
+
+> **Why staging sets `ENVIRONMENT=dev`.** `platform/auth/settings.py` resolves
+> `yaml/<ENVIRONMENT>.integrations.yaml` at import time, and only `dev`, `prd`
+> and `self-hosted` ship a file — `staging` raises `FileNotFoundError` and the
+> pod crashloops before serving a request. `prd` is also wrong: it routes OAuth
+> client secrets through Azure Key Vault. Everything environment-specific
+> (bucket, URLs, secret, trace tagging via `OTEL_RESOURCE_ATTRIBUTES`) is set
+> independently, so the only side effect is that PostHog analytics tags staging
+> events as `dev`. Supporting a real `staging` value needs a backend change to
+> fall back to `dev.integrations.yaml`.
 
 Both environments share the cluster's SigNoz collector and the `aws-secrets-manager`
 ClusterSecretStore. Everything else — Postgres, Redis, Vespa, Temporal, Svix,
@@ -107,7 +118,10 @@ terraform apply -var-file="variables/<env>.tfvars"
 #    Terraform only creates the shell and then ignores value drift.
 
 # 3. Build and push the image for that environment.
-./ops/build-and-push.sh --suffix staging-use1-shared1 --tag staging-latest
+#    build-and-push.sh only knows how to restart the DEV deployment, so skip its
+#    restart step for staging and roll out by hand.
+./ops/build-and-push.sh --suffix staging-use1-shared1 --tag staging-latest --no-restart
+kubectl rollout restart deployment/neo-airweave-svc-staging-use1-shared1 -n staging-airweave-svc
 
 # 4. Register the ArgoCD Application.
 kubectl apply -f ops/argocd/application.yaml          -n argocd   # dev

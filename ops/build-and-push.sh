@@ -26,6 +26,7 @@ set -e
 ECR_REGISTRY="679451892000.dkr.ecr.us-east-1.amazonaws.com"
 ECR_SUFFIX="${ECR_SUFFIX:-dev-use1-shared1}"
 ECR_TAG="${ECR_TAG:-latest}"
+K8S_NS="airweave-svc"
 RESTART=true
 NO_CACHE=""
 
@@ -49,13 +50,7 @@ done
 
 ECR_REPO="airweave-svc-${ECR_SUFFIX}"
 IMAGE="${ECR_REGISTRY}/${ECR_REPO}:${ECR_TAG}"
-
-# Deployment is named after the Helm release; only dev is an unprefixed namespace.
-K8S_DEPLOY="neo-airweave-svc-${ECR_SUFFIX}"
-case "${ECR_SUFFIX}" in
-  dev-*) K8S_NS="airweave-svc" ;;
-  *)     K8S_NS="${ECR_SUFFIX%%-*}-airweave-svc" ;;
-esac
+K8S_DEPLOY="airweave-svc-${ECR_SUFFIX}"
 
 echo ""
 echo "========================================="

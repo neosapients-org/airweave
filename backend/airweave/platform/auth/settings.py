@@ -215,39 +215,11 @@ class IntegrationSettings:
 
 current_file_path = Path(__file__)
 parent_directory = current_file_path.parent
-
-
-def _resolve_integrations_yaml(environment: str) -> Path:
-    """Pick the integrations YAML for an environment, falling back to dev's.
-
-    Only `dev`, `prd` and `self-hosted` ship a file. Anything else falls back
-    rather than raising FileNotFoundError: this runs at import time, so a
-    missing file crashes the app before it serves a request. Safe because the
-    YAML holds integration shape, not credentials (those are BYOC env vars).
-
-    Args:
-    ----
-        environment (str): The value of `core_settings.ENVIRONMENT`.
-
-    Returns:
-    -------
-        Path: Path to the YAML file to load.
-
-    """
-    candidate = parent_directory / f"yaml/{environment}.integrations.yaml"
-    if environment != "local" and candidate.is_file():
-        return candidate
-
-    if environment not in ("local", "dev"):
-        logger.warning(
-            f"No integrations YAML for ENVIRONMENT='{environment}' "
-            f"({candidate.name}); falling back to dev.integrations.yaml. "
-            "Add a dedicated file if this environment needs different "
-            "integration definitions."
-        )
-    return parent_directory / "yaml/dev.integrations.yaml"
-
-
-yaml_file_path = _resolve_integrations_yaml(core_settings.ENVIRONMENT)
+environment = core_settings.ENVIRONMENT
+if environment == "local":
+    env_prefix = "dev"
+else:
+    env_prefix = environment
+yaml_file_path = parent_directory / f"yaml/{env_prefix}.integrations.yaml"
 
 integration_settings = IntegrationSettings(yaml_file_path)
