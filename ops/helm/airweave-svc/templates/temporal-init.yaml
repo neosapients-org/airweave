@@ -36,11 +36,50 @@ spec:
             - /bin/sh
             - -c
             - |
+              set -e
+              NS={{ $.Values.temporal.env.TEMPORAL_NAMESPACE | default "default" | quote }}
+
+              # Wait for Temporal to accept connections before registering. This
+              # job is a PostSync hook, so it can fire while Temporal is still
+              # starting (or crashlooping on a bad DB credential). Without this
+              # wait every create below fails against a server that isn't up.
+              i=0
+              until temporal operator cluster health --address temporal:7233 >/dev/null 2>&1; do
+                i=$((i + 1))
+                if [ $i -ge 60 ]; then
+                  echo "ERROR: Temporal not reachable at temporal:7233 after 5m" >&2
+                  exit 1
+                fi
+                echo "  waiting for Temporal... ($i/60)"
+                sleep 5
+              done
+
               {{- range .Values.temporal.searchAttributes }}
+              # `create` is not idempotent: it errors when the attribute already
+              # exists, which is the normal case on a re-sync. Tolerate only that
+              # case, then assert the attribute is actually present below.
               temporal operator search-attribute create \
                 --name {{ .name }} --type {{ .type }} \
-                --namespace {{ $.Values.temporal.env.TEMPORAL_NAMESPACE | default "default" }} \
-                --address temporal:7233 || true
+                --namespace "$NS" --address temporal:7233 \
+                || echo "  {{ .name }}: create returned non-zero (already exists?), will verify"
               {{- end }}
-              echo "All search attributes registered."
+
+              # Verify, and FAIL if anything is missing. The previous version
+              # ended every create with `|| true` and then unconditionally echoed
+              # success, so the Job reported Complete while registering nothing —
+              # Airweave then 500s on schedule creation with no trace of why.
+              echo "Verifying registered search attributes..."
+              REGISTERED=$(temporal operator search-attribute list \
+                --namespace "$NS" --address temporal:7233 2>/dev/null)
+              MISSING=""
+              {{- range .Values.temporal.searchAttributes }}
+              echo "$REGISTERED" | grep -qw {{ .name | quote }} \
+                || MISSING="$MISSING {{ .name }}"
+              {{- end }}
+              if [ -n "$MISSING" ]; then
+                echo "ERROR: search attributes missing after registration:$MISSING" >&2
+                echo "$REGISTERED" >&2
+                exit 1
+              fi
+              echo "All search attributes registered and verified."
 {{- end }}
