@@ -1843,35 +1843,55 @@ async def admin_cancel_sync_job(
     )
 
     # Check if job is in a cancellable state (handle status as string or enum)
+    #
+    # CANCELLING is retryable on purpose. The final CANCELLING -> CANCELLED hop is
+    # driven by the Temporal workflow acknowledging the cancel, so a job whose
+    # workflow already died stalls in CANCELLING. Because CANCELLING also counts as
+    # active (SyncJobRepository.get_active_for_sync), that stall blocks every new
+    # sync for the connection until the stuck-job sweeper reaches it - a >3 minute
+    # cutoff on a 10 minute schedule, so up to ~13 minutes of a connection that
+    # refuses to sync. Accepting a re-cancel lets the "workflow not found" branch
+    # below settle it to CANCELLED immediately instead.
     job_status_str = sync_job.status.value if hasattr(sync_job.status, "value") else sync_job.status
-    if job_status_str not in [SyncJobStatus.PENDING.value, SyncJobStatus.RUNNING.value]:
+    cancellable_statuses = [
+        SyncJobStatus.PENDING.value,
+        SyncJobStatus.RUNNING.value,
+        SyncJobStatus.CANCELLING.value,
+    ]
+    if job_status_str not in cancellable_statuses:
         raise HTTPException(
             status_code=400,
             detail=f"Cannot cancel job in {job_status_str} state",
         )
 
-    # Set transitional status to CANCELLING immediately
-    await sync_job_service.update_status(
-        sync_job_id=job_id,
-        status=SyncJobStatus.CANCELLING,
-        ctx=ctx,
-    )
+    # Set transitional status to CANCELLING immediately (already there on a re-cancel)
+    if job_status_str != SyncJobStatus.CANCELLING.value:
+        await sync_job_service.update_status(
+            sync_job_id=job_id,
+            status=SyncJobStatus.CANCELLING,
+            ctx=ctx,
+        )
 
     # Fire-and-forget cancellation request to Temporal
     cancel_result = await temporal_workflow_service.cancel_sync_job_workflow(str(job_id), ctx)
 
     if not cancel_result["success"]:
-        # Actual Temporal connectivity/availability error - revert status
-        fallback_status = (
-            SyncJobStatus.RUNNING
-            if sync_job.status == SyncJobStatus.RUNNING
-            else SyncJobStatus.PENDING
-        )
-        await sync_job_service.update_status(
-            sync_job_id=job_id,
-            status=fallback_status,
-            ctx=ctx,
-        )
+        # Actual Temporal connectivity/availability error - revert status.
+        # A job that was already CANCELLING never left it, so there is nothing to
+        # revert, and reverting would regress it to RUNNING and re-arm the stall.
+        # Compare the normalized string: sync_job.status may be a plain str, in
+        # which case the previous enum comparison silently fell through to PENDING.
+        if job_status_str != SyncJobStatus.CANCELLING.value:
+            fallback_status = (
+                SyncJobStatus.RUNNING
+                if job_status_str == SyncJobStatus.RUNNING.value
+                else SyncJobStatus.PENDING
+            )
+            await sync_job_service.update_status(
+                sync_job_id=job_id,
+                status=fallback_status,
+                ctx=ctx,
+            )
         raise HTTPException(status_code=502, detail="Failed to request cancellation from Temporal")
 
     # If workflow wasn't found, mark job as CANCELLED directly
