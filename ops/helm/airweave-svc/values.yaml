@@ -411,7 +411,8 @@ vespa:
   env:
     VESPA_IGNORE_NOT_ENOUGH_MEMORY: 'true'
     VESPA_CONFIGSERVER_JVMARGS: '-Xms128m -Xmx512m'
-    VESPA_CONFIGSERVERS: vespa-0.vespa.airweave-svc.svc.cluster.local
+    # VESPA_CONFIGSERVERS is derived from .Release.Namespace in
+    # templates/vespa.yaml — do not pin it here.
   initJob:
     backoffLimit: 5
     ttlSecondsAfterFinished: 3600
@@ -486,7 +487,7 @@ docling:
     limits:
       cpu: '2'
       memory: 4Gi
-      ephemeral-storage: 10Gi
+      ephemeral-storage: 30Gi
     requests:
       cpu: 500m
       memory: 2Gi
