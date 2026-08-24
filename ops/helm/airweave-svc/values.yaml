@@ -204,9 +204,6 @@ env:
   WEB_FETCHER_MAX_CONCURRENT: '10'
   OPENAI_MAX_CONCURRENT: '20'
 
-  # Docling OCR
-  DOCLING_BASE_URL: http://docling:5001
-
   # Svix webhooks
   SVIX_URL: http://svix:8071
   WEBHOOK_VERIFY_ENDPOINTS: 'true'
@@ -478,7 +475,12 @@ svix:
 # Docling (OCR / document conversion)
 # =============================================================================
 docling:
-  enabled: true
+  # Off: images are dropped before embedding and the classifier re-OCRs them with
+  # a vision model, so docling only served PDF/DOCX/PPTX — which Mistral OCR
+  # already covers as the primary provider. The pod cost 2Gi/4Gi memory and 10Gi
+  # ephemeral-storage for that. Re-enable by flipping this and restoring
+  # DOCLING_BASE_URL: http://docling:5001 in .Values.env above.
+  enabled: false
   image: ghcr.io/docling-project/docling-serve:latest
   service:
     port: 5001
