@@ -193,7 +193,7 @@ class EntityTransformer:
         """
         entity_type = self._get_entity_type(entity)
         schema = self._get_vespa_schema(entity)
-        doc_id = f"{entity_type}_{entity.entity_id}"
+        doc_id = self._build_doc_id(entity_type, entity.entity_id)
 
         # Build fields from various sources
         fields = self._build_base_fields(entity)
@@ -283,6 +283,39 @@ class EntityTransformer:
 
             fields["textual_representation"] = entity.textual_representation
         return fields
+
+    def _build_doc_id(self, entity_type: str, entity_id: str) -> str:
+        """Build the Vespa document ID, scoped to this collection.
+
+        The collection UUID is part of the document *identity*, not just a
+        filterable field. Source object ids (a Confluence page id, a Drive file
+        id) are only unique within their source, so two collections syncing the
+        same source produce identical ``entity_id`` values. Without the
+        collection prefix both write to one Vespa document and the later sync
+        silently overwrites the earlier one -- taking ownership of
+        ``airweave_system_metadata_collection_id`` with it, so the first
+        collection's searches return nothing even though its Postgres rows and
+        its sync jobs both still report success.
+
+        ``collection_id`` is optional on this transformer, so fall back to the
+        unscoped id rather than emitting a literal ``"None"`` prefix, which
+        would collide across every collection all over again.
+
+        Args:
+            entity_type: Entity class name (e.g. ``ConfluencePageEntity``).
+            entity_id: Entity ID, already carrying any ``__chunk_N`` suffix.
+
+        Returns:
+            The Vespa user-specified document ID.
+
+        Example:
+            >>> t = EntityTransformer(collection_id=UUID(int=1))
+            >>> t._build_doc_id("ConfluencePageEntity", "1048577__chunk_0")
+            '00000000-0000-0000-0000-000000000001_ConfluencePageEntity_1048577__chunk_0'
+        """
+        if self.collection_id:
+            return f"{self.collection_id}_{entity_type}_{entity_id}"
+        return f"{entity_type}_{entity_id}"
 
     def _add_system_metadata_fields(
         self, fields: Dict[str, Any], entity: BaseEntity, entity_type: str
