@@ -412,14 +412,14 @@ class JiraConfig(SourceConfig):
     """Jira configuration schema."""
 
     project_keys: list[str] = Field(
-        ...,
+        default_factory=list,
         title="Project Keys",
         description=(
             "List of Jira project keys to sync (e.g., 'PROJ', 'DEV', 'MARKET'). "
             "Only the specified projects will be synced. Hit enter to add new project. "
-            " You can find project keys in your Jira project settings."
+            "You can find project keys in your Jira project settings. "
+            "Leave empty to sync every project the credential can access."
         ),
-        min_length=1,
     )
 
     # Zephyr Scale integration (requires ZEPHYR_SCALE feature flag)
