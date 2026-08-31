@@ -214,17 +214,23 @@ class JiraSource(BaseSource):
         """Generate JiraProjectEntity objects."""
         self.logger.info("Starting project entity generation")
 
-        project_keys_filter = self._project_keys
-        if not project_keys_filter:
-            raise ValueError(
-                "Project keys configuration is required. Please specify which Jira projects "
-                "to sync by editing the source connection details."
-            )
-
-        project_keys_filter = [key.upper() for key in project_keys_filter]
+        # An empty filter means "every project this credential can read". Requiring a
+        # key up front was unsatisfiable by construction: the project list can only be
+        # read with the OAuth token, which does not exist until after consent, so the
+        # user had to guess a key before anything could tell them what the keys were.
+        # A wrong guess names a real-but-empty project and the sync reports success
+        # having indexed nothing.
+        project_keys_filter = [key.upper() for key in self._project_keys]
         project_keys_filter_set = set(project_keys_filter)
 
-        self.logger.info(f"Project filter: will sync only projects with keys {project_keys_filter}")
+        if project_keys_filter:
+            self.logger.info(
+                f"Project filter: will sync only projects with keys {project_keys_filter}"
+            )
+        else:
+            self.logger.info(
+                "No project filter configured — syncing every accessible Jira project"
+            )
 
         search_api_path = "/rest/api/3/project/search"
         max_results = 50
@@ -278,10 +284,15 @@ class JiraSource(BaseSource):
                         f"Some requested projects were not found or not accessible: "
                         f"{sorted(missing_keys)}"
                     )
-                if matched_count == 0:
+                if matched_count == 0 and project_keys_filter:
                     self.logger.warning(
                         f"No projects matched the filter! Requested: {project_keys_filter}, "
                         f"but none were found."
+                    )
+                elif matched_count == 0:
+                    self.logger.warning(
+                        "No Jira projects are visible to this credential on site "
+                        f"{self.site_url or 'unknown'}."
                     )
                 else:
                     self.logger.info(
