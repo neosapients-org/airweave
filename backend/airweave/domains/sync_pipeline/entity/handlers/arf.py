@@ -4,7 +4,7 @@ Stores raw entity data to the storage backend (local filesystem or cloud storage
 for debugging, replay, and audit purposes.
 """
 
-from typing import List
+from typing import List, Set
 
 from airweave.domains.arf.protocols import ArfServiceProtocol
 from airweave.domains.sync_pipeline.contexts import SyncContext
@@ -67,13 +67,17 @@ class ArfHandler(EntityActionHandler):
         batch: EntityActionBatch,
         sync_context: SyncContext,
         runtime: SyncRuntime,
-    ) -> None:
+    ) -> Set[str]:
+        """Handle batch. Raw storage never silently drops an entity — any
+        failure raises — so this handler never reports dropped ids.
+        """
         if batch.deletes:
             await self.handle_deletes(batch.deletes, sync_context)
         if batch.updates:
             await self.handle_updates(batch.updates, sync_context, runtime)
         if batch.inserts:
             await self.handle_inserts(batch.inserts, sync_context, runtime)
+        return set()
 
     async def handle_inserts(
         self,
