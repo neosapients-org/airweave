@@ -11,6 +11,7 @@ from uuid import UUID
 
 _UNSAFE_CHARS_RE = re.compile(r'[/\\:*?"<>|]')
 _MULTI_UNDERSCORE_RE = re.compile(r"_+")
+_DRIVE_LETTER_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 class StoragePaths:
@@ -72,6 +73,34 @@ class StoragePaths:
         return f"{cls.arf_sync_path(sync_id)}/files"
 
     # =========================================================================
+    # Upload path builders (neo_file_upload source)
+    # =========================================================================
+
+    UPLOAD_PREFIX = "uploads"
+
+    @classmethod
+    def upload_prefix(cls, organization_id: Union[str, UUID], collection_readable_id: str) -> str:
+        """Base prefix for a collection's uploaded files.
+
+        uploads/{organization_id}/{collection_readable_id}/
+        """
+        return f"{cls.UPLOAD_PREFIX}/{organization_id}/{collection_readable_id}"
+
+    @classmethod
+    def upload_file_path(
+        cls,
+        organization_id: Union[str, UUID],
+        collection_readable_id: str,
+        relative_path: str,
+    ) -> str:
+        """Full path for one uploaded file under a collection's upload prefix.
+
+        The caller is responsible for validating ``relative_path`` is a safe,
+        relative, non-traversing path before calling this.
+        """
+        return f"{cls.upload_prefix(organization_id, collection_readable_id)}/{relative_path}"
+
+    # =========================================================================
     # Temp path builders
     # =========================================================================
 
@@ -112,6 +141,48 @@ class StoragePaths:
         return safe[:max_length]
 
     _safe_filename = safe_filename
+
+    @staticmethod
+    def safe_relative_path(value: str, max_segment_length: int = 200) -> Optional[str]:
+        """Validate and normalize a client-supplied relative file path.
+
+        Unlike :meth:`safe_filename`, this preserves folder structure (each
+        ``/``-separated segment is sanitized individually) rather than
+        collapsing the whole value to one hashed name — needed so an
+        uploaded folder's structure survives.
+
+        Returns ``None`` if the path is empty, absolute, contains a ``..``
+        traversal segment, or contains a drive letter — callers MUST treat
+        ``None`` as "reject this file", never fall back to a default path.
+        """
+        if not value:
+            return None
+
+        # Reject Windows drive letters (e.g. "C:\\Windows") specifically —
+        # a single ASCII letter followed by ':' at the very start — rather
+        # than any colon anywhere, so a colon inside an ordinary filename is
+        # sanitized like any other unsafe character instead of rejected.
+        if _DRIVE_LETTER_RE.match(value):
+            return None
+
+        posix_value = value.replace("\\", "/")
+        if posix_value.startswith("/"):
+            return None
+
+        segments = [seg for seg in posix_value.split("/") if seg not in ("", ".")]
+        if not segments or any(seg == ".." for seg in segments):
+            return None
+
+        safe_segments = [
+            _MULTI_UNDERSCORE_RE.sub("_", _UNSAFE_CHARS_RE.sub("_", seg)).strip("_")[
+                :max_segment_length
+            ]
+            for seg in segments
+        ]
+        if any(not seg for seg in safe_segments):
+            return None
+
+        return "/".join(safe_segments)
 
 
 # Convenience alias
