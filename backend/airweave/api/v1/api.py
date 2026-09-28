@@ -13,6 +13,7 @@ from airweave.api.v1.endpoints import (
     entity_counts,
     file_retrieval,
     health,
+    neo_file_uploads,
     organizations,
     search,
     search_legacy,
@@ -50,6 +51,9 @@ api_router.include_router(sync.router, prefix="/sync", tags=["sync"])
 api_router.include_router(entities.router, prefix="/entities", tags=["entities"])
 api_router.include_router(entity_counts.router, prefix="/entity-counts", tags=["entity-counts"])
 api_router.include_router(file_retrieval.router, prefix="/files", tags=["files"])
+api_router.include_router(
+    neo_file_uploads.router, prefix="/file-uploads", tags=["neo-file-uploads"]
+)
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
 api_router.include_router(search.admin_router, prefix="/admin/collections", tags=["admin"])
 api_router.include_router(
