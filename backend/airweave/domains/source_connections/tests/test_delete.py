@@ -80,6 +80,7 @@ def _build_service(
     response_builder=None,
     sync_service=None,
     sync_repo=None,
+    storage_backend=None,
 ):
     return SourceConnectionDeletionService(
         sc_repo=sc_repo or FakeSourceConnectionRepository(),
@@ -87,6 +88,7 @@ def _build_service(
         response_builder=response_builder or FakeResponseBuilder(),
         sync_service=sync_service or FakeSyncService(),
         sync_repo=sync_repo or FakeSyncRepository(),
+        storage_backend=storage_backend or AsyncMock(),
     )
 
 
@@ -207,3 +209,63 @@ async def test_delete_sync_service_failure_propagates():
 
     with pytest.raises(RuntimeError, match="sync delete boom"):
         await svc.delete(AsyncMock(), id=sc.id, ctx=_make_ctx())
+
+
+# ---------------------------------------------------------------------------
+# neo_file_upload storage cleanup
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_neo_file_upload_cleans_up_storage():
+    """Deleting a neo_file_upload connection also deletes its uploaded files."""
+    sc = _make_sc(short_name="neo_file_upload")
+    col = _make_collection(readable_id="my-collection")
+
+    sc_repo = FakeSourceConnectionRepository()
+    sc_repo.seed(sc.id, sc)
+    col_repo = FakeCollectionRepository()
+    col_repo.seed_readable(sc.readable_collection_id, col)
+
+    storage = AsyncMock()
+    svc = _build_service(sc_repo=sc_repo, collection_repo=col_repo, storage_backend=storage)
+
+    await svc.delete(AsyncMock(), id=sc.id, ctx=_make_ctx())
+
+    storage.delete.assert_awaited_once_with(f"uploads/{ORG_ID}/my-collection")
+
+
+async def test_delete_other_source_type_does_not_touch_storage():
+    """Only neo_file_upload connections own files in storage; others must not."""
+    sc = _make_sc(short_name="github")
+    col = _make_collection()
+
+    sc_repo = FakeSourceConnectionRepository()
+    sc_repo.seed(sc.id, sc)
+    col_repo = FakeCollectionRepository()
+    col_repo.seed_readable(sc.readable_collection_id, col)
+
+    storage = AsyncMock()
+    svc = _build_service(sc_repo=sc_repo, collection_repo=col_repo, storage_backend=storage)
+
+    await svc.delete(AsyncMock(), id=sc.id, ctx=_make_ctx())
+
+    storage.delete.assert_not_awaited()
+
+
+async def test_delete_neo_file_upload_survives_storage_cleanup_failure():
+    """A storage cleanup failure must not fail the connection delete itself."""
+    sc = _make_sc(short_name="neo_file_upload")
+    col = _make_collection()
+
+    sc_repo = FakeSourceConnectionRepository()
+    sc_repo.seed(sc.id, sc)
+    col_repo = FakeCollectionRepository()
+    col_repo.seed_readable(sc.readable_collection_id, col)
+
+    storage = AsyncMock()
+    storage.delete.side_effect = RuntimeError("bucket unreachable")
+    svc = _build_service(sc_repo=sc_repo, collection_repo=col_repo, storage_backend=storage)
+
+    result = await svc.delete(AsyncMock(), id=sc.id, ctx=_make_ctx())
+
+    assert result.id == sc.id
