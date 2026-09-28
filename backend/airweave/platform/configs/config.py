@@ -945,6 +945,26 @@ class FileStubConfig(SourceConfig):
     )
 
 
+class NeoFileUploadConfig(SourceConfig):
+    """Configuration for the neo_file_upload source.
+
+    Points at the storage-backend prefix a dedicated upload API endpoint
+    writes uploaded files to. The server sets ``upload_prefix`` itself when
+    creating the connection — it is never taken from client input, so a
+    caller cannot point a connection at another organization's files.
+    """
+
+    upload_prefix: str = Field(
+        ...,
+        title="Upload Storage Prefix",
+        description=(
+            "Storage-backend prefix (e.g. 'uploads/{org_id}/{collection_readable_id}') "
+            "under which uploaded files are stored."
+        ),
+        min_length=1,
+    )
+
+
 ExceptionType = Literal[
     "runtime_error",
     "source_auth_error",
