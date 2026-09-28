@@ -420,6 +420,7 @@ def create_container(settings: Settings) -> Container:
         response_builder=sync_deps["response_builder"],
         sync_service=sync_service,
         sync_repo=source_deps["sync_repo"],
+        storage_backend=storage_backend,
     )
     update_service = SourceConnectionUpdateService(
         sc_repo=source_deps["sc_repo"],
