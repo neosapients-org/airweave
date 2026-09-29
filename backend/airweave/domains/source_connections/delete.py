@@ -13,8 +13,15 @@ from airweave.domains.source_connections.protocols import (
     SourceConnectionDeletionServiceProtocol,
     SourceConnectionRepositoryProtocol,
 )
+from airweave.domains.storage.paths import paths as storage_paths
+from airweave.domains.storage.protocols import StorageBackend
 from airweave.domains.syncs.protocols import SyncRepositoryProtocol, SyncServiceProtocol
 from airweave.schemas.source_connection import SourceConnection as SourceConnectionSchema
+
+# Source short_names whose entities are backed by files this service owns in
+# the storage backend (rather than data pulled live from a third party), so
+# deleting the connection must also delete those files or they leak forever.
+_SOURCES_WITH_OWNED_STORAGE_FILES = frozenset({"neo_file_upload"})
 
 
 class SourceConnectionDeletionService(SourceConnectionDeletionServiceProtocol):
@@ -34,12 +41,14 @@ class SourceConnectionDeletionService(SourceConnectionDeletionServiceProtocol):
         response_builder: ResponseBuilderProtocol,
         sync_service: SyncServiceProtocol,
         sync_repo: SyncRepositoryProtocol,
+        storage_backend: StorageBackend,
     ) -> None:
         self._sc_repo = sc_repo
         self._collection_repo = collection_repo
         self._response_builder = response_builder
         self._sync_service = sync_service
         self._sync_repo = sync_repo
+        self._storage = storage_backend
 
     async def delete(
         self,
@@ -82,4 +91,28 @@ class SourceConnectionDeletionService(SourceConnectionDeletionServiceProtocol):
             # the source connection row directly.
             await self._sc_repo.remove(db, id=id, ctx=ctx)
 
+        if source_conn.short_name in _SOURCES_WITH_OWNED_STORAGE_FILES:
+            await self._cleanup_owned_storage_files(collection, ctx)
+
         return response
+
+    async def _cleanup_owned_storage_files(
+        self, collection: schemas.CollectionRecord, ctx: ApiContext
+    ) -> None:
+        """Best-effort delete of files this connection owns in storage.
+
+        Failure here must not fail the connection delete — the connection
+        and sync rows are already gone — but a leftover file costs storage
+        forever with no other cleanup path, so it is logged loudly.
+        """
+        upload_prefix = storage_paths.upload_prefix(ctx.organization.id, collection.readable_id)
+        try:
+            deleted = await self._storage.delete(upload_prefix)
+            ctx.logger.info(
+                f"Deleted uploaded files at {upload_prefix} (found_any={deleted})"
+            )
+        except Exception as e:
+            ctx.logger.warning(
+                f"Failed to delete uploaded files at {upload_prefix}: {e}. "
+                "These files are now orphaned in storage and need manual cleanup."
+            )

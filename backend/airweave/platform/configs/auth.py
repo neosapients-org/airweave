@@ -1126,6 +1126,22 @@ class FileStubAuthConfig(AuthConfig):
     )
 
 
+class NeoFileUploadAuthConfig(AuthConfig):
+    """Neo file upload source authentication credentials schema.
+
+    Files are uploaded via a dedicated API endpoint (not synced from a
+    third-party system), so there is nothing to authenticate against. This
+    is a placeholder for consistency with other DIRECT-auth sources.
+    """
+
+    stub_key: str = Field(
+        default="neo-file-upload",
+        title="Stub Key",
+        description="Placeholder field (any value works, this source doesn't require "
+        "real authentication)",
+    )
+
+
 class SnapshotAuthConfig(BaseConfig):
     """Optional authentication for blob storage access.
 
