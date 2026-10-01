@@ -62,7 +62,11 @@ class SourceConnectionDeletionService(SourceConnectionDeletionServiceProtocol):
         if not source_conn:
             raise NotFoundException("Source connection not found")
 
+        # Read everything needed after removal up front: removing the row expires
+        # ``source_conn``, and touching an expired attribute on an AsyncSession
+        # triggers a sync lazy refresh that raises ``MissingGreenlet``.
         sync_id = source_conn.sync_id
+        owns_storage_files = source_conn.short_name in _SOURCES_WITH_OWNED_STORAGE_FILES
         collection_orm = await self._collection_repo.get_by_readable_id(
             db, readable_id=source_conn.readable_collection_id, ctx=ctx
         )
@@ -91,7 +95,7 @@ class SourceConnectionDeletionService(SourceConnectionDeletionServiceProtocol):
             # the source connection row directly.
             await self._sc_repo.remove(db, id=id, ctx=ctx)
 
-        if source_conn.short_name in _SOURCES_WITH_OWNED_STORAGE_FILES:
+        if owns_storage_files:
             await self._cleanup_owned_storage_files(collection, ctx)
 
         return response

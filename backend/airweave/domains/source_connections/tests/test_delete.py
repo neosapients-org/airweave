@@ -269,3 +269,54 @@ async def test_delete_neo_file_upload_survives_storage_cleanup_failure():
     result = await svc.delete(AsyncMock(), id=sc.id, ctx=_make_ctx())
 
     assert result.id == sc.id
+
+
+@pytest.mark.parametrize("has_sync", [False, True], ids=["no_sync", "with_sync"])
+async def test_delete_does_not_read_orm_attributes_after_removal(has_sync):
+    """Regression: removing the row expires ``source_conn``; reading an attribute
+    afterwards triggers an async lazy refresh and raises ``MissingGreenlet``, which
+    500'd a delete that had already succeeded and skipped storage cleanup.
+    """
+    from unittest.mock import PropertyMock
+
+    sc = _make_sc(sync_id=uuid4() if has_sync else None, short_name="neo_file_upload")
+    col = _make_collection()
+
+    sc_repo = FakeSourceConnectionRepository()
+    sc_repo.seed(sc.id, sc)
+    col_repo = FakeCollectionRepository()
+    col_repo.seed_readable(sc.readable_collection_id, col)
+    sync_repo = FakeSyncRepository()
+
+    removed = False
+
+    def _mark_removed(*_args, **_kwargs):
+        nonlocal removed
+        removed = True
+
+    for repo in (sc_repo, sync_repo):
+        original = repo.remove
+
+        async def _remove(*args, _original=original, **kwargs):
+            result = await _original(*args, **kwargs)
+            _mark_removed()
+            return result
+
+        repo.remove = _remove
+
+    def _short_name():
+        if removed:
+            raise RuntimeError("MissingGreenlet: attribute read after the row was removed")
+        return "neo_file_upload"
+
+    type(sc).short_name = PropertyMock(side_effect=_short_name)
+
+    storage = AsyncMock()
+    svc = _build_service(
+        sc_repo=sc_repo, collection_repo=col_repo, sync_repo=sync_repo, storage_backend=storage
+    )
+
+    result = await svc.delete(AsyncMock(), id=sc.id, ctx=_make_ctx())
+
+    assert result.id == sc.id
+    storage.delete.assert_awaited_once()
