@@ -2,6 +2,14 @@
 
 All keys must be populated in the AWS Secrets Manager secret created by Terraform:
 - **Dev**: `neo-airweave-svc-dev-use1-shared1-secrets`
+- **Staging**: `neo-airweave-svc-staging-use1-shared1-secrets`
+
+Generate a **fresh** value per environment for every generated secret
+(`ENCRYPTION_KEY`, `STATE_SECRET`, `SVIX_JWT_SECRET`, `POSTGRES_PASSWORD`,
+`REDIS_PASSWORD`). Do not copy dev's across. `ENCRYPTION_KEY` in particular is
+the Fernet key that stored source credentials are encrypted with — sharing it
+means a dev-side compromise decrypts staging's OAuth tokens. `SVIX_DB_DSN` embeds
+`POSTGRES_PASSWORD`, so regenerate the two together.
 
 The Helm `ExternalSecret` pulls the entire secret via `dataFrom.extract` and injects every key as an env var into the pod. Keys must match the backend env var names in `backend/airweave/core/config/settings.py`.
 
@@ -10,9 +18,15 @@ Non-sensitive config (hosts, ports, feature flags) lives in the Helm ConfigMap (
 ## How to populate
 
 ```bash
+# dev
 aws secretsmanager put-secret-value \
-  --secret-id airweave-svc-dev-use1-shared1-secrets \
+  --secret-id neo-airweave-svc-dev-use1-shared1-secrets \
   --secret-string file://secret-values.json
+
+# staging
+aws secretsmanager put-secret-value \
+  --secret-id neo-airweave-svc-staging-use1-shared1-secrets \
+  --secret-string file://secret-values.staging.json
 ```
 
 ## Required secrets
@@ -29,9 +43,16 @@ aws secretsmanager put-secret-value \
 | `FIRST_SUPERUSER_PASSWORD` | Password for the bootstrap admin | Strong password, min 12 chars |
 | `OPENAI_API_KEY` | OpenAI key — embeddings (`text-embedding-3-small`) and classification (`gpt-4o-mini`) | OpenAI dashboard |
 
-## Auth0 (required — `AUTH_ENABLED=true` in values.yaml)
+## Auth0 (only when `AUTH_ENABLED=true`)
 
-The config validator raises if any of these are empty while `AUTH_ENABLED=true`.
+`values.yaml` defaults `AUTH_ENABLED` to `true`, but **both dev and staging
+override it to `false`** — Airweave has no ingress in either environment and is
+reached only through neo-gateway-svc's `/v1/meridian` proxy. These keys are
+therefore **not required to bring staging up**; skip them unless you are
+enabling Auth0.
+
+If you do set `AUTH_ENABLED=true`, populate all five first: the config
+validator raises on boot if any is empty, and the pod will crashloop.
 
 | Key | Description | Where to obtain |
 |-----|-------------|-----------------|
