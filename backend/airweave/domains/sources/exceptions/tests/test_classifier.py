@@ -7,8 +7,8 @@ from airweave.domains.auth_provider.exceptions import (
     AuthProviderAccountNotFoundError,
     AuthProviderAuthError,
 )
-from airweave.domains.sources.exceptions.classifier import classify_error
 from airweave.domains.sources.exceptions import SourceAuthError, SourceTokenRefreshError
+from airweave.domains.sources.exceptions.classifier import classify_error
 from airweave.domains.sources.token_providers.exceptions import (
     TokenCredentialsInvalidError,
     TokenExpiredError,
@@ -16,7 +16,6 @@ from airweave.domains.sources.token_providers.exceptions import (
     TokenProviderServerError,
 )
 from airweave.domains.sources.token_providers.protocol import AuthProviderKind
-
 
 # ---------------------------------------------------------------------------
 # Legacy SourceAuthError / SourceTokenRefreshError
@@ -257,3 +256,100 @@ def test_auth_provider_error_unwrapped_from_cause():
 
     result = classify_error(wrapper)
     assert result.category == SourceConnectionErrorCategory.AUTH_PROVIDER_CREDENTIALS_INVALID
+
+
+# ---------------------------------------------------------------------------
+# UsageLimitExceededError → USAGE_LIMIT_EXCEEDED
+# ---------------------------------------------------------------------------
+
+
+def test_usage_limit_exceeded_classified():
+    """UsageLimitExceededError (entity cap hit) classifies as USAGE_LIMIT_EXCEEDED."""
+    from airweave.domains.usage.exceptions import UsageLimitExceededError
+
+    result = classify_error(
+        UsageLimitExceededError(
+            action_type="entities",
+            limit=50000,
+            current_usage=50103,
+        )
+    )
+    assert result.category == SourceConnectionErrorCategory.USAGE_LIMIT_EXCEEDED
+    assert result.message is not None
+    assert "50000" in result.message
+
+
+def test_usage_limit_exceeded_unwrapped_from_cause():
+    """A wrapper exception with UsageLimitExceededError as __cause__ is classified."""
+    from airweave.domains.usage.exceptions import UsageLimitExceededError
+
+    cause = UsageLimitExceededError(action_type="entities", limit=100, current_usage=101)
+    wrapper = RuntimeError("guard rail check failed")
+    wrapper.__cause__ = cause
+
+    result = classify_error(wrapper)
+    assert result.category == SourceConnectionErrorCategory.USAGE_LIMIT_EXCEEDED
+
+
+# ---------------------------------------------------------------------------
+# Rate-limit signals → RATE_LIMITED
+# ---------------------------------------------------------------------------
+
+
+def test_source_rate_limit_error_classified():
+    """The canonical 429 SourceRateLimitError classifies as RATE_LIMITED."""
+    from airweave.domains.sources.exceptions import SourceRateLimitError
+
+    result = classify_error(SourceRateLimitError(retry_after=60.0, source_short_name="hubspot"))
+    assert result.category == SourceConnectionErrorCategory.RATE_LIMITED
+    assert result.message is not None
+
+
+def test_github_403_rate_limit_classified():
+    """GitHub returns 403 for rate limits.
+
+    SourceEntityForbiddenError carrying 'rate limit' in its message is
+    classified as RATE_LIMITED.
+    """
+    from airweave.domains.sources.exceptions import SourceEntityForbiddenError
+
+    result = classify_error(
+        SourceEntityForbiddenError(
+            "Forbidden (403): API rate limit exceeded for user ID 3160046",
+            source_short_name="github",
+        )
+    )
+    assert result.category == SourceConnectionErrorCategory.RATE_LIMITED
+
+
+def test_github_403_abuse_detection_classified():
+    """GitHub's other 403 rate-limit variant — 'secondary rate limit' / abuse.
+
+    detection — is also classified as RATE_LIMITED.
+    """
+    from airweave.domains.sources.exceptions import SourceEntityForbiddenError
+
+    result = classify_error(
+        SourceEntityForbiddenError(
+            "Forbidden (403): You have triggered an abuse detection mechanism",
+            source_short_name="github",
+        )
+    )
+    assert result.category == SourceConnectionErrorCategory.RATE_LIMITED
+
+
+def test_403_without_rate_limit_message_not_classified():
+    """A plain 403 (permission denied, not rate limit) is NOT classified —.
+
+    those represent entity-level permission issues, not connection problems.
+    """
+    from airweave.domains.sources.exceptions import SourceEntityForbiddenError
+
+    result = classify_error(
+        SourceEntityForbiddenError(
+            "Forbidden (403): You don't have access to this resource",
+            source_short_name="github",
+        )
+    )
+    assert result.category is None
+    assert result.message is None

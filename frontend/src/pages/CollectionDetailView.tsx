@@ -29,8 +29,12 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import SourceConnectionStateView from "@/components/collection/SourceConnectionStateView";
+import { BrowseTable } from "@/components/collection/BrowseTable";
 import { emitCollectionEvent, onCollectionEvent, COLLECTION_DELETED, SOURCE_CONNECTION_UPDATED } from "@/lib/events";
 import { Search } from '@/search/Search';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useOrganizationStore } from "@/lib/stores/organizations";
+import { FeatureFlags } from "@/lib/constants/feature-flags";
 // import { DialogFlow } from '@/components/shared'; // TODO: Implement DialogFlow component
 import { protectedPaths } from "@/constants/paths";
 import { useEntityStateStore } from "@/stores/entityStateStore";
@@ -263,6 +267,10 @@ const Collections = () => {
 
     // Browse tree capability for selected connection
     const [selectedScSupportsBrowseTree, setSelectedScSupportsBrowseTree] = useState(false);
+
+    // Feature flag: tabular browse view (POC)
+    const hasFeature = useOrganizationStore(state => state.hasFeature);
+    const browseEnabled = hasFeature(FeatureFlags.COLLECTION_BROWSE);
 
     // Usage check from store (read-only, checking happens at app level)
     const actionChecks = useUsageStore(state => state.actionChecks);
@@ -907,13 +915,34 @@ const Collections = () => {
 
 
 
-                    {/* Add Search component when collection has any synced data */}
+                    {/* Search + (flag-gated) Browse */}
                     {collection?.readable_id && (
                         <div className="w-full max-w-[1000px] mt-10">
-                            <Search
-                                collectionReadableId={collection.readable_id}
-                                disabled={sourceConnections.length === 0}
-                            />
+                            {browseEnabled ? (
+                                <Tabs defaultValue="search" className="w-full">
+                                    <TabsList className="mb-4">
+                                        <TabsTrigger value="search">Search</TabsTrigger>
+                                        <TabsTrigger value="browse">Browse</TabsTrigger>
+                                    </TabsList>
+                                    <TabsContent value="search">
+                                        <Search
+                                            collectionReadableId={collection.readable_id}
+                                            disabled={sourceConnections.length === 0}
+                                        />
+                                    </TabsContent>
+                                    <TabsContent value="browse">
+                                        <BrowseTable
+                                            collectionReadableId={collection.readable_id}
+                                            sourceConnections={sourceConnections}
+                                        />
+                                    </TabsContent>
+                                </Tabs>
+                            ) : (
+                                <Search
+                                    collectionReadableId={collection.readable_id}
+                                    disabled={sourceConnections.length === 0}
+                                />
+                            )}
                         </div>
                     )}
 

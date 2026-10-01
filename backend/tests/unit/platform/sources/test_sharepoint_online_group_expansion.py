@@ -6,7 +6,10 @@ migration path for tracked_sp_groups.
 
 from unittest.mock import MagicMock
 
-from airweave.platform.sources.sharepoint_online.source import SharePointOnlineBase
+from airweave.platform.sources.sharepoint_online.source import (
+    EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL,
+    SharePointOnlineBase,
+)
 
 # ---------------------------------------------------------------------------
 # _email_from_membership_login
@@ -179,6 +182,69 @@ def test_parse_security_group_non_federated_returns_none():
         "Title": "On-prem Group",
     }
     assert SharePointOnlineBase._parse_sp_group_member(user) is None
+
+
+def test_parse_everyone_except_external_claim_returns_synthetic_sentinel():
+    """The rolemanager/spo-grid-all-users claim → synthetic group sentinel."""
+    user = {
+        "PrincipalType": 4,
+        "LoginName": (
+            "c:0-.f|rolemanager|spo-grid-all-users/26adf163-2699-4d04-a0ad-3d935411bf45"
+        ),
+        "Title": "Everyone except external users",
+    }
+    assert SharePointOnlineBase._parse_sp_group_member(user) == (
+        EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL,
+        "group",
+    )
+
+
+def test_parse_everyone_except_external_uppercase_tenant_id():
+    """Tenant ID GUIDs may be upper- or lowercase; both should match."""
+    user = {
+        "PrincipalType": 4,
+        "LoginName": (
+            "c:0-.f|rolemanager|spo-grid-all-users/26ADF163-2699-4D04-A0AD-3D935411BF45"
+        ),
+        "Title": "Everyone except external users",
+    }
+    assert SharePointOnlineBase._parse_sp_group_member(user) == (
+        EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL,
+        "group",
+    )
+
+
+def test_parse_other_rolemanager_claim_skipped_and_flagged_as_unrecognized():
+    """A different rolemanager claim shouldn't match; should be flagged for logging."""
+    user = {
+        "PrincipalType": 4,
+        "LoginName": "c:0-.f|rolemanager|some-future-claim",
+        "Title": "Custom Role",
+    }
+    assert SharePointOnlineBase._parse_sp_group_member(user) is None
+    assert SharePointOnlineBase._is_unrecognized_pt4_login(user) is True
+
+
+def test_is_unrecognized_pt4_login_false_for_known_shapes():
+    """Known PT=4 shapes (Entra group, claim) must NOT be flagged as unrecognized."""
+    entra = {
+        "PrincipalType": 4,
+        "LoginName": (
+            "c:0o.c|federateddirectoryclaimprovider|7d344400-39bc-4ee7-aa6e-437bd8de85c0"
+        ),
+    }
+    claim = {
+        "PrincipalType": 4,
+        "LoginName": "c:0-.f|rolemanager|spo-grid-all-users/26adf163-2699-4d04-a0ad-3d935411bf45",
+    }
+    assert SharePointOnlineBase._is_unrecognized_pt4_login(entra) is False
+    assert SharePointOnlineBase._is_unrecognized_pt4_login(claim) is False
+
+
+def test_is_unrecognized_pt4_login_false_for_non_pt4():
+    """The flag is scoped to PT=4 only; other PrincipalTypes are skipped silently."""
+    user = {"PrincipalType": 1, "LoginName": "i:0#.f|membership|alice@example.com"}
+    assert SharePointOnlineBase._is_unrecognized_pt4_login(user) is False
 
 
 def test_parse_distlist_skipped():

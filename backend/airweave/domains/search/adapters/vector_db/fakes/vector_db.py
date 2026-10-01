@@ -91,9 +91,10 @@ class FakeVectorDB:
         self,
         filter_groups: list[FilterGroup],
         collection_id: str,
+        name_substring: str | None = None,
     ) -> int:
         """Return seeded count, or raise seeded error."""
-        self._calls.append(("count", filter_groups, collection_id))
+        self._calls.append(("count", filter_groups, collection_id, name_substring))
         if self._count_error:
             err = self._count_error
             self._count_error = None
@@ -106,9 +107,12 @@ class FakeVectorDB:
         collection_id: str,
         limit: int = 50,
         offset: int = 0,
+        name_substring: str | None = None,
     ) -> list[SearchResult]:
         """Return seeded filter results, or raise seeded error."""
-        self._calls.append(("filter_search", filter_groups, collection_id, limit, offset))
+        self._calls.append(
+            ("filter_search", filter_groups, collection_id, limit, offset, name_substring)
+        )
         if self._filter_error:
             err = self._filter_error
             self._filter_error = None

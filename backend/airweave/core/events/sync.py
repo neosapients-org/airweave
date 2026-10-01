@@ -19,6 +19,7 @@ from airweave.core.events.enums import (
     QueryEventType,
     SyncEventType,
 )
+from airweave.core.shared_models import SourceConnectionErrorCategory
 
 
 class TypeActionCounts(BaseModel):
@@ -135,6 +136,7 @@ class SyncLifecycleEvent(DomainEvent):
 
     # Error info (for failed events)
     error: Optional[str] = None
+    error_category: Optional[str] = None
 
     @classmethod
     def pending(
@@ -258,8 +260,15 @@ class SyncLifecycleEvent(DomainEvent):
         collection_name: str,
         collection_readable_id: str,
         error: str,
+        error_category: Optional[SourceConnectionErrorCategory] = None,
     ) -> "SyncLifecycleEvent":
-        """Create a FAILED event (error)."""
+        """Create a FAILED event.
+
+        ``error_category`` carries the classified failure reason (e.g.
+        ``oauth_credentials_expired``, ``usage_limit_exceeded``) so
+        webhook subscribers can distinguish user-actionable failures from
+        system outages without parsing the free-text ``error`` field.
+        """
         return cls(
             event_type=SyncEventType.FAILED,
             organization_id=organization_id,
@@ -271,6 +280,7 @@ class SyncLifecycleEvent(DomainEvent):
             collection_name=collection_name,
             collection_readable_id=collection_readable_id,
             error=error,
+            error_category=error_category.value if error_category is not None else None,
         )
 
     @classmethod

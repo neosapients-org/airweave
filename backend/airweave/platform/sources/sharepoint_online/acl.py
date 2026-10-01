@@ -6,7 +6,13 @@ Graph permission model:
 - grantedToV2.user → user:{email}
 - grantedToV2.group (Entra ID) → group:entra:{group_id}
 - grantedToV2.siteGroup → group:sp:{site_group_name}
-- link with scope "organization" → is_public (org-wide access)
+- link with scope "anonymous" → is_public (true tenant-wide / internet-wide access)
+- link with scope "organization" or "users" → group:sp:sharinglinks.{itemId}.{scopeRole}.{linkId}
+  derived from the permission and the file's SP UniqueId. Microsoft represents
+  these links as a ``link`` permission rather than a ``siteGroup`` grant, but
+  internally tracks redeemers as members of a ``SharingLinks.<itemId>.<scopeRole>.<linkId>``
+  SP site group. We translate so that membership intersection at search time
+  works for users who have actually redeemed the link.
 """
 
 from typing import Any, Dict, List, Optional
@@ -76,20 +82,66 @@ def has_read_permission(permission: Dict[str, Any]) -> bool:
     return any(r in ("read", "write", "owner", "sp.full control") for r in roles)
 
 
-def is_org_wide_link(permission: Dict[str, Any]) -> bool:
-    """Check if a permission is an organization-wide sharing link."""
-    link = permission.get("link")
-    if not link:
-        return False
-    return link.get("scope", "") == "organization"
-
-
 def is_anonymous_link(permission: Dict[str, Any]) -> bool:
     """Check if a permission is an anonymous sharing link."""
     link = permission.get("link")
     if not link:
         return False
     return link.get("scope", "") == "anonymous"
+
+
+# Mapping from Graph (link.scope, link.type) to SharePoint's SharingLinks group
+# suffix. Verified empirically against neenacorp.sharepoint.com:
+#   organization+edit → OrganizationEdit
+#   organization+view → OrganizationView
+#   users+edit / users+view → Flexible  (both collapse; SP stores role separately)
+# Anonymous is handled by ``is_public`` and does not need a derived group.
+_SCOPE_ROLE_MAP: Dict[tuple, str] = {
+    ("organization", "edit"): "OrganizationEdit",
+    ("organization", "view"): "OrganizationView",
+    ("users", "edit"): "Flexible",
+    ("users", "view"): "Flexible",
+}
+
+
+def link_permission_to_sp_group_viewer(
+    permission: Dict[str, Any], sp_unique_id: Optional[str]
+) -> Optional[str]:
+    """Derive the SharingLinks SP site group viewer for a non-anonymous link permission.
+
+    SharePoint creates an internal site group named
+    ``SharingLinks.<fileSpUniqueId>.<ScopeRole>.<linkId>`` for each sharing
+    link, whose members are the users who have redeemed the link. The Graph
+    per-item permissions response represents the link itself but does *not*
+    return that site group as a separate ``siteGroup`` grant, so we translate.
+
+    Args:
+        permission: A Graph permission with a ``link`` block.
+        sp_unique_id: The file's SharePoint UniqueId (lowercase GUID, no
+            braces). Pass ``None`` for site/drive-level permissions, where
+            sharing-link translation does not apply.
+
+    Returns:
+        ``group:sp:sharinglinks.<id>.<scoperole>.<linkid>`` viewer string, or
+        ``None`` if the permission isn't a translatable link or required
+        fields are missing.
+    """
+    if not sp_unique_id:
+        return None
+    link = permission.get("link")
+    if not link:
+        return None
+    scope = link.get("scope", "")
+    if scope == "anonymous":
+        return None  # handled by is_public
+    scope_role = _SCOPE_ROLE_MAP.get((scope, link.get("type", "")))
+    if not scope_role:
+        return None  # unknown scope/type combination — be conservative
+    link_id = permission.get("id", "")
+    if not link_id:
+        return None
+    title = f"SharingLinks.{sp_unique_id}.{scope_role}.{link_id}"
+    return f"group:sp:{title.lower()}"
 
 
 def _extract_identity_principals(perm: Dict[str, Any], viewers: List[str]) -> None:
@@ -106,11 +158,17 @@ def _extract_identity_principals(perm: Dict[str, Any], viewers: List[str]) -> No
 
 async def extract_access_control(
     permissions: List[Dict[str, Any]],
+    sp_unique_id: Optional[str] = None,
 ) -> AccessControl:
     """Build AccessControl from Graph API permissions.
 
     Args:
         permissions: List of permission objects from Graph API.
+        sp_unique_id: The SharePoint UniqueId of the item the permissions
+            belong to (lowercase GUID, no braces). Required to translate
+            non-anonymous sharing-link permissions into their corresponding
+            ``SharingLinks.*`` SP site group viewer. Pass ``None`` for
+            site/drive-level permission lists.
 
     Returns:
         AccessControl with viewers and is_public flag.
@@ -122,8 +180,15 @@ async def extract_access_control(
         if not has_read_permission(perm):
             continue
 
-        if is_org_wide_link(perm) or is_anonymous_link(perm):
+        if is_anonymous_link(perm):
             is_public = True
+            continue
+
+        # Non-anonymous sharing links: translate to the per-link SP site group.
+        link_viewer = link_permission_to_sp_group_viewer(perm, sp_unique_id)
+        if link_viewer:
+            if link_viewer not in viewers:
+                viewers.append(link_viewer)
             continue
 
         principal = extract_principal_from_permission(perm)

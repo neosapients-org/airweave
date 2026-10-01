@@ -22,7 +22,11 @@ from airweave import schemas
 from airweave.api.context import ApiContext
 from airweave.core.constants.reserved_ids import NATIVE_VESPA_UUID
 from airweave.core.context import BaseContext
-from airweave.core.shared_models import SyncJobStatus, SyncStatus
+from airweave.core.shared_models import (
+    SourceConnectionErrorCategory,
+    SyncJobStatus,
+    SyncStatus,
+)
 from airweave.db.session import get_db_context
 from airweave.db.unit_of_work import UnitOfWork
 from airweave.domains.sources.exceptions.classifier import classify_error
@@ -45,6 +49,7 @@ from airweave.domains.syncs.types import (
     SyncProvisionResult,
     SyncTransitionResult,
 )
+from airweave.domains.temporal.exceptions import classified_user_application_error
 from airweave.domains.temporal.protocols import (
     TemporalScheduleServiceProtocol,
     TemporalWorkflowServiceProtocol,
@@ -411,9 +416,18 @@ class SyncService(SyncServiceProtocol):
                     access_token=access_token,
                 )
         except Exception as e:
-            ctx.logger.error(f"Error during sync orchestrator creation: {e}")
-
             classification = classify_error(e)
+
+            # User-actionable errors (expired credentials, usage limits,
+            # rate limits) are logged at WARNING — they're not Airweave
+            # failures, they're customer integration state that the UI
+            # already surfaces via NEEDS_REAUTH.
+            if classification.category is not None:
+                ctx.logger.warning(
+                    f"Sync orchestrator creation failed ({classification.category.value}): {e}"
+                )
+            else:
+                ctx.logger.error(f"Error during sync orchestrator creation: {e}")
 
             await self._job_state_machine.transition(
                 sync_job_id=sync_job.id,
@@ -423,16 +437,25 @@ class SyncService(SyncServiceProtocol):
                 error_category=classification.category,
             )
 
-            if classification.category is not None and sync:
+            if (
+                classification.category is not None
+                and classification.category != SourceConnectionErrorCategory.RATE_LIMITED
+                and sync
+            ):
                 try:
                     await self._state_machine.transition(
                         sync_id=sync.id,
                         target=SyncStatus.PAUSED,
                         ctx=ctx,
-                        reason=f"Credential error: {classification.category.value}",
+                        reason=f"Classified error: {classification.category.value}",
                     )
                 except Exception:
-                    ctx.logger.warning("Failed to pause sync after credential error", exc_info=True)
+                    ctx.logger.warning("Failed to pause sync after classified error", exc_info=True)
+
+            # Classified errors are wrapped so the workflow can complete
+            # normally instead of incrementing temporal_workflow_failed.
+            if classification.category is not None:
+                raise classified_user_application_error(e, classification.category) from e
 
             raise e
 

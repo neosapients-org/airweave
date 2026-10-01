@@ -656,6 +656,14 @@ def fake_agentic_search_v2():
 
 
 @pytest.fixture
+def fake_browse_service():
+    """Fake BrowseService."""
+    from airweave.domains.search.fakes.browse import FakeBrowseService
+
+    return FakeBrowseService()
+
+
+@pytest.fixture
 def fake_storage_backend():
     """Fake StorageBackend for testing storage consumers."""
     from airweave.domains.storage.fakes import FakeStorageBackend
@@ -737,6 +745,7 @@ def test_container(
     fake_instant_search,
     fake_classic_search,
     fake_agentic_search_v2,
+    fake_browse_service,
     fake_sync_factory,
     fake_entity_repo,
     fake_access_broker,
@@ -821,6 +830,7 @@ def test_container(
         instant_search=fake_instant_search,
         classic_search=fake_classic_search,
         agentic_search=fake_agentic_search_v2,
+        browse_service=fake_browse_service,
         sync_factory=fake_sync_factory,
         entity_repo=fake_entity_repo,
         access_broker=fake_access_broker,

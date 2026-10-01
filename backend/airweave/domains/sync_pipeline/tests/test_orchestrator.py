@@ -67,11 +67,19 @@ class TestUsageLedgerFlushFailure:
 
         with (
             patch.object(
-                orc, "_start_sync",
+                orc,
+                "_start_sync",
                 new_callable=AsyncMock,
                 side_effect=SyncFailureError("source failed"),
             ),
-            patch.object(orc, "_handle_sync_failure", new_callable=AsyncMock),
+            # Returning None signals "unclassified" — original exception
+            # propagates instead of being wrapped as ClassifiedUserError.
+            patch.object(
+                orc,
+                "_handle_sync_failure",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
             patch.object(orc, "entity_pipeline", MagicMock()),
             patch(
                 "airweave.domains.sync_pipeline.orchestrator.worker_metrics",
@@ -156,16 +164,13 @@ class TestHandleSyncFailure:
             token_provider_kind=AuthProviderKind.OAUTH,
         )
 
-        with patch(
-            "airweave.domains.sync_pipeline.orchestrator.business_events"
-        ):
+        with patch("airweave.domains.sync_pipeline.orchestrator.business_events"):
             await orc._handle_sync_failure(exc)
 
         state_machine.transition.assert_awaited_once()
         call_kwargs = state_machine.transition.call_args.kwargs
         assert (
-            call_kwargs["error_category"]
-            == SourceConnectionErrorCategory.OAUTH_CREDENTIALS_EXPIRED
+            call_kwargs["error_category"] == SourceConnectionErrorCategory.OAUTH_CREDENTIALS_EXPIRED
         )
         assert call_kwargs["target"] == SyncJobStatus.FAILED
 
@@ -188,9 +193,7 @@ class TestHandleSyncFailure:
             sync_state_machine=sync_state_machine,
         )
 
-        with patch(
-            "airweave.domains.sync_pipeline.orchestrator.business_events"
-        ):
+        with patch("airweave.domains.sync_pipeline.orchestrator.business_events"):
             await orc._handle_sync_failure(RuntimeError("network timeout"))
 
         call_kwargs = state_machine.transition.call_args.kwargs
@@ -227,10 +230,241 @@ class TestHandleSyncFailure:
             token_provider_kind=AuthProviderKind.OAUTH,
         )
 
-        with patch(
-            "airweave.domains.sync_pipeline.orchestrator.business_events"
-        ):
+        with patch("airweave.domains.sync_pipeline.orchestrator.business_events"):
             await orc._handle_sync_failure(exc)
 
         state_machine.transition.assert_awaited_once()
         ctx.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_category_for_classified_error(self):
+        """_handle_sync_failure returns the classified category, allowing.
+
+        run() to decide whether to wrap the exception.
+        """
+        from airweave.core.shared_models import SourceConnectionErrorCategory
+        from airweave.domains.sources.exceptions import SourceAuthError
+        from airweave.domains.sources.token_providers.protocol import AuthProviderKind
+
+        ctx = _make_sync_context()
+        ctx.sync_job.started_at = None
+
+        orc = _make_orchestrator(
+            sync_context=ctx,
+            state_machine=AsyncMock(),
+            sync_state_machine=AsyncMock(),
+        )
+
+        exc = SourceAuthError(
+            "401",
+            source_short_name="github",
+            status_code=401,
+            token_provider_kind=AuthProviderKind.OAUTH,
+        )
+
+        with patch("airweave.domains.sync_pipeline.orchestrator.business_events"):
+            category = await orc._handle_sync_failure(exc)
+
+        assert category == SourceConnectionErrorCategory.OAUTH_CREDENTIALS_EXPIRED
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_unclassified_error(self):
+        """A true system failure returns None so run() re-raises unwrapped."""
+        ctx = _make_sync_context()
+        ctx.sync_job.started_at = None
+
+        orc = _make_orchestrator(
+            sync_context=ctx,
+            state_machine=AsyncMock(),
+            sync_state_machine=AsyncMock(),
+        )
+
+        with patch("airweave.domains.sync_pipeline.orchestrator.business_events"):
+            category = await orc._handle_sync_failure(RuntimeError("db down"))
+
+        assert category is None
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_does_not_pause(self):
+        """Rate-limit errors return the RATE_LIMITED category but do NOT.
+
+        pause the sync — the next scheduled run will succeed once the
+        window resets.
+        """
+        from airweave.core.shared_models import SourceConnectionErrorCategory
+        from airweave.domains.sources.exceptions import SourceRateLimitError
+
+        state_machine = AsyncMock()
+        sync_state_machine = AsyncMock()
+
+        ctx = _make_sync_context()
+        ctx.sync_job.started_at = None
+
+        orc = _make_orchestrator(
+            sync_context=ctx,
+            state_machine=state_machine,
+            sync_state_machine=sync_state_machine,
+        )
+
+        exc = SourceRateLimitError(retry_after=60.0, source_short_name="hubspot")
+
+        with patch("airweave.domains.sync_pipeline.orchestrator.business_events"):
+            category = await orc._handle_sync_failure(exc)
+
+        assert category == SourceConnectionErrorCategory.RATE_LIMITED
+        # Sync state machine NOT called for rate-limited — sync stays ACTIVE.
+        sync_state_machine.transition.assert_not_awaited()
+        # But the job transition still records the category.
+        state_machine.transition.assert_awaited_once()
+        call_kwargs = state_machine.transition.call_args.kwargs
+        assert call_kwargs["error_category"] == SourceConnectionErrorCategory.RATE_LIMITED
+
+    @pytest.mark.asyncio
+    async def test_usage_limit_error_pauses_and_classifies(self):
+        """Usage limit errors classify as USAGE_LIMIT_EXCEEDED and pause."""
+        from airweave.core.shared_models import SourceConnectionErrorCategory, SyncStatus
+        from airweave.domains.usage.exceptions import UsageLimitExceededError
+
+        state_machine = AsyncMock()
+        sync_state_machine = AsyncMock()
+
+        ctx = _make_sync_context()
+        ctx.sync_job.started_at = None
+
+        orc = _make_orchestrator(
+            sync_context=ctx,
+            state_machine=state_machine,
+            sync_state_machine=sync_state_machine,
+        )
+
+        exc = UsageLimitExceededError(action_type="entities", limit=50000, current_usage=50103)
+
+        with patch("airweave.domains.sync_pipeline.orchestrator.business_events"):
+            category = await orc._handle_sync_failure(exc)
+
+        assert category == SourceConnectionErrorCategory.USAGE_LIMIT_EXCEEDED
+        sync_state_machine.transition.assert_awaited_once()
+        pause_kwargs = sync_state_machine.transition.call_args.kwargs
+        assert pause_kwargs["target"] == SyncStatus.PAUSED
+
+    @pytest.mark.asyncio
+    async def test_classified_error_logs_at_warning(self):
+        """Classified failures log at WARNING — they're customer state, not.
+
+        Airweave outages.
+        """
+        from airweave.domains.sources.exceptions import SourceAuthError
+        from airweave.domains.sources.token_providers.protocol import AuthProviderKind
+
+        ctx = _make_sync_context()
+        ctx.sync_job.started_at = None
+
+        orc = _make_orchestrator(
+            sync_context=ctx,
+            state_machine=AsyncMock(),
+            sync_state_machine=AsyncMock(),
+        )
+
+        exc = SourceAuthError(
+            "401",
+            source_short_name="github",
+            status_code=401,
+            token_provider_kind=AuthProviderKind.OAUTH,
+        )
+
+        with patch("airweave.domains.sync_pipeline.orchestrator.business_events"):
+            await orc._handle_sync_failure(exc)
+
+        ctx.logger.warning.assert_called()
+        ctx.logger.error.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unclassified_error_logs_at_error(self):
+        """Unclassified failures (true system errors) log at ERROR with traceback."""
+        ctx = _make_sync_context()
+        ctx.sync_job.started_at = None
+
+        orc = _make_orchestrator(
+            sync_context=ctx,
+            state_machine=AsyncMock(),
+            sync_state_machine=AsyncMock(),
+        )
+
+        with patch("airweave.domains.sync_pipeline.orchestrator.business_events"):
+            await orc._handle_sync_failure(RuntimeError("db down"))
+
+        ctx.logger.error.assert_called()
+
+
+# ===========================================================================
+# Orchestrator.run() — classified errors are wrapped, system errors are not
+# ===========================================================================
+
+
+class TestRunWrapsClassifiedErrors:
+    @pytest.mark.asyncio
+    async def test_classified_error_wrapped_as_application_error(self):
+        """When the sync raises a classified error, run() wraps it as an.
+
+        ApplicationError of type CLASSIFIED_USER_ERROR_TYPE so the workflow
+        completes normally instead of incrementing temporal_workflow_failed.
+        """
+        from temporalio.exceptions import ApplicationError
+
+        from airweave.core.shared_models import SourceConnectionErrorCategory
+        from airweave.domains.sources.exceptions import SourceAuthError
+        from airweave.domains.sources.token_providers.protocol import AuthProviderKind
+        from airweave.domains.temporal.exceptions import CLASSIFIED_USER_ERROR_TYPE
+
+        orc = _make_orchestrator()
+        exc = SourceAuthError(
+            "401",
+            source_short_name="github",
+            status_code=401,
+            token_provider_kind=AuthProviderKind.OAUTH,
+        )
+
+        async def _fake_handler(_e: Exception):
+            return SourceConnectionErrorCategory.OAUTH_CREDENTIALS_EXPIRED
+
+        with (
+            patch.object(
+                orc,
+                "_start_sync",
+                new_callable=AsyncMock,
+                side_effect=exc,
+            ),
+            patch.object(orc, "_handle_sync_failure", side_effect=_fake_handler),
+            patch.object(orc, "entity_pipeline", MagicMock()),
+        ):
+            with pytest.raises(ApplicationError) as exc_info:
+                await orc.run()
+
+        assert exc_info.value.type == CLASSIFIED_USER_ERROR_TYPE
+        assert exc_info.value.non_retryable is True
+        assert exc_info.value.__cause__ is exc
+
+    @pytest.mark.asyncio
+    async def test_unclassified_error_not_wrapped(self):
+        """A true system failure propagates unwrapped — the workflow records.
+
+        a real temporal_workflow_failed.
+        """
+        orc = _make_orchestrator()
+        original = RuntimeError("redis down")
+
+        async def _fake_handler(_e: Exception):
+            return None
+
+        with (
+            patch.object(
+                orc,
+                "_start_sync",
+                new_callable=AsyncMock,
+                side_effect=original,
+            ),
+            patch.object(orc, "_handle_sync_failure", side_effect=_fake_handler),
+            patch.object(orc, "entity_pipeline", MagicMock()),
+        ):
+            with pytest.raises(RuntimeError, match="redis down"):
+                await orc.run()

@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from temporalio.exceptions import ApplicationError
 
 from airweave.core.shared_models import SyncJobStatus
 from airweave.domains.syncs.service import SyncService
@@ -207,11 +208,19 @@ async def test_run_forwards_optional_kwargs():
 
 @pytest.mark.asyncio
 async def test_credential_error_propagates_error_category():
-    """Factory raising a credential error -> error_category set on state machine transition."""
+    """Factory raising a credential error -> error_category set on state machine transition.
+
+    Classified errors are wrapped in an ApplicationError of type
+    CLASSIFIED_USER_ERROR_TYPE so the Temporal workflow can complete
+    normally instead of counting toward temporal_workflow_failed.
+    """
+    from temporalio.exceptions import ApplicationError
+
     from airweave.core.shared_models import SourceConnectionErrorCategory
     from airweave.domains.sources.exceptions import SourceValidationError
     from airweave.domains.sources.token_providers.exceptions import TokenExpiredError
     from airweave.domains.sources.token_providers.protocol import AuthProviderKind
+    from airweave.domains.temporal.exceptions import CLASSIFIED_USER_ERROR_TYPE
 
     cause = TokenExpiredError(
         "JWT expired", source_short_name="github", provider_kind=AuthProviderKind.OAUTH
@@ -238,7 +247,7 @@ async def test_credential_error_propagates_error_category():
         mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
         mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
 
-        with pytest.raises(SourceValidationError):
+        with pytest.raises(ApplicationError) as exc_info:
             await svc.run(
                 sync=_mock_sync(),
                 sync_job=_mock_sync_job(),
@@ -246,6 +255,10 @@ async def test_credential_error_propagates_error_category():
                 source_connection=MagicMock(),
                 ctx=_mock_ctx(),
             )
+
+    assert exc_info.value.type == CLASSIFIED_USER_ERROR_TYPE
+    assert exc_info.value.non_retryable is True
+    assert exc_info.value.__cause__ is wrapper
 
     fake_sm.transition.assert_awaited_once()
     call_kwargs = fake_sm.transition.call_args.kwargs
@@ -286,6 +299,315 @@ async def test_non_credential_error_has_no_error_category():
 
     call_kwargs = fake_sm.transition.call_args.kwargs
     assert call_kwargs["error_category"] is None
+
+
+# ---------------------------------------------------------------------------
+# Classified-error semantics: wrapped as ApplicationError, log at WARNING,
+# selectively pause the sync. Mirrors the alert-quieting behavior at the
+# activity → workflow boundary.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_classified_error_logs_at_warning_not_error():
+    """Classified user errors (e.g. expired tokens) log at WARNING — they're.
+
+    not Airweave outages and shouldn't show up as ERROR-level log noise.
+    """
+    from airweave.domains.sources.token_providers.exceptions import TokenExpiredError
+    from airweave.domains.sources.token_providers.protocol import AuthProviderKind
+
+    cause = TokenExpiredError(
+        "JWT expired", source_short_name="github", provider_kind=AuthProviderKind.OAUTH
+    )
+
+    fake_factory = MagicMock()
+    fake_factory.create_orchestrator = AsyncMock(side_effect=cause)
+
+    svc = SyncService(
+        sync_repo=MagicMock(),
+        sync_job_repo=MagicMock(),
+        sync_cursor_repo=MagicMock(),
+        state_machine=AsyncMock(),
+        job_state_machine=AsyncMock(),
+        temporal_workflow_service=MagicMock(),
+        temporal_schedule_service=MagicMock(),
+        sync_factory=fake_factory,
+    )
+
+    ctx = _mock_ctx()
+
+    with patch("airweave.domains.syncs.service.get_db_context") as mock_db_ctx:
+        mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+        mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with pytest.raises(ApplicationError):
+            await svc.run(
+                sync=_mock_sync(),
+                sync_job=_mock_sync_job(),
+                collection=MagicMock(),
+                source_connection=MagicMock(),
+                ctx=ctx,
+            )
+
+    ctx.logger.warning.assert_called_once()
+    ctx.logger.error.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unclassified_error_still_logs_at_error():
+    """Unclassified errors (true system failures) stay at ERROR level."""
+    fake_factory = MagicMock()
+    fake_factory.create_orchestrator = AsyncMock(side_effect=RuntimeError("db down"))
+
+    svc = SyncService(
+        sync_repo=MagicMock(),
+        sync_job_repo=MagicMock(),
+        sync_cursor_repo=MagicMock(),
+        state_machine=AsyncMock(),
+        job_state_machine=AsyncMock(),
+        temporal_workflow_service=MagicMock(),
+        temporal_schedule_service=MagicMock(),
+        sync_factory=fake_factory,
+    )
+
+    ctx = _mock_ctx()
+
+    with patch("airweave.domains.syncs.service.get_db_context") as mock_db_ctx:
+        mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+        mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with pytest.raises(RuntimeError):
+            await svc.run(
+                sync=_mock_sync(),
+                sync_job=_mock_sync_job(),
+                collection=MagicMock(),
+                source_connection=MagicMock(),
+                ctx=ctx,
+            )
+
+    ctx.logger.error.assert_called()
+
+
+@pytest.mark.asyncio
+async def test_classified_error_pauses_sync_for_credentials():
+    """OAuth credential errors pause the sync so the schedule stops retrying."""
+    from airweave.core.shared_models import SyncStatus
+    from airweave.domains.sources.token_providers.exceptions import TokenExpiredError
+    from airweave.domains.sources.token_providers.protocol import AuthProviderKind
+
+    cause = TokenExpiredError(
+        "JWT expired", source_short_name="github", provider_kind=AuthProviderKind.OAUTH
+    )
+
+    fake_factory = MagicMock()
+    fake_factory.create_orchestrator = AsyncMock(side_effect=cause)
+    fake_state_machine = AsyncMock()
+
+    svc = SyncService(
+        sync_repo=MagicMock(),
+        sync_job_repo=MagicMock(),
+        sync_cursor_repo=MagicMock(),
+        state_machine=fake_state_machine,
+        job_state_machine=AsyncMock(),
+        temporal_workflow_service=MagicMock(),
+        temporal_schedule_service=MagicMock(),
+        sync_factory=fake_factory,
+    )
+
+    with patch("airweave.domains.syncs.service.get_db_context") as mock_db_ctx:
+        mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+        mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with pytest.raises(ApplicationError):
+            await svc.run(
+                sync=_mock_sync(),
+                sync_job=_mock_sync_job(),
+                collection=MagicMock(),
+                source_connection=MagicMock(),
+                ctx=_mock_ctx(),
+            )
+
+    fake_state_machine.transition.assert_awaited_once()
+    call_kwargs = fake_state_machine.transition.call_args.kwargs
+    assert call_kwargs["target"] == SyncStatus.PAUSED
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_error_does_not_pause_sync():
+    """Rate-limit hits are transient; the next scheduled run will likely.
+
+    succeed once the window resets. The sync stays ACTIVE.
+    """
+    from airweave.domains.sources.exceptions import SourceRateLimitError
+
+    cause = SourceRateLimitError(retry_after=60.0, source_short_name="hubspot")
+
+    fake_factory = MagicMock()
+    fake_factory.create_orchestrator = AsyncMock(side_effect=cause)
+    fake_state_machine = AsyncMock()
+
+    svc = SyncService(
+        sync_repo=MagicMock(),
+        sync_job_repo=MagicMock(),
+        sync_cursor_repo=MagicMock(),
+        state_machine=fake_state_machine,
+        job_state_machine=AsyncMock(),
+        temporal_workflow_service=MagicMock(),
+        temporal_schedule_service=MagicMock(),
+        sync_factory=fake_factory,
+    )
+
+    with patch("airweave.domains.syncs.service.get_db_context") as mock_db_ctx:
+        mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+        mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with pytest.raises(ApplicationError):
+            await svc.run(
+                sync=_mock_sync(),
+                sync_job=_mock_sync_job(),
+                collection=MagicMock(),
+                source_connection=MagicMock(),
+                ctx=_mock_ctx(),
+            )
+
+    # sync_state_machine.transition should NOT have been called for RATE_LIMITED
+    fake_state_machine.transition.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_classified_error_wrapped_as_application_error():
+    """The original exception is wrapped as ApplicationError with.
+
+    type=CLASSIFIED_USER_ERROR_TYPE so the workflow can detect it and
+    complete normally instead of incrementing temporal_workflow_failed.
+    """
+    from temporalio.exceptions import ApplicationError, ApplicationErrorCategory
+
+    from airweave.core.shared_models import SourceConnectionErrorCategory
+    from airweave.domains.sources.exceptions import SourceRateLimitError
+    from airweave.domains.temporal.exceptions import CLASSIFIED_USER_ERROR_TYPE
+
+    cause = SourceRateLimitError(retry_after=60.0, source_short_name="hubspot")
+
+    fake_factory = MagicMock()
+    fake_factory.create_orchestrator = AsyncMock(side_effect=cause)
+
+    svc = SyncService(
+        sync_repo=MagicMock(),
+        sync_job_repo=MagicMock(),
+        sync_cursor_repo=MagicMock(),
+        state_machine=AsyncMock(),
+        job_state_machine=AsyncMock(),
+        temporal_workflow_service=MagicMock(),
+        temporal_schedule_service=MagicMock(),
+        sync_factory=fake_factory,
+    )
+
+    with patch("airweave.domains.syncs.service.get_db_context") as mock_db_ctx:
+        mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+        mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with pytest.raises(ApplicationError) as exc_info:
+            await svc.run(
+                sync=_mock_sync(),
+                sync_job=_mock_sync_job(),
+                collection=MagicMock(),
+                source_connection=MagicMock(),
+                ctx=_mock_ctx(),
+            )
+
+    assert exc_info.value.type == CLASSIFIED_USER_ERROR_TYPE
+    assert exc_info.value.non_retryable is True
+    assert exc_info.value.category == ApplicationErrorCategory.BENIGN
+    assert exc_info.value.__cause__ is cause
+    # Category is encoded in the details for diagnostics
+    assert SourceConnectionErrorCategory.RATE_LIMITED.value in exc_info.value.details
+
+
+@pytest.mark.asyncio
+async def test_unclassified_error_not_wrapped():
+    """A true system failure (e.g. db connection lost) is NOT wrapped — the.
+
+    original exception bubbles up so the workflow records a real failure.
+    """
+    fake_factory = MagicMock()
+    original = RuntimeError("redis down")
+    fake_factory.create_orchestrator = AsyncMock(side_effect=original)
+
+    svc = SyncService(
+        sync_repo=MagicMock(),
+        sync_job_repo=MagicMock(),
+        sync_cursor_repo=MagicMock(),
+        state_machine=AsyncMock(),
+        job_state_machine=AsyncMock(),
+        temporal_workflow_service=MagicMock(),
+        temporal_schedule_service=MagicMock(),
+        sync_factory=fake_factory,
+    )
+
+    with patch("airweave.domains.syncs.service.get_db_context") as mock_db_ctx:
+        mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+        mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with pytest.raises(RuntimeError, match="redis down"):
+            await svc.run(
+                sync=_mock_sync(),
+                sync_job=_mock_sync_job(),
+                collection=MagicMock(),
+                source_connection=MagicMock(),
+                ctx=_mock_ctx(),
+            )
+
+
+@pytest.mark.asyncio
+async def test_classified_error_pause_failure_does_not_mask_classification():
+    """If the pause-state-machine call itself raises, we still re-raise the.
+
+    classified ApplicationError — the pause failure is logged but swallowed.
+    """
+    from temporalio.exceptions import ApplicationError
+
+    from airweave.domains.sources.token_providers.exceptions import TokenExpiredError
+    from airweave.domains.sources.token_providers.protocol import AuthProviderKind
+    from airweave.domains.temporal.exceptions import CLASSIFIED_USER_ERROR_TYPE
+
+    cause = TokenExpiredError(
+        "JWT expired", source_short_name="github", provider_kind=AuthProviderKind.OAUTH
+    )
+
+    fake_factory = MagicMock()
+    fake_factory.create_orchestrator = AsyncMock(side_effect=cause)
+    fake_state_machine = AsyncMock()
+    fake_state_machine.transition = AsyncMock(side_effect=RuntimeError("pause failed"))
+
+    svc = SyncService(
+        sync_repo=MagicMock(),
+        sync_job_repo=MagicMock(),
+        sync_cursor_repo=MagicMock(),
+        state_machine=fake_state_machine,
+        job_state_machine=AsyncMock(),
+        temporal_workflow_service=MagicMock(),
+        temporal_schedule_service=MagicMock(),
+        sync_factory=fake_factory,
+    )
+
+    ctx = _mock_ctx()
+
+    with patch("airweave.domains.syncs.service.get_db_context") as mock_db_ctx:
+        mock_db_ctx.return_value.__aenter__ = AsyncMock(return_value=AsyncMock())
+        mock_db_ctx.return_value.__aexit__ = AsyncMock(return_value=False)
+
+        with pytest.raises(ApplicationError) as exc_info:
+            await svc.run(
+                sync=_mock_sync(),
+                sync_job=_mock_sync_job(),
+                collection=MagicMock(),
+                source_connection=MagicMock(),
+                ctx=ctx,
+            )
+
+    assert exc_info.value.type == CLASSIFIED_USER_ERROR_TYPE
 
 
 def test_stores_injected_deps():

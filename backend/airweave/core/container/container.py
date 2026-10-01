@@ -76,6 +76,7 @@ from airweave.domains.organizations.protocols import (
 )
 from airweave.domains.search.protocols import (
     AgenticSearchServiceProtocol,
+    BrowseServiceProtocol,
     ClassicSearchServiceProtocol,
     InstantSearchServiceProtocol,
 )
@@ -253,6 +254,7 @@ class Container:
     instant_search: InstantSearchServiceProtocol
     classic_search: ClassicSearchServiceProtocol
     agentic_search: AgenticSearchServiceProtocol
+    browse_service: BrowseServiceProtocol
 
     # Storage domain — unified backend for file/object storage
     storage_backend: StorageBackend

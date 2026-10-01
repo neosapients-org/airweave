@@ -462,7 +462,33 @@ class NotionConfig(SourceConfig):
 class OneDriveConfig(SourceConfig):
     """OneDrive configuration schema."""
 
-    pass
+    excluded_sensitivity_label_ids: list[str] = Field(
+        default_factory=list,
+        title="Excluded Sensitivity Labels",
+        description=(
+            "Microsoft Purview sensitivity label IDs (GUIDs). Files carrying any "
+            "of these labels are skipped during sync. Sublabels must be listed "
+            "explicitly. See docs for how to find label GUIDs in the Purview portal."
+        ),
+    )
+
+    skip_encrypted_files: bool = Field(
+        default=True,
+        title="Skip Encrypted Files",
+        description=(
+            "Skip files protected with label-based encryption (Graph returns "
+            "423 Locked). When false, encrypted files raise an error instead."
+        ),
+    )
+
+    skip_unlabeled_files: bool = Field(
+        default=False,
+        title="Skip Unlabeled Files",
+        description=(
+            "Skip files that have no Purview sensitivity label applied. Useful "
+            "for strict policies that only index explicitly classified content."
+        ),
+    )
 
 
 class OracleConfig(SourceConfig):
@@ -599,7 +625,35 @@ class CTTIConfig(SourceConfig):
 class SharePointConfig(SourceConfig):
     """SharePoint configuration schema."""
 
-    pass
+    excluded_sensitivity_label_ids: list[str] = Field(
+        default_factory=list,
+        title="Excluded Sensitivity Labels",
+        description=(
+            "Microsoft Purview sensitivity label IDs (GUIDs). Files carrying any "
+            "of these labels are skipped during sync. The same list is matched "
+            "against container labels on SharePoint sites; matching sites are "
+            "skipped entirely. Sublabels must be listed explicitly. See docs for "
+            "how to find label GUIDs in the Purview portal."
+        ),
+    )
+
+    skip_encrypted_files: bool = Field(
+        default=True,
+        title="Skip Encrypted Files",
+        description=(
+            "Skip files protected with label-based encryption (Graph returns "
+            "423 Locked). When false, encrypted files raise an error instead."
+        ),
+    )
+
+    skip_unlabeled_files: bool = Field(
+        default=False,
+        title="Skip Unlabeled Files",
+        description=(
+            "Skip files that have no Purview sensitivity label applied. Useful "
+            "for strict policies that only index explicitly classified content."
+        ),
+    )
 
 
 class SharePoint2019V2Config(SourceConfig):
@@ -1233,6 +1287,36 @@ class SharePointOnlineConfig(SourceConfig):
         default=True,
         title="Include Site Pages",
         description="Whether to sync SharePoint site pages.",
+    )
+
+    excluded_sensitivity_label_ids: list[str] = Field(
+        default_factory=list,
+        title="Excluded Sensitivity Labels",
+        description=(
+            "Microsoft Purview sensitivity label IDs (GUIDs). Files carrying any "
+            "of these labels are skipped during sync. The same list is matched "
+            "against container labels on SharePoint sites and Teams; matching "
+            "sites are skipped entirely. Sublabels must be listed explicitly. "
+            "See docs for how to find label GUIDs in the Purview portal."
+        ),
+    )
+
+    skip_encrypted_files: bool = Field(
+        default=True,
+        title="Skip Encrypted Files",
+        description=(
+            "Skip files protected with label-based encryption (Graph returns "
+            "423 Locked). When false, encrypted files raise an error instead."
+        ),
+    )
+
+    skip_unlabeled_files: bool = Field(
+        default=False,
+        title="Skip Unlabeled Files",
+        description=(
+            "Skip files that have no Purview sensitivity label applied. Useful "
+            "for strict policies that only index explicitly classified content."
+        ),
     )
 
 

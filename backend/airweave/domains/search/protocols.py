@@ -17,6 +17,8 @@ from airweave.domains.search.types import (
 if TYPE_CHECKING:
     from airweave.schemas.search_v2 import (
         AgenticSearchRequest,
+        BrowseRequest,
+        BrowseResponse,
         ClassicSearchRequest,
         InstantSearchRequest,
     )
@@ -88,6 +90,21 @@ class ClassicSearchServiceProtocol(Protocol):
         user_principal_override: Optional[str] = None,
     ) -> SearchResults:
         """Execute classic search and return results."""
+        ...
+
+
+@runtime_checkable
+class BrowseServiceProtocol(Protocol):
+    """Browse — paginated tabular listing of a collection (no query, no ranking)."""
+
+    async def browse(
+        self,
+        db: AsyncSession,
+        ctx: ApiContext,
+        readable_id: str,
+        request: BrowseRequest,
+    ) -> BrowseResponse:
+        """Return a page of entities + total count for the collection."""
         ...
 
 

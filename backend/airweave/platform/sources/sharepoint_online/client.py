@@ -303,6 +303,53 @@ class GraphClient:
                 return []
             raise
 
+    async def list_internal_tenant_users(self) -> AsyncGenerator[Dict[str, str], None]:
+        """Yield internal tenant members (``userType eq 'Member'``).
+
+        Used to expand the SharePoint "Everyone except external users" claim
+        into per-user memberships of the synthetic claim group. The Graph
+        filter excludes guests (``userType eq 'Guest'``), preserving the
+        claim's "except external" semantics.
+
+        Yields:
+            Dicts with at least ``email`` (mail or userPrincipalName,
+            lowercased) and ``display_name``. Users without any addressable
+            identifier are skipped.
+        """
+        url = (
+            f"{GRAPH_BASE_URL}/users"
+            "?$filter=userType eq 'Member'"
+            "&$select=id,mail,userPrincipalName,displayName"
+        )
+        async for u in self.get_paginated(url):
+            email = (u.get("mail") or u.get("userPrincipalName") or "").strip().lower()
+            if not email:
+                continue
+            yield {"email": email, "display_name": u.get("displayName") or email}
+
+    async def get_item_sp_unique_id(
+        self,
+        drive_id: str,
+        item_id: str,
+    ) -> Optional[str]:
+        """Fetch the SharePoint ``listItemUniqueId`` (lowercase GUID) for a drive item.
+
+        Used to translate sharing-link permissions into the underlying
+        ``SharingLinks.<itemId>.<scopeRole>.<linkId>`` SP site group viewer.
+        Only worth calling when the item has at least one ``link`` permission;
+        for items with only direct grants there's nothing to translate.
+        """
+        url = f"{GRAPH_BASE_URL}/drives/{drive_id}/items/{item_id}?$select=sharepointIds"
+        try:
+            data = await self.get(url)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                return None
+            raise
+        sp_ids = data.get("sharepointIds") or {}
+        luid = sp_ids.get("listItemUniqueId")
+        return luid.lower() if luid else None
+
     async def get_drive_root_permissions(
         self,
         drive_id: str,
