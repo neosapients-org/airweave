@@ -280,8 +280,8 @@ integrations:
 
   outlook_mail:
     oauth_type: "with_rotating_refresh"
-    url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
-    backend_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+    url: "https://login.microsoftonline.com/4a501e71-78ed-4035-8f3a-5ec79abe2639/oauth2/v2.0/authorize"
+    backend_url: "https://login.microsoftonline.com/4a501e71-78ed-4035-8f3a-5ec79abe2639/oauth2/v2.0/token"
     grant_type: "authorization_code"
     client_id: "00a37830-e5aa-47d0-98e2-5492509dccdb"
     client_secret: "outlook-mail-client-secret-key"
