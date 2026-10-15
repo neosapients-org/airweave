@@ -19,6 +19,7 @@ import copy
 import itertools
 import logging
 import os
+import re
 import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, wait
@@ -34,6 +35,13 @@ from airweave.domains.taxonomy.metrics import TAXONOMY_TALLY, TaxonomyTally
 CLASSIFIERS_PER_THREAD = 4
 
 logger = logging.getLogger(__name__)
+
+# A cache file as the pool names it: <pid>-<thread>[-g<generation>].sqlite plus SQLite's sidecars
+_CACHE_FILE = re.compile(r"^(\d+)-\d+(?:-g\d+)?\.sqlite(?:-wal|-shm|-journal)?$")
+
+# Cache directories that a pool in this process currently owns (guards its files from a second pool)
+_OWNED_DIRS: set = set()
+_OWNED_LOCK = threading.Lock()
 
 EmbedTransport = Callable[[List[str]], Any]
 
@@ -74,12 +82,49 @@ class ClassifierPool:
         self._lru_size = classifiers_per_thread
         self._max_cache_bytes = int(max_cache_mb * 1024 * 1024)
         self._tally = tally
+        self._owns_dir = False
+        self._claim_dir_and_remove_stale_files()
         self._fallback_noted: set = set()
         self._note_lock = threading.Lock()
         self._executors: List[ThreadPoolExecutor] = []
         self._round_robin = itertools.count()
         self._local = threading.local()
         self._start_lock = threading.Lock()
+
+    def _claim_dir_and_remove_stale_files(self) -> None:
+        """Delete cache files that belong to no live process (a killed worker leaves them).
+
+        Files of another process that is still running are never touched. Files named for this
+        process's pid are stale too unless a pool in this process already owns the directory:
+        a restarted container often gets the pid of the one that died.
+        """
+        key = str(self._cache_dir.resolve())
+        with _OWNED_LOCK:
+            first = key not in _OWNED_DIRS
+            _OWNED_DIRS.add(key)
+            self._owns_dir = first
+        removed = 0
+        try:
+            names = os.listdir(self._cache_dir)
+        except OSError:
+            return
+        for name in names:
+            found = _CACHE_FILE.match(name)
+            if not found:
+                continue
+            pid = int(found.group(1))
+            if pid == os.getpid():
+                if not first:
+                    continue
+            elif _pid_alive(pid):
+                continue
+            try:
+                os.remove(self._cache_dir / name)
+                removed += 1
+            except OSError:
+                pass
+        if removed:
+            logger.info("removed %d stale taxonomy cache files from %s", removed, self._cache_dir)
 
     @property
     def threads(self) -> int:
@@ -221,14 +266,34 @@ class ClassifierPool:
         thread that opened them. Batches already queued finish first; a thread still busy
         with a timed-out batch is given a few seconds, then its files are deleted anyway.
         """
+        owned = self._owns_dir
+        if owned:
+            with _OWNED_LOCK:
+                _OWNED_DIRS.discard(str(self._cache_dir.resolve()))
+            self._owns_dir = False
         executors, self._executors = self._executors, []
         closers = [executor.submit(self._release_thread_state) for executor in executors]
         for executor in executors:
             executor.shutdown(wait=False)  # queued closers still run
         wait(closers, timeout=_CLOSE_WAIT_SECONDS)
+        if not owned:  # another pool in this process owns the directory's files
+            return
         for path in self._cache_dir.glob(f"{os.getpid()}-*.sqlite"):
             for suffix in _SIDECARS:
                 _delete(Path(str(path) + suffix))
+
+
+def _pid_alive(pid: int) -> bool:
+    """True if a process with this pid exists (one we may not signal still counts as alive)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return True
+    return True
 
 
 def _size(path: Path) -> int:

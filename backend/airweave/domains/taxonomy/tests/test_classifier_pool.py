@@ -7,6 +7,7 @@ thread but the one that created it. The real package and cache are exercised in
 
 import asyncio
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -208,6 +209,93 @@ class TestCacheRotation:
         pool = ClassifierPool(2, tmp_path / "c")
         pool.close()
         pool.close()
+
+
+@pytest.fixture
+def dead_pid():
+    """The pid of a process that has finished (and is not reused within the test)."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"])
+    proc.wait()
+    return proc.pid
+
+
+@pytest.fixture
+def live_pid():
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    yield proc.pid
+    proc.kill()
+    proc.wait()
+
+
+def _touch(directory: Path, *names: str) -> list:
+    directory.mkdir(parents=True, exist_ok=True)
+    paths = [directory / n for n in names]
+    for p in paths:
+        p.write_bytes(b"x")
+    return paths
+
+
+class TestStaleCacheFiles:
+    """A killed worker leaves its files on the emptyDir; the next pool removes them."""
+
+    def test_files_of_a_finished_process_are_deleted_at_start(self, tmp_path, dead_pid):
+        stale = _touch(tmp_path, f"{dead_pid}-0.sqlite", f"{dead_pid}-1-g3.sqlite",
+                       f"{dead_pid}-0.sqlite-wal", f"{dead_pid}-0.sqlite-shm",
+                       f"{dead_pid}-0.sqlite-journal")
+        ClassifierPool(2, tmp_path)
+        assert not any(p.exists() for p in stale)
+
+    def test_files_of_another_live_process_are_never_deleted(self, tmp_path, live_pid):
+        theirs = _touch(tmp_path, f"{live_pid}-0.sqlite", f"{live_pid}-0-g2.sqlite",
+                        f"{live_pid}-0.sqlite-wal")
+        ClassifierPool(2, tmp_path)
+        assert all(p.exists() for p in theirs)
+
+    def test_leftovers_under_this_pid_are_stale_when_no_pool_owns_them(self, tmp_path):
+        # a restarted container often gets the same pid as the one that was killed
+        leftovers = _touch(tmp_path, f"{os.getpid()}-0.sqlite", f"{os.getpid()}-0-g4.sqlite")
+        pool = ClassifierPool(2, tmp_path)
+        assert not any(p.exists() for p in leftovers)
+        pool.close()
+
+    async def test_a_second_pool_never_deletes_the_first_pools_files(self, tmp_path, stand_in):
+        first = ClassifierPool(1, tmp_path)
+        await first.classify(_taxonomy(), _rows(1), 10)
+        mine = Path(stand_in.created[0].config["embedding"]["cache_path"])
+        mine.write_bytes(b"x")
+        second = ClassifierPool(1, tmp_path)  # same process, same directory
+        assert mine.exists()
+        second.close()  # the pool that does not own the directory deletes nothing either
+        assert mine.exists()
+        first.close()
+        assert not mine.exists()
+
+    def test_a_pool_that_was_closed_releases_the_directory(self, tmp_path):
+        ClassifierPool(1, tmp_path).close()
+        later = _touch(tmp_path, f"{os.getpid()}-0.sqlite")
+        ClassifierPool(1, tmp_path).close()
+        assert not later[0].exists()
+
+    def test_other_files_are_left_alone(self, tmp_path, dead_pid):
+        keep = _touch(tmp_path, "notes.txt", "abc-1.sqlite", f"{dead_pid}.sqlite",
+                      f"{dead_pid}-x.sqlite", f"x{dead_pid}-0.sqlite", f"{dead_pid}-0.db")
+        ClassifierPool(1, tmp_path)
+        assert all(p.exists() for p in keep)
+
+    def test_a_missing_directory_is_fine(self, tmp_path):
+        ClassifierPool(1, tmp_path / "does-not-exist-yet")
+
+    def test_a_file_that_cannot_be_removed_does_not_stop_the_start(self, tmp_path, dead_pid,
+                                                                    monkeypatch):
+        _touch(tmp_path, f"{dead_pid}-0.sqlite")
+        monkeypatch.setattr(os, "remove", lambda p: (_ for _ in ()).throw(PermissionError(p)))
+        ClassifierPool(1, tmp_path)
+
+    def test_the_deletion_is_logged(self, tmp_path, dead_pid, caplog):
+        _touch(tmp_path, f"{dead_pid}-0.sqlite", f"{dead_pid}-1.sqlite")
+        with caplog.at_level("INFO"):
+            ClassifierPool(1, tmp_path)
+        assert any("stale" in r.getMessage() and "2" in r.getMessage() for r in caplog.records)
 
 
 class TestTimeout:
