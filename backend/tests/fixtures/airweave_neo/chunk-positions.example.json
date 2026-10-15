@@ -1,0 +1,222 @@
+{
+  "about": "Shared fixture for contract airweave-neo/1 section 3 (chunk positions). Positions are exact; labels are illustrative. source_text holds two characters Vespa refuses (U+0003 and U+FDD0); document_text has them replaced by spaces, as Airweave must do before counting positions. Built with target 40 and overlap 16 tokens to stay small; production uses 300 and 45. Fields starting with _ are test aids, not contract fields.",
+  "settings": {
+    "CHUNK_TARGET_TOKENS": 40,
+    "CHUNK_OVERLAP_TOKENS": 16,
+    "CHUNK_HEADER_ENABLED": true,
+    "token_counting": "cl100k_base",
+    "offset_unit": "Unicode code points, end-exclusive",
+    "refused_characters": "replaced by one space (U+0020) before positions are counted (contract 3.2)"
+  },
+  "source_text": "# Q3 credit risk report.pdf\nSource: google_drive · Path: Finance / Risk / 2026\n\n# Content\nAcme Corp's late payments rose 12% in the quarter, driven mainly by small-business loans.\u0003 📈 The allowance for credit losses increased to €4.2 million, up from €3.1 million.\nUmsatz in Zürich stieg im dritten Quartal um 3 Prozent.\n売上高は前年同期比で12%増加しました。\nCharge-offs﷐ stayed below 0.5% of the loan book. Page 2 of 2 · Internal use only.\n",
+  "document_text": "# Q3 credit risk report.pdf\nSource: google_drive · Path: Finance / Risk / 2026\n\n# Content\nAcme Corp's late payments rose 12% in the quarter, driven mainly by small-business loans.  📈 The allowance for credit losses increased to €4.2 million, up from €3.1 million.\nUmsatz in Zürich stieg im dritten Quartal um 3 Prozent.\n売上高は前年同期比で12%増加しました。\nCharge-offs  stayed below 0.5% of the loan book. Page 2 of 2 · Internal use only.\n",
+  "page_starts": [
+    {
+      "offset": 90,
+      "page": 1
+    },
+    {
+      "offset": 320,
+      "page": 2
+    }
+  ],
+  "chunks": [
+    {
+      "entity_id": "f3a1__chunk_0",
+      "chunk_index": 0,
+      "chunk_char_start": 0,
+      "chunk_char_end": 80,
+      "chunk_own_start": 0,
+      "chunk_body_offset": 74,
+      "page_from": 1,
+      "page_to": 1,
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 1\n# Q3 credit risk report.pdf\nSource: google_drive · Path: Finance / Risk / 2026\n\n",
+      "topic_ids": {},
+      "broad_family_ids": [],
+      "taxonomy_spans": "[]",
+      "taxonomy_status": "ADMINISTRATIVE",
+      "taxonomy_version": "acme-2026.10",
+      "taxonomy_piece_count": 1,
+      "taxonomy_admin_pieces": 1,
+      "taxonomy_unresolved_pieces": 0,
+      "_test": {
+        "body": "# Q3 credit risk report.pdf\nSource: google_drive · Path: Finance / Risk / 2026\n\n",
+        "body_tokens": 23,
+        "utf16": {
+          "chunk_char_start": 0,
+          "chunk_char_end": 80,
+          "chunk_own_start": 0
+        }
+      }
+    },
+    {
+      "entity_id": "f3a1__chunk_1",
+      "chunk_index": 1,
+      "chunk_char_start": 28,
+      "chunk_char_end": 181,
+      "chunk_own_start": 80,
+      "chunk_body_offset": 74,
+      "page_from": 1,
+      "page_to": 1,
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 1\nSource: google_drive · Path: Finance / Risk / 2026\n\n# Content\nAcme Corp's late payments rose 12% in the quarter, driven mainly by small-business loans.  ",
+      "topic_ids": {
+        "acme:credit.loan_credit_quality": 1
+      },
+      "broad_family_ids": [
+        "acme:credit"
+      ],
+      "taxonomy_spans": "[{\"c\":\"acme:credit.loan_credit_quality\",\"s\":80,\"e\":181,\"p\":[0,0]}]",
+      "taxonomy_status": "ASSIGNED",
+      "taxonomy_version": "acme-2026.10",
+      "taxonomy_piece_count": 1,
+      "taxonomy_admin_pieces": 0,
+      "taxonomy_unresolved_pieces": 0,
+      "_test": {
+        "body": "Source: google_drive · Path: Finance / Risk / 2026\n\n# Content\nAcme Corp's late payments rose 12% in the quarter, driven mainly by small-business loans.  ",
+        "body_tokens": 40,
+        "utf16": {
+          "chunk_char_start": 28,
+          "chunk_char_end": 181,
+          "chunk_own_start": 80
+        }
+      }
+    },
+    {
+      "entity_id": "f3a1__chunk_2",
+      "chunk_index": 2,
+      "chunk_char_start": 181,
+      "chunk_char_end": 264,
+      "chunk_own_start": 181,
+      "chunk_body_offset": 74,
+      "page_from": 1,
+      "page_to": 1,
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 1\n📈 The allowance for credit losses increased to €4.2 million, up from €3.1 million.\n",
+      "topic_ids": {
+        "acme:credit.allowance_for_losses": 1
+      },
+      "broad_family_ids": [
+        "acme:credit"
+      ],
+      "taxonomy_spans": "[{\"c\":\"acme:credit.allowance_for_losses\",\"s\":181,\"e\":264,\"p\":[0,0]}]",
+      "taxonomy_status": "ASSIGNED",
+      "taxonomy_version": "acme-2026.10",
+      "taxonomy_piece_count": 1,
+      "taxonomy_admin_pieces": 0,
+      "taxonomy_unresolved_pieces": 0,
+      "_test": {
+        "body": "📈 The allowance for credit losses increased to €4.2 million, up from €3.1 million.\n",
+        "body_tokens": 24,
+        "utf16": {
+          "chunk_char_start": 181,
+          "chunk_char_end": 265,
+          "chunk_own_start": 181
+        }
+      }
+    },
+    {
+      "entity_id": "f3a1__chunk_3",
+      "chunk_index": 3,
+      "chunk_char_start": 264,
+      "chunk_char_end": 320,
+      "chunk_own_start": 264,
+      "chunk_body_offset": 74,
+      "page_from": 1,
+      "page_to": 1,
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 1\nUmsatz in Zürich stieg im dritten Quartal um 3 Prozent.\n",
+      "topic_ids": {
+        "acme:revenue.revenue_growth": 1
+      },
+      "broad_family_ids": [
+        "acme:revenue"
+      ],
+      "taxonomy_spans": "[{\"c\":\"acme:revenue.revenue_growth\",\"s\":264,\"e\":320,\"p\":[0,0]}]",
+      "taxonomy_status": "ASSIGNED",
+      "taxonomy_version": "acme-2026.10",
+      "taxonomy_piece_count": 1,
+      "taxonomy_admin_pieces": 0,
+      "taxonomy_unresolved_pieces": 0,
+      "_test": {
+        "body": "Umsatz in Zürich stieg im dritten Quartal um 3 Prozent.\n",
+        "body_tokens": 19,
+        "utf16": {
+          "chunk_char_start": 265,
+          "chunk_char_end": 321,
+          "chunk_own_start": 265
+        }
+      }
+    },
+    {
+      "entity_id": "f3a1__chunk_4",
+      "chunk_index": 4,
+      "chunk_char_start": 320,
+      "chunk_char_end": 390,
+      "chunk_own_start": 320,
+      "chunk_body_offset": 74,
+      "page_from": 2,
+      "page_to": 2,
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 2\n売上高は前年同期比で12%増加しました。\nCharge-offs  stayed below 0.5% of the loan book. ",
+      "topic_ids": {
+        "acme:credit.loan_credit_quality": 1,
+        "acme:revenue.revenue_growth": 1
+      },
+      "broad_family_ids": [
+        "acme:credit",
+        "acme:revenue"
+      ],
+      "taxonomy_spans": "[{\"c\":\"acme:credit.loan_credit_quality\",\"s\":320,\"e\":390,\"p\":[0,0]},{\"c\":\"acme:revenue.revenue_growth\",\"s\":320,\"e\":390,\"p\":[0,0]}]",
+      "taxonomy_status": "ASSIGNED",
+      "taxonomy_version": "acme-2026.10",
+      "taxonomy_piece_count": 1,
+      "taxonomy_admin_pieces": 0,
+      "taxonomy_unresolved_pieces": 0,
+      "_test": {
+        "body": "売上高は前年同期比で12%増加しました。\nCharge-offs  stayed below 0.5% of the loan book. ",
+        "body_tokens": 35,
+        "utf16": {
+          "chunk_char_start": 321,
+          "chunk_char_end": 391,
+          "chunk_own_start": 321
+        }
+      }
+    },
+    {
+      "entity_id": "f3a1__chunk_5",
+      "chunk_index": 5,
+      "chunk_char_start": 390,
+      "chunk_char_end": 423,
+      "chunk_own_start": 390,
+      "chunk_body_offset": 74,
+      "page_from": 2,
+      "page_to": 2,
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 2\nPage 2 of 2 · Internal use only.\n",
+      "topic_ids": {},
+      "broad_family_ids": [],
+      "taxonomy_spans": "[]",
+      "taxonomy_status": "ADMINISTRATIVE",
+      "taxonomy_version": "acme-2026.10",
+      "taxonomy_piece_count": 1,
+      "taxonomy_admin_pieces": 1,
+      "taxonomy_unresolved_pieces": 0,
+      "_test": {
+        "body": "Page 2 of 2 · Internal use only.\n",
+        "body_tokens": 11,
+        "utf16": {
+          "chunk_char_start": 391,
+          "chunk_char_end": 424,
+          "chunk_own_start": 391
+        }
+      }
+    }
+  ],
+  "checks": [
+    "document_text equals source_text with every refused code point replaced by one space; same length (contract 3.2)",
+    "no refused code point in document_text or any textual_representation",
+    "document_text[chunk_char_start:chunk_char_end] == _test.body  (code points; in TypeScript use the shared codePointSlice helper)",
+    "textual_representation[chunk_body_offset:] == _test.body",
+    "_test.body_tokens <= CHUNK_TARGET_TOKENS  (overlap counted inside the target; header not counted)",
+    "chunk_own_start == previous chunk_char_end; for chunk 0 it equals chunk_char_start; chunk_own_start < chunk_char_end (every chunk adds new text)",
+    "own ranges [chunk_own_start, chunk_char_end) never overlap and together cover document_text",
+    "every taxonomy_spans entry lies inside [chunk_own_start, chunk_char_end)",
+    "TypeScript only: String.prototype.slice with these offsets gives the wrong text after the emoji; _test.utf16 shows the JavaScript indexes"
+  ]
+}

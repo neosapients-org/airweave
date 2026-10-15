@@ -118,6 +118,26 @@ def _validate_text_quality(text: str, entity_id: str) -> Optional[str]:
     return None
 
 
+# Chunk positions, pages and topic labels (contract airweave-neo/1, section 4.2), written to
+# every schema under their own names. topic_ids is a weightedset: {"<registry id>": weight}.
+CHUNK_LAYOUT_FIELDS: tuple[str, ...] = (
+    "chunk_char_start",
+    "chunk_char_end",
+    "chunk_own_start",
+    "chunk_body_offset",
+    "page_from",
+    "page_to",
+    "topic_ids",
+    "broad_family_ids",
+    "taxonomy_spans",
+    "taxonomy_status",
+    "taxonomy_version",
+    "taxonomy_piece_count",
+    "taxonomy_admin_pieces",
+    "taxonomy_unresolved_pieces",
+)
+
+
 def _get_system_metadata_fields() -> set[str]:
     """Get system metadata fields from AirweaveSystemMetadata class.
 
@@ -197,6 +217,7 @@ class EntityTransformer:
 
         # Build fields from various sources
         fields = self._build_base_fields(entity)
+        self._add_chunk_layout_fields(fields, entity)
         self._add_system_metadata_fields(fields, entity, entity_type)
         self._add_type_specific_fields(fields, entity)
         self._add_access_control_fields(fields, entity)
@@ -283,6 +304,15 @@ class EntityTransformer:
 
             fields["textual_representation"] = entity.textual_representation
         return fields
+
+    def _add_chunk_layout_fields(self, fields: Dict[str, Any], entity: BaseEntity) -> None:
+        """Add chunk position, page and label fields (every schema); unset fields are skipped."""
+        if not isinstance(entity, BaseEntity):
+            return
+        for name in CHUNK_LAYOUT_FIELDS:
+            value = getattr(entity, name, None)
+            if value is not None:
+                fields[name] = dict(value) if name == "topic_ids" else value
 
     def _add_system_metadata_fields(
         self, fields: Dict[str, Any], entity: BaseEntity, entity_type: str

@@ -122,6 +122,75 @@ schema base_entity {
         }
 
         # =============================================================================
+        # Chunk positions, pages and topic labels (contract airweave-neo/1, section 4.2)
+        # Offsets are Unicode code points, end-exclusive, in the document text.
+        # Unset on chunks written with the upstream (default) chunk settings.
+        # =============================================================================
+        field chunk_char_start type int {
+            indexing: attribute | summary
+        }
+
+        field chunk_char_end type int {
+            indexing: attribute | summary
+        }
+
+        field chunk_own_start type int {
+            indexing: attribute | summary
+        }
+
+        # Where the body starts inside textual_representation (header length + 1, or 0)
+        field chunk_body_offset type int {
+            indexing: summary
+        }
+
+        # First and last page (PDF) or slide (PowerPoint); unset for formats without pages
+        field page_from type int {
+            indexing: attribute | summary
+        }
+
+        field page_to type int {
+            indexing: attribute | summary
+        }
+
+        # Registry category ids; weight = classifier pieces in the own text with that category
+        field topic_ids type weightedset<string> {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        field broad_family_ids type array<string> {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        # JSON array of labelled spans: [{"c": id, "s": start, "e": end, "p": [first, last]}]
+        field taxonomy_spans type string {
+            indexing: summary
+        }
+
+        # ASSIGNED, PARTIALLY_ASSIGNED, UNRESOLVED, ADMINISTRATIVE, ERROR or NOT_LABELLED
+        field taxonomy_status type string {
+            indexing: attribute | summary
+        }
+
+        field taxonomy_version type string {
+            indexing: attribute | summary
+            attribute: fast-search
+        }
+
+        field taxonomy_piece_count type int {
+            indexing: attribute
+        }
+
+        field taxonomy_admin_pieces type int {
+            indexing: attribute
+        }
+
+        field taxonomy_unresolved_pieces type int {
+            indexing: attribute
+        }
+
+        # =============================================================================
         # Access Control Fields (flattened from AccessControl model)
         # =============================================================================
         field access_is_public type bool {
@@ -292,6 +361,38 @@ schema base_entity {
         match-features {
             keyword_score
             semantic_score
+        }
+    }
+
+    # =========================================================================
+    # HYBRID + TOPIC BOOST (contract airweave-neo/1, section 5.1)
+    # The hybrid score plus topic_weight x topic match. A boost, not a filter:
+    # chunks without topic_ids still match and keep their hybrid score.
+    # topic_match = sum over the query's topics of (query weight x chunk weight).
+    # =========================================================================
+    rank-profile hybrid_topic inherits hybrid {
+        inputs {
+            query(topics) tensor<float>(t{})
+            query(topic_weight) double: 0.15
+        }
+
+        function topic_match() {
+            expression: sum(query(topics) * tensorFromWeightedSet(attribute(topic_ids), t))
+        }
+
+        global-phase {
+            rerank-count: 100
+            expression {
+                normalize_linear(keyword_score) +
+                normalize_linear(semantic_score) +
+                query(topic_weight) * topic_match
+            }
+        }
+
+        match-features {
+            keyword_score
+            semantic_score
+            topic_match
         }
     }
 

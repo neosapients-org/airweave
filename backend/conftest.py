@@ -6,7 +6,10 @@ making its fixtures available to centralized tests AND colocated domain tests.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -836,3 +839,26 @@ def test_container(
         access_broker=fake_access_broker,
         converter_registry=fake_converter_registry,
     )
+
+
+# ---------------------------------------------------------------------------
+# Shared fixtures of contract airweave-neo/1 (tests/fixtures/airweave_neo/README.md)
+# ---------------------------------------------------------------------------
+
+_AIRWEAVE_NEO_FIXTURES = Path(__file__).parent / "tests" / "fixtures" / "airweave_neo"
+_CHUNK_FIXTURE_SHA256 = "c2ea2e55d3a87c83eea112abe00e58e7b201a2eea13c0842a638a0582ec80448"
+
+
+@pytest.fixture(scope="session")
+def airweave_neo_chunk_fixture() -> dict:
+    """The shared chunk-position fixture; refuses a copy that differs from the shared one."""
+    raw = (_AIRWEAVE_NEO_FIXTURES / "chunk-positions.example.json").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == _CHUNK_FIXTURE_SHA256, "not the shared fixture"
+    return json.loads(raw)
+
+
+@pytest.fixture(scope="session")
+def airweave_neo_search_record() -> dict:
+    """The chunk record of contract section 4.4, as returned by search."""
+    path = _AIRWEAVE_NEO_FIXTURES / "search-record.example.json"
+    return json.loads(path.read_text())["record"]

@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import ClassVar, List, Optional, Type
+from typing import ClassVar, Dict, List, Optional, Type
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -115,6 +115,47 @@ class BaseEntity(BaseModel):
     # Access control - only set by sources with supports_access_control=True
     access: Optional[AccessControl] = Field(
         None, description="Access control - who can view this entity (not expanded)"
+    )
+
+    # Chunk positions, pages and topic labels (contract airweave-neo/1, section 4.2).
+    # Set on chunk entities only. exclude=True keeps them out of every model_dump, so they
+    # never reach the header, the vectors, the payload, the hash or the raw-data store;
+    # the Vespa transformer reads them as attributes.
+    chunk_char_start: Optional[int] = Field(
+        None, exclude=True, description="Body start in the document text (code points)."
+    )
+    chunk_char_end: Optional[int] = Field(
+        None, exclude=True, description="Body end in the document text (exclusive)."
+    )
+    chunk_own_start: Optional[int] = Field(
+        None, exclude=True, description="Start of the text not shared with the previous chunk."
+    )
+    chunk_body_offset: Optional[int] = Field(
+        None, exclude=True, description="Where the body starts in textual_representation."
+    )
+    page_from: Optional[int] = Field(None, exclude=True, description="First page or slide.")
+    page_to: Optional[int] = Field(None, exclude=True, description="Last page or slide.")
+    topic_ids: Optional[Dict[str, int]] = Field(
+        None, exclude=True, description="Registry category id -> classifier pieces carrying it."
+    )
+    broad_family_ids: Optional[List[str]] = Field(
+        None, exclude=True, description="Registry family ids."
+    )
+    taxonomy_spans: Optional[str] = Field(
+        None, exclude=True, description="JSON array of labelled spans (contract 4.3)."
+    )
+    taxonomy_status: Optional[str] = Field(None, exclude=True, description="Labelling status.")
+    taxonomy_version: Optional[str] = Field(
+        None, exclude=True, description="Taxonomy version that produced the labels."
+    )
+    taxonomy_piece_count: Optional[int] = Field(
+        None, exclude=True, description="Classifier pieces in the chunk's own text."
+    )
+    taxonomy_admin_pieces: Optional[int] = Field(
+        None, exclude=True, description="Pieces set aside as administrative."
+    )
+    taxonomy_unresolved_pieces: Optional[int] = Field(
+        None, exclude=True, description="Substantive pieces with no category."
     )
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="ignore")

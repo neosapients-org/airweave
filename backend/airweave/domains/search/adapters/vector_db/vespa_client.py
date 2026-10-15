@@ -27,6 +27,7 @@ from airweave.domains.search.adapters.vector_db.vespa_config import (
 from airweave.domains.search.types.embeddings import QueryEmbeddings
 from airweave.domains.search.types.plan import RetrievalStrategy, SearchPlan
 from airweave.domains.search.types.results import (
+    CHUNK_RESULT_FIELDS,
     CompiledQuery,
     SearchAccessControl,
     SearchBreadcrumb,
@@ -458,10 +459,25 @@ class VespaVectorDB:
                 url=fields.get("url"),
                 doc_categories=fields.get("doc_categories") or None,
                 raw_source_fields=raw_source_fields,
+                **self._extract_chunk_fields(fields),
             )
             results.append(result)
 
         return SearchResults(results=results)
+
+    def _extract_chunk_fields(self, fields: Dict[str, Any]) -> Dict[str, Any]:
+        """Read the chunk position, page and label fields (contract 5.2); absent stays absent."""
+        chunk_fields = {name: fields[name] for name in CHUNK_RESULT_FIELDS if name in fields}
+        if "topic_ids" in chunk_fields:
+            chunk_fields["topic_ids"] = self._parse_weighted_set(chunk_fields["topic_ids"])
+        return chunk_fields
+
+    @staticmethod
+    def _parse_weighted_set(raw: Any) -> Dict[str, int]:
+        """Accept both renderings of a Vespa weightedset: an object, or [{item, weight}]."""
+        if isinstance(raw, dict):
+            return {str(k): int(v) for k, v in raw.items()}
+        return {str(e["item"]): int(e["weight"]) for e in raw or [] if isinstance(e, dict)}
 
     def _get_required_field(self, fields: Dict[str, Any], field_name: str, entity_id: str) -> str:
         """Get a required field, logging warning if missing."""
