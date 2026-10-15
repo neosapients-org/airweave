@@ -4,9 +4,12 @@
 through. ``VespaChunkStore`` talks to Vespa's document API; the tests use an in-memory store that
 honours the same condition.
 
-**Nothing in this module has run against a real Vespa.** The visit parameters, the document
-selection and the test-and-set condition are written from Vespa's document API documentation and
-are checked by the manual Vespa gate (section 5 of the batch-5 report).
+Verified on a real Vespa 8 (``tests/integration/vespa/test_relabel_contract.py``): the visit
+parameters, the document selection and the test-and-set condition work as written below. Measured
+details: a failed condition answers **412**, and so does a **missing document** ("Document does
+not exist"), so a chunk deleted meanwhile is reported as ``CONDITION_FAILED`` (skipped, counted);
+404 is kept as an outcome in case another Vespa version answers it. An update WITHOUT a condition
+on a missing document answers 200, which is why every update here carries one.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from airweave.platform.destinations.vespa.config import ALL_VESPA_SCHEMAS
 
 APPLIED = "applied"
 CONDITION_FAILED = "condition_failed"  # a sync replaced the chunk: skipped, not an error
-NOT_FOUND = "not_found"  # the chunk was deleted meanwhile: skipped
+NOT_FOUND = "not_found"  # a 404; Vespa 8 answers 412 for a deleted chunk
 
 _HASH = re.compile(r"^[A-Za-z0-9_.:+/=-]{1,200}$")
 

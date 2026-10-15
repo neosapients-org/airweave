@@ -1,8 +1,8 @@
 """``VespaChunkStore``'s HTTP calls, checked against a mock transport.
 
-This checks what we send and how we read the answers. **It is not a Vespa**: the document
-selection, ``fieldSet``, ``condition`` and ``create=false`` semantics are unverified until the
-manual Vespa gate runs them on a real instance.
+This checks what we send and how we read the answers. **It is not a Vespa**: the real behaviour
+(selection, ``fieldSet``, ``condition``, 412 and the rest) is checked against a real Vespa 8 by
+``tests/integration/vespa/test_relabel_contract.py``.
 """
 
 import json
