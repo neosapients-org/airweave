@@ -5,7 +5,7 @@ with retry logic and soft-fail support.
 """
 
 import asyncio
-from typing import TYPE_CHECKING, Awaitable, Callable, List
+from typing import TYPE_CHECKING, Awaitable, Callable, List, Optional
 
 import httpcore
 import httpx
@@ -19,7 +19,10 @@ from airweave.domains.sync_pipeline.entity.actions import (
 from airweave.domains.sync_pipeline.entity.handlers.protocol import EntityActionHandler
 from airweave.domains.sync_pipeline.exceptions import SyncFailureError
 from airweave.domains.sync_pipeline.processors.classifier import ClassifierProcessor
-from airweave.domains.sync_pipeline.protocols import ChunkEmbedProcessorProtocol
+from airweave.domains.sync_pipeline.protocols import (
+    ChunkEmbedProcessorProtocol,
+    TaxonomyProcessorProtocol,
+)
 from airweave.platform.destinations._base import BaseDestination
 
 if TYPE_CHECKING:
@@ -45,10 +48,15 @@ class DestinationHandler(EntityActionHandler):
         self,
         destinations: List[BaseDestination],
         processor: ChunkEmbedProcessorProtocol,
+        taxonomy: Optional[TaxonomyProcessorProtocol] = None,
     ) -> None:
-        """Initialize with destination list and chunk/embed processor."""
+        """Initialize with destinations, the chunk/embed processor and the taxonomy step.
+
+        ``taxonomy`` is None unless ``TAXONOMY_ENABLED``: then chunks are written as upstream.
+        """
         self._destinations = destinations
         self._processor = processor
+        self._taxonomy = taxonomy
         self._classifier = ClassifierProcessor()
 
     @property
@@ -197,6 +205,8 @@ class DestinationHandler(EntityActionHandler):
             sync_context.logger.debug(f"[{self.name}] No entities after processing")
             return
 
+        processed = await self._label(processed, sync_context)
+
         for dest in self._destinations:
             await self._execute_with_retry(
                 operation=lambda d=dest, p=processed: d.bulk_insert(p),
@@ -204,6 +214,14 @@ class DestinationHandler(EntityActionHandler):
                 destination=dest,
                 sync_context=sync_context,
             )
+
+    async def _label(
+        self, chunks: List["BaseEntity"], sync_context: "SyncContext"
+    ) -> List["BaseEntity"]:
+        """Topic labels on the chunks, after embedding and before the write (A7)."""
+        if self._taxonomy is None:
+            return chunks
+        return await self._taxonomy.process(chunks, sync_context)
 
     async def _do_delete_by_ids(
         self,

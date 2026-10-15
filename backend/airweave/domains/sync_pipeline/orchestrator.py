@@ -29,6 +29,7 @@ from airweave.domains.syncs.cursors.service import SyncCursorService
 from airweave.domains.syncs.jobs.protocols import SyncJobStateMachineProtocol
 from airweave.domains.syncs.jobs.types import InvalidTransitionError, LifecycleData
 from airweave.domains.syncs.protocols import SyncStateMachineProtocol
+from airweave.domains.taxonomy.metrics import log_sync_summary
 from airweave.domains.temporal.exceptions import classified_user_application_error
 from airweave.domains.temporal.metrics import worker_metrics
 from airweave.domains.usage.exceptions import (
@@ -172,6 +173,12 @@ class SyncOrchestrator:
                         "error_type": type(e).__name__,
                     },
                 )
+
+            # Topic-label counts for this sync (only when the taxonomy step ran)
+            try:
+                log_sync_summary(str(self.sync_context.sync_job.id), self.sync_context.logger)
+            except Exception as e:
+                self.sync_context.logger.warning(f"Failed to log taxonomy summary: {e}")
 
             # Flush the usage ledger for this org to prevent data loss
             try:

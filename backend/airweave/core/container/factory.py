@@ -126,6 +126,7 @@ from airweave.domains.sources.validation import SourceValidationService
 from airweave.domains.storage.sync_file_manager import SyncFileManager
 from airweave.domains.sync_pipeline.factory import SyncFactory
 from airweave.domains.sync_pipeline.processors.chunk_embed import ChunkEmbedProcessor
+from airweave.domains.sync_pipeline.processors.taxonomy import TaxonomyProcessor
 from airweave.domains.sync_pipeline.subscribers.progress_relay import SyncProgressRelay
 from airweave.domains.syncs.cursors.repository import SyncCursorRepository
 from airweave.domains.syncs.cursors.service import SyncCursorService
@@ -135,6 +136,8 @@ from airweave.domains.syncs.jobs.state_machine import SyncJobStateMachine
 from airweave.domains.syncs.repository import SyncRepository
 from airweave.domains.syncs.service import SyncService
 from airweave.domains.syncs.state_machine import SyncStateMachine
+from airweave.domains.taxonomy.artifacts import TaxonomyResolver
+from airweave.domains.taxonomy.classifier_pool import ClassifierPool
 from airweave.domains.temporal.client import get_cached_client as get_cached_temporal_client
 from airweave.domains.temporal.schedule_service import TemporalScheduleService
 from airweave.domains.temporal.service import TemporalWorkflowService
@@ -399,6 +402,7 @@ def create_container(settings: Settings) -> Container:
         usage_ledger=usage_ledger,
         storage_backend=storage_backend,
         state_machine=sync_deps["sync_job_state_machine"],
+        taxonomy_processor=_create_taxonomy_processor(settings),
     )
 
     sync_service = SyncService(
@@ -1370,6 +1374,38 @@ def _create_search_services(
         "agentic_search": agentic_search,
         "browse_service": browse_service,
     }
+
+
+def _create_taxonomy_processor(settings: Settings) -> Optional[TaxonomyProcessor]:
+    """The taxonomy step (plan A7), or None while TAXONOMY_ENABLED is off (upstream writes).
+
+    One resolver and one classifier pool per process. The taxonomy bucket is read with the S3
+    backend; region and endpoint come from the storage settings. An unset bucket is not fatal
+    here: every labelled chunk is then written as ERROR, logged and counted.
+    """
+    if not settings.TAXONOMY_ENABLED:
+        return None
+    storage = None
+    if settings.TAXONOMY_S3_BUCKET:
+        from airweave.adapters.storage.aws_s3 import S3Backend
+
+        storage = S3Backend(
+            bucket=settings.TAXONOMY_S3_BUCKET,
+            region=settings.STORAGE_AWS_REGION or "us-east-1",
+            endpoint_url=settings.STORAGE_AWS_ENDPOINT_URL,
+        )
+    resolver = TaxonomyResolver(
+        storage=storage,
+        prefix=settings.TAXONOMY_S3_PREFIX,
+        local_dir=settings.TAXONOMY_LOCAL_DIR,
+        active_cache_seconds=settings.TAXONOMY_ACTIVE_CACHE_SECONDS,
+    )
+    pool = ClassifierPool(
+        threads=settings.TAXONOMY_CLASSIFY_THREADS, cache_dir=settings.TAXONOMY_EMBED_CACHE_DIR
+    )
+    return TaxonomyProcessor(
+        resolver=resolver, pool=pool, timeout_seconds=settings.TAXONOMY_CLASSIFY_TIMEOUT_SECONDS
+    )
 
 
 def _create_storage_backend(settings: Settings):  # -> StorageBackend

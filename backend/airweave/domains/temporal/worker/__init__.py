@@ -71,6 +71,10 @@ class TemporalWorker:
         self._state = WorkerState()
 
         registry = CollectorRegistry()
+        if settings.TAXONOMY_ENABLED:
+            from airweave.domains.taxonomy.metrics import TAXONOMY_TALLY, TaxonomyChunksCollector
+
+            registry.register(TaxonomyChunksCollector(TAXONOMY_TALLY))
         self._control_server = WorkerControlServer(
             worker_state=self._state,
             config=config,
