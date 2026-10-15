@@ -3,7 +3,7 @@
 Wraps environment variables and provides defaults.
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import PostgresDsn, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings
@@ -134,6 +134,29 @@ class Settings(BaseSettings):
     CLASSIFICATION_VISION_MODEL: str = "gpt-4o"
     CLASSIFICATION_BATCH_SIZE: int = 25
     CLASSIFICATION_RATE_LIMIT_PER_HOUR: int = 1000  # Max documents classified per org per hour
+
+    # Chunking (contract airweave-neo/1, section 3). Every default keeps upstream behaviour.
+    # The target counts the chunk body including its overlap; the header line is not counted.
+    CHUNK_TARGET_TOKENS: int = 4096
+    CHUNK_OVERLAP_TOKENS: int = 0  # sentence_pack only; the semantic chunker has no overlap
+    CHUNK_HEADER_ENABLED: bool = False
+    CHUNKER_MODE: Literal["semantic", "sentence_pack"] = "semantic"
+    CHUNKER_VERSION: str = "1"  # bumped only when the chunker's code changes
+
+    # Topic labels from the taxonomy classifier (contract section 8). There is deliberately
+    # no taxonomy version setting: the version is resolved per sync from the collection.
+    TAXONOMY_ENABLED: bool = False
+    TAXONOMY_S3_BUCKET: Optional[str] = None
+    TAXONOMY_S3_PREFIX: str = "taxonomy/"
+    TAXONOMY_ACTIVE_CACHE_SECONDS: int = 300
+    TAXONOMY_LOCAL_DIR: str = "/tmp/airweave/taxonomy"
+    TAXONOMY_EMBED_CACHE_DIR: str = "/tmp/airweave/taxonomy-cache"  # one SQLite file per thread
+    TAXONOMY_CLASSIFY_THREADS: int = 2
+    TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: int = 60
+
+    # Search: honour OR between a request's filter groups (contract C8). False keeps the
+    # upstream behaviour, where every user filter group is merged into one AND group.
+    SEARCH_FILTER_GROUPS_OR: bool = False
 
     # Debug configuration
     DEBUG: bool = False
@@ -315,6 +338,28 @@ class Settings(BaseSettings):
         v = float(v)
         if v <= 0:
             raise ValueError("HEALTH_CHECK_TIMEOUT must be positive")
+        return v
+
+    @field_validator("CHUNK_TARGET_TOKENS")
+    def validate_chunk_target_tokens(cls, v: int) -> int:
+        """Keep the chunk target within the embedding hard limit (8192 tokens)."""
+        if not 1 <= v <= 8192:
+            raise ValueError("CHUNK_TARGET_TOKENS must be between 1 and 8192")
+        return v
+
+    @field_validator("CHUNK_OVERLAP_TOKENS")
+    def validate_chunk_overlap_tokens(cls, v: int, info: ValidationInfo) -> int:
+        """Require an overlap smaller than the target, so every chunk adds new text."""
+        target = info.data.get("CHUNK_TARGET_TOKENS")
+        if v < 0 or (target is not None and v >= target):
+            raise ValueError("CHUNK_OVERLAP_TOKENS must be >= 0 and below CHUNK_TARGET_TOKENS")
+        return v
+
+    @field_validator("TAXONOMY_CLASSIFY_THREADS", "TAXONOMY_CLASSIFY_TIMEOUT_SECONDS")
+    def validate_taxonomy_positive(cls, v: int, info: ValidationInfo) -> int:
+        """Require at least one classifier thread and a positive timeout."""
+        if v < 1:
+            raise ValueError(f"{info.field_name} must be at least 1")
         return v
 
     @field_validator("AZURE_KEYVAULT_NAME", mode="before")
