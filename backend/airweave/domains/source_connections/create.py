@@ -28,6 +28,7 @@ from airweave.domains.source_connections.protocols import (
     SourceConnectionRepositoryProtocol,
 )
 from airweave.domains.sources.exceptions import SourceError, SourceNotFoundError
+from airweave.domains.storage.paths import paths as storage_paths
 from airweave.domains.sources.http_translation import http_exception_for_credential_validation
 from airweave.domains.sources.protocols import (
     SourceLifecycleServiceProtocol,
@@ -102,6 +103,17 @@ class SourceConnectionCreationService(SourceConnectionCreateServiceProtocol):
         """Create a source connection from the auth configuration."""
         entry = self._get_source_entry(obj_in.short_name)
         source_class = entry.source_class_ref
+
+        if obj_in.short_name == "neo_file_upload":
+            # The upload storage location is derived from the caller's own
+            # organization and the target collection, never taken from
+            # client input — otherwise a caller could point this source at
+            # another organization's uploaded files by crafting `config`.
+            obj_in.config = {
+                "upload_prefix": storage_paths.upload_prefix(
+                    ctx.organization.id, obj_in.readable_collection_id
+                )
+            }
 
         if obj_in.name is None:
             obj_in.name = f"{entry.name} Connection"

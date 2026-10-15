@@ -192,6 +192,7 @@ from .monday import (
     MondaySubitemEntity,
     MondayUpdateEntity,
 )
+from .neo_file_upload import NeoUploadedFileEntity
 from .notion import (
     NotionDatabaseEntity,
     NotionFileEntity,
@@ -559,6 +560,9 @@ ENTITIES_BY_SOURCE: dict[str, list[type]] = {
         MondayItemEntity,
         MondaySubitemEntity,
         MondayUpdateEntity,
+    ],
+    "neo_file_upload": [
+        NeoUploadedFileEntity,
     ],
     "notion": [
         NotionDatabaseEntity,

@@ -5,7 +5,7 @@ This handler runs AFTER destination handlers to ensure consistency.
 """
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Dict, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Set, Tuple
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,12 +48,20 @@ class EntityPostgresHandler(EntityActionHandler):
         batch: EntityActionBatch,
         sync_context: "SyncContext",
         runtime: "SyncRuntime",
-    ) -> None:
-        """Handle full batch in a single transaction."""
+    ) -> Set[str]:
+        """Handle full batch in a single transaction.
+
+        The metadata store itself never silently drops an entity — a write
+        failure raises via ``_do_batch_with_retry`` — so it never reports
+        dropped ids. It receives an already-filtered batch: the dispatcher
+        excludes entities that upstream destination handlers reported as
+        never actually written.
+        """
         if not batch.has_mutations:
-            return
+            return set()
 
         await self._do_batch_with_retry(batch, sync_context)
+        return set()
 
     async def handle_inserts(
         self,

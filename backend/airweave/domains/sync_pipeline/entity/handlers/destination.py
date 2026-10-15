@@ -5,7 +5,7 @@ with retry logic and soft-fail support.
 """
 
 import asyncio
-from typing import TYPE_CHECKING, Awaitable, Callable, List, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, List, Optional, Set
 
 import httpcore
 import httpx
@@ -76,15 +76,24 @@ class DestinationHandler(EntityActionHandler):
         batch: EntityActionBatch,
         sync_context: "SyncContext",
         runtime: "SyncRuntime",
-    ) -> None:
-        """Handle batch by processing and dispatching to each destination."""
+    ) -> Set[str]:
+        """Handle batch by processing and dispatching to each destination.
+
+        Returns:
+            entity_ids from ``batch`` that produced no content in any destination
+            (conversion/embedding failure, etc). The dispatcher must exclude these
+            from what gets persisted as synced in Postgres — otherwise a transient
+            processing failure becomes permanent: the entity's hash is recorded as
+            up to date even though nothing searchable exists for it, so every
+            later sync sees an unchanged hash and skips it forever.
+        """
         if not self._destinations:
             sync_context.logger.debug(f"[{self.name}] No destinations, skipping")
-            return
+            return set()
 
         if not batch.has_mutations:
             sync_context.logger.debug(f"[{self.name}] No mutations, skipping")
-            return
+            return set()
 
         if batch.updates:
             await self._do_delete_by_ids(
@@ -93,40 +102,43 @@ class DestinationHandler(EntityActionHandler):
                 sync_context,
             )
 
+        dropped_ids: Set[str] = set()
         entities = batch.get_entities_to_process()
         if entities:
-            await self._do_process_and_insert(entities, sync_context, runtime)
+            dropped_ids = await self._do_process_and_insert(entities, sync_context, runtime)
 
         if batch.deletes:
             await self.handle_deletes(batch.deletes, sync_context)
+
+        return dropped_ids
 
     async def handle_inserts(
         self,
         actions: List[EntityInsertAction],
         sync_context: "SyncContext",
         runtime: "SyncRuntime",
-    ) -> None:
+    ) -> Set[str]:
         """Handle inserts - process and insert to destinations."""
         if not actions:
-            return
+            return set()
         entities = [a.entity for a in actions]
         sync_context.logger.debug(f"[{self.name}] Inserting {len(entities)} entities")
-        await self._do_process_and_insert(entities, sync_context, runtime)
+        return await self._do_process_and_insert(entities, sync_context, runtime)
 
     async def handle_updates(
         self,
         actions: List[EntityUpdateAction],
         sync_context: "SyncContext",
         runtime: "SyncRuntime",
-    ) -> None:
+    ) -> Set[str]:
         """Handle updates - delete old, then insert new."""
         if not actions:
-            return
+            return set()
         entity_ids = [a.entity_id for a in actions]
         entities = [a.entity for a in actions]
         sync_context.logger.debug(f"[{self.name}] Updating {len(entities)} entities")
         await self._do_delete_by_ids(entity_ids, "update_delete", sync_context)
-        await self._do_process_and_insert(entities, sync_context, runtime)
+        return await self._do_process_and_insert(entities, sync_context, runtime)
 
     async def handle_deletes(
         self,
@@ -160,8 +172,15 @@ class DestinationHandler(EntityActionHandler):
         entities: List["BaseEntity"],
         sync_context: "SyncContext",
         runtime: "SyncRuntime",
-    ) -> None:
-        """Process entities through ChunkEmbedProcessor and insert into destinations."""
+    ) -> Set[str]:
+        """Process entities through ChunkEmbedProcessor and insert into destinations.
+
+        Returns:
+            entity_ids that went in but produced no chunk surviving conversion +
+            embedding, so nothing was inserted for them. Image entities are
+            deliberately, permanently excluded (see below) and are never
+            included here — that skip is by design, not a failure to retry.
+        """
         # Skip image entities — Docling emits base64-encoded markdown for images
         # which the chunker splits into many noisy chunks. Until OCR fully replaces
         # the chunkable content, ignore images outright to keep Vespa clean.
@@ -179,7 +198,9 @@ class DestinationHandler(EntityActionHandler):
                 f"{'y' if skipped_images == 1 else 'ies'} — image ingestion disabled"
             )
         if not filtered:
-            return
+            return set()
+
+        filtered_ids = {e.entity_id for e in filtered}
 
         copies = [e.model_copy(deep=True) for e in filtered]
 
@@ -203,7 +224,17 @@ class DestinationHandler(EntityActionHandler):
 
         if not processed:
             sync_context.logger.debug(f"[{self.name}] No entities after processing")
-            return
+            return filtered_ids
+
+        # Chunking always renames each surviving entity to
+        # "{original_entity_id}__chunk_{n}" and stamps original_entity_id on it
+        # (see ChunkEmbedProcessor._multiply_entities), so this is the set of
+        # original entities with at least one chunk that made it through.
+        surviving_ids = {
+            getattr(e.airweave_system_metadata, "original_entity_id", None) or e.entity_id
+            for e in processed
+        }
+        dropped_ids = filtered_ids - surviving_ids
 
         processed = await self._label(processed, sync_context)
 
@@ -214,6 +245,8 @@ class DestinationHandler(EntityActionHandler):
                 destination=dest,
                 sync_context=sync_context,
             )
+
+        return dropped_ids
 
     async def _label(
         self, chunks: List["BaseEntity"], sync_context: "SyncContext"

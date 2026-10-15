@@ -247,6 +247,12 @@ services:
       - DOCLING_BASE_URL=${DOCLING_BASE_URL:+http://docling:5001}
     volumes:
       - ../backend:/app
+      # Must match the `backend` service's mount. With STORAGE_BACKEND=filesystem
+      # (the local-dev default), the worker and API containers each got their own
+      # private, empty /app/local_storage without this — so any source that reads
+      # back what another request wrote (e.g. neo_file_upload) saw zero files,
+      # even though `backend` had written them correctly to the host directory.
+      - ../local_storage:/app/local_storage
     entrypoint: [ "python", "-m", "airweave.domains.temporal.worker" ]
     depends_on:
       postgres:

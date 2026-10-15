@@ -1,6 +1,6 @@
 """Protocols for entity action handlers."""
 
-from typing import TYPE_CHECKING, Any, List, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, List, Protocol, Set, runtime_checkable
 
 if TYPE_CHECKING:
     from airweave.domains.sync_pipeline.contexts import SyncContext
@@ -34,13 +34,23 @@ class EntityActionHandler(Protocol):
         batch: "EntityActionBatch",
         sync_context: "SyncContext",
         runtime: "SyncRuntime",
-    ) -> None:
+    ) -> Set[str]:
         """Handle a full action batch (main entry point).
 
         Args:
             batch: Entity action batch
             sync_context: Sync context
             runtime: Sync runtime with entity_tracker, source, etc.
+
+        Returns:
+            entity_ids from ``batch`` that this handler did NOT actually persist
+            (e.g. conversion/embedding produced no content). The dispatcher
+            excludes these from what it hands to the metadata handler, so a
+            handler that silently drops an entity must report it here — an
+            entity marked synced in Postgres with nothing behind it in the
+            destination is invisible and permanently unretried. Handlers with
+            no such silent-drop path (e.g. raw/metadata stores that raise on
+            any failure) simply return an empty set.
 
         Raises:
             SyncFailureError: If any operation fails

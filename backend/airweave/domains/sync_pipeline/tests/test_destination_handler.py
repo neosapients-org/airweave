@@ -278,3 +278,142 @@ class TestTimingLogs:
         assert len(slow_warnings) == 1
         assert "ChunkEmbedProcessor" in str(slow_warnings[0])
         assert "15.0s" in str(slow_warnings[0])
+
+
+def _make_entity(entity_id: str, mime_type: str = "application/pdf"):
+    """A minimal stand-in for BaseEntity with a real (non-Mock) mime_type.
+
+    Bare MagicMock() entities make `mime.startswith("image/")` evaluate
+    truthy (an unconfigured MagicMock is truthy), which would silently route
+    every entity through the image-skip branch instead of the path under
+    test — so these tests use a real string here rather than a bare Mock.
+    """
+    entity = MagicMock()
+    entity.entity_id = entity_id
+    entity.mime_type = mime_type
+    return entity
+
+
+def _make_chunk_entity(original_entity_id: str):
+    """A minimal stand-in for a post-chunking entity.
+
+    Mirrors what ChunkEmbedProcessor._multiply_entities actually produces:
+    a new entity_id of "{original}__chunk_{n}" plus original_entity_id
+    stamped on airweave_system_metadata — the field _do_process_and_insert
+    reads to work out which original entities survived processing.
+    """
+    chunk = MagicMock()
+    chunk.entity_id = f"{original_entity_id}__chunk_0"
+    chunk.airweave_system_metadata = MagicMock()
+    chunk.airweave_system_metadata.original_entity_id = original_entity_id
+    return chunk
+
+
+class TestDroppedEntityReporting:
+    """Regression coverage for the "Postgres marks it synced, Vespa never got it" bug.
+
+    A conversion or embedding failure that produces zero content did not
+    raise — ChunkEmbedProcessor.process() just returned fewer entities than
+    it was given — so the destination handler used to report success either
+    way. Postgres would then record that entity's hash as up to date even
+    though nothing was ever written to any destination, and every later sync
+    would see an unchanged hash and skip it forever. _do_process_and_insert
+    must report exactly which entity_ids produced no content so the
+    dispatcher can keep them out of what gets marked as synced.
+    """
+
+    @pytest.mark.asyncio
+    async def test_returns_all_ids_when_processor_produces_nothing(self):
+        """A total processing failure (e.g. OCR/conversion failure) must be
+        reported for every entity that went in, not silently swallowed."""
+        dest = _make_mock_destination()
+        mock_processor = MagicMock()
+        mock_processor.process = AsyncMock(return_value=[])
+        handler = DestinationHandler([dest], processor=mock_processor)
+        ctx = _make_mock_sync_context()
+        runtime = MagicMock()
+
+        entity = _make_entity("docx-1")
+        dropped = await handler._do_process_and_insert([entity], ctx, runtime)
+
+        assert dropped == {"docx-1"}
+        dest.bulk_insert.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_returns_empty_set_when_everything_succeeds(self):
+        """The common case: nothing dropped, no regression in behavior."""
+        dest = _make_mock_destination()
+        mock_processor = MagicMock()
+        chunk = _make_chunk_entity("pdf-1")
+        mock_processor.process = AsyncMock(return_value=[chunk])
+        handler = DestinationHandler([dest], processor=mock_processor)
+        ctx = _make_mock_sync_context()
+        runtime = MagicMock()
+
+        entity = _make_entity("pdf-1")
+        dropped = await handler._do_process_and_insert([entity], ctx, runtime)
+
+        assert dropped == set()
+        dest.bulk_insert.assert_called_once_with([chunk])
+
+    @pytest.mark.asyncio
+    async def test_partial_failure_only_reports_the_failed_entity(self):
+        """One entity fails conversion, another succeeds — only the failed
+        one should come back as dropped, and the successful one must still
+        be inserted."""
+        dest = _make_mock_destination()
+        mock_processor = MagicMock()
+        surviving_chunk = _make_chunk_entity("pdf-ok")
+        mock_processor.process = AsyncMock(return_value=[surviving_chunk])
+        handler = DestinationHandler([dest], processor=mock_processor)
+        ctx = _make_mock_sync_context()
+        runtime = MagicMock()
+
+        entities = [_make_entity("pdf-ok"), _make_entity("docx-failed")]
+        dropped = await handler._do_process_and_insert(entities, ctx, runtime)
+
+        assert dropped == {"docx-failed"}
+        dest.bulk_insert.assert_called_once_with([surviving_chunk])
+
+    @pytest.mark.asyncio
+    async def test_image_only_batch_is_not_reported_as_dropped(self):
+        """Images are deliberately, permanently skipped (not a failure to
+        retry) — they must never show up as a dropped entity."""
+        dest = _make_mock_destination()
+        mock_processor = MagicMock()
+        mock_processor.process = AsyncMock()
+        handler = DestinationHandler([dest], processor=mock_processor)
+        ctx = _make_mock_sync_context()
+        runtime = MagicMock()
+
+        entity = _make_entity("image-1", mime_type="image/png")
+        dropped = await handler._do_process_and_insert([entity], ctx, runtime)
+
+        assert dropped == set()
+        mock_processor.process.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_handle_batch_propagates_dropped_ids(self):
+        """handle_batch must surface _do_process_and_insert's dropped ids —
+        this is what the dispatcher relies on to protect Postgres."""
+        from airweave.domains.sync_pipeline.entity.actions import (
+            EntityActionBatch,
+            EntityUpdateAction,
+        )
+
+        dest = _make_mock_destination()
+        mock_processor = MagicMock()
+        mock_processor.process = AsyncMock(return_value=[])
+        handler = DestinationHandler([dest], processor=mock_processor)
+        ctx = _make_mock_sync_context()
+        runtime = MagicMock()
+
+        entity = _make_entity("docx-1")
+        action = MagicMock(spec=EntityUpdateAction)
+        action.entity = entity
+        action.entity_id = "docx-1"
+        batch = EntityActionBatch(updates=[action])
+
+        dropped = await handler.handle_batch(batch, ctx, runtime)
+
+        assert dropped == {"docx-1"}

@@ -39,6 +39,7 @@ from .intercom import IntercomSource
 from .jira import JiraSource
 from .linear import LinearSource
 from .monday import MondaySource
+from .neo_file_upload import NeoFileUploadSource
 from .notion import NotionSource
 from .onedrive import OneDriveSource
 from .onenote import OneNoteSource
@@ -105,6 +106,7 @@ ALL_SOURCES: list[type] = [
     JiraSource,
     LinearSource,
     MondaySource,
+    NeoFileUploadSource,
     NotionSource,
     OneDriveSource,
     OneNoteSource,

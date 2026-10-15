@@ -412,14 +412,14 @@ class JiraConfig(SourceConfig):
     """Jira configuration schema."""
 
     project_keys: list[str] = Field(
-        ...,
+        default_factory=list,
         title="Project Keys",
         description=(
             "List of Jira project keys to sync (e.g., 'PROJ', 'DEV', 'MARKET'). "
             "Only the specified projects will be synced. Hit enter to add new project. "
-            " You can find project keys in your Jira project settings."
+            "You can find project keys in your Jira project settings. "
+            "Leave empty to sync every project the credential can access."
         ),
-        min_length=1,
     )
 
     # Zephyr Scale integration (requires ZEPHYR_SCALE feature flag)
@@ -996,6 +996,26 @@ class FileStubConfig(SourceConfig):
             "Optional string to embed in all generated files. "
             "Useful as a tracking token for search assertions."
         ),
+    )
+
+
+class NeoFileUploadConfig(SourceConfig):
+    """Configuration for the neo_file_upload source.
+
+    Points at the storage-backend prefix a dedicated upload API endpoint
+    writes uploaded files to. The server sets ``upload_prefix`` itself when
+    creating the connection — it is never taken from client input, so a
+    caller cannot point a connection at another organization's files.
+    """
+
+    upload_prefix: str = Field(
+        ...,
+        title="Upload Storage Prefix",
+        description=(
+            "Storage-backend prefix (e.g. 'uploads/{org_id}/{collection_readable_id}') "
+            "under which uploaded files are stored."
+        ),
+        min_length=1,
     )
 
 
