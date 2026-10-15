@@ -284,3 +284,68 @@ class TestStatisticsEndpoint:
 
         paths = {(m, r.path) for r in api_router.routes for m in getattr(r, "methods", ())}
         assert ("GET", "/admin/collections/{readable_id}/taxonomy-statistics") in paths
+
+
+class TestUnresolvedEndpoint:
+    def world(self):
+        return FakeChunkStore(
+            [chunk(i, doc="a", status="UNRESOLVED", version=NEW, unresolved=1) for i in range(3)]
+            + [chunk(0, doc="b", status="ASSIGNED", version=NEW)]
+        )
+
+    async def call(self, svc, c=None, limit=100, cursor=None, version=None, found=True):
+        return await ep.list_unresolved(
+            readable_id="neo-acme",
+            limit=limit,
+            cursor=cursor,
+            taxonomy_version=version,
+            db=AsyncMock(),
+            ctx=c or ctx(),
+            collection_repo=CollectionRepo(found),
+            service=svc,
+        )
+
+    async def test_returns_chunks_and_a_cursor_field(self):
+        out = await self.call(service(store=self.world()))
+        assert len(out["chunks"]) == 3 and out["next_cursor"] is None
+        assert {"text", "document_id", "taxonomy_version", "positions"} <= set(out["chunks"][0])
+
+    async def test_pages_with_the_cursor(self):
+        svc = service(store=self.world())
+        seen, cursor = [], None
+        for _ in range(10):
+            out = await self.call(svc, limit=1, cursor=cursor)
+            seen += [c["chunk_id"] for c in out["chunks"]]
+            cursor = out["next_cursor"]
+            if cursor is None:
+                break
+        assert len(seen) == 3 and len(set(seen)) == 3
+
+    async def test_needs_the_admin_permission(self):
+        with pytest.raises(HTTPException) as e:
+            await self.call(service(store=self.world()), c=ctx(features=()))
+        assert e.value.status_code == 403
+
+    async def test_unknown_collection_is_404(self):
+        with pytest.raises(HTTPException) as e:
+            await self.call(service(store=self.world()), found=False)
+        assert e.value.status_code == 404
+
+    @pytest.mark.parametrize(
+        "kw", [{"limit": 0}, {"limit": 10_000}, {"cursor": "junk"}, {"version": "../x"}]
+    )
+    async def test_bad_input_is_422(self, kw):
+        with pytest.raises(HTTPException) as e:
+            await self.call(service(store=self.world()), **kw)
+        assert e.value.status_code == 422
+
+    async def test_read_only(self):
+        store = self.world()
+        await self.call(service(store=store))
+        assert store.updates == [] and store.closed
+
+    def test_route_is_mounted(self):
+        from airweave.api.v1.api import api_router
+
+        paths = {(m, r.path) for r in api_router.routes for m in getattr(r, "methods", ())}
+        assert ("GET", "/admin/collections/{readable_id}/unresolved") in paths

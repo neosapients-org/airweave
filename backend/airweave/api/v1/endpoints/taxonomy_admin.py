@@ -167,6 +167,38 @@ async def taxonomy_statistics(
     return stats.to_port()
 
 
+@router.get("/collections/{readable_id}/unresolved")
+async def list_unresolved(
+    readable_id: str = Path(..., description="The readable ID of the collection"),
+    limit: int = Query(100, description="Target page size, 1 to 500; a page may return a few more"),
+    cursor: Optional[str] = Query(None, description="`next_cursor` of the previous page"),
+    taxonomy_version: Optional[str] = Query(
+        None, description="Only chunks labelled by this version"
+    ),
+    db: AsyncSession = Depends(deps.get_db),
+    ctx: ApiContext = Depends(deps.get_context),
+    collection_repo: CollectionRepositoryProtocol = Inject(CollectionRepositoryProtocol),
+    service: RelabelService = Depends(get_relabel_service),
+) -> Dict[str, Any]:
+    """Admin-only, read-only: scroll the chunks whose status is UNRESOLVED or PARTIALLY_ASSIGNED.
+
+    These chunks are the evolution job's input (design section 6); no second copy of their text
+    is stored anywhere. The text of each is the chunk's own text.
+    """
+    _require_admin_permission(ctx, FeatureFlagEnum.API_KEY_ADMIN_SYNC)
+    collection = await _collection(db, collection_repo, readable_id, ctx)
+    try:
+        chunks, next_cursor = await service.unresolved(
+            collection.id, limit, cursor, taxonomy_version
+        )
+    except RelabelRefused as e:
+        raise HTTPException(status_code=e.status, detail=e.detail()) from e
+    except Exception as e:
+        ctx.logger.error(f"Unresolved scroll for {readable_id} failed: {e}")
+        raise HTTPException(status_code=502, detail="Vespa could not be read") from e
+    return {"chunks": chunks, "next_cursor": next_cursor}
+
+
 @router.get("/relabel-jobs/{relabel_job_id}")
 async def get_relabel_job(
     relabel_job_id: UUID = Path(...),
