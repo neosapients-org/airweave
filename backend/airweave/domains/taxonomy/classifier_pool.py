@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import itertools
+import logging
 import os
 import threading
 from collections import OrderedDict
@@ -27,9 +28,12 @@ from typing import Any, Callable, Dict, List, Optional
 from airweave.domains.embedders.protocols import DenseEmbedderProtocol
 from airweave.domains.taxonomy.artifacts import ResolvedTaxonomy
 from airweave.domains.taxonomy.embed_transport import AirweaveEmbedTransport, matches
+from airweave.domains.taxonomy.metrics import TAXONOMY_TALLY, TaxonomyTally
 
 # Loaded taxonomy versions kept per thread; memory is bounded by threads x this
 CLASSIFIERS_PER_THREAD = 4
+
+logger = logging.getLogger(__name__)
 
 EmbedTransport = Callable[[List[str]], Any]
 
@@ -50,6 +54,7 @@ class ClassifierPool:
         classifiers_per_thread: int = CLASSIFIERS_PER_THREAD,
         dense_embedder: Optional[DenseEmbedderProtocol] = None,
         max_cache_mb: float = 512,
+        tally: TaxonomyTally = TAXONOMY_TALLY,
     ) -> None:
         """Initialize; threads start on first use.
 
@@ -68,6 +73,9 @@ class ClassifierPool:
         self._bridge = AirweaveEmbedTransport(dense_embedder) if dense_embedder else None
         self._lru_size = classifiers_per_thread
         self._max_cache_bytes = int(max_cache_mb * 1024 * 1024)
+        self._tally = tally
+        self._fallback_noted: set = set()
+        self._note_lock = threading.Lock()
         self._executors: List[ThreadPoolExecutor] = []
         self._round_robin = itertools.count()
         self._local = threading.local()
@@ -134,7 +142,9 @@ class ClassifierPool:
         config = copy.deepcopy(taxonomy.config)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         config.setdefault("embedding", {})["cache_path"] = str(self._cache_path(index))
-        classifier = TaxonomyClassifier(taxonomy.local_path, config, self._transport_for(config))
+        classifier = TaxonomyClassifier(
+            taxonomy.local_path, config, self._transport_for(taxonomy, config)
+        )
         cache[key] = classifier
         while len(cache) > self._lru_size:
             _, old = cache.popitem(last=False)
@@ -169,13 +179,40 @@ class ClassifierPool:
             _, old = cache.popitem(last=False)
             _close(old)
 
-    def _transport_for(self, config: Dict[str, Any]) -> Optional[EmbedTransport]:
-        """The explicit transport, else Airweave's embedder if the model matches, else None."""
+    def _transport_for(
+        self, taxonomy: ResolvedTaxonomy, config: Dict[str, Any]
+    ) -> Optional[EmbedTransport]:
+        """The explicit transport, else Airweave's embedder if the model matches, else None.
+
+        None means the package's own client; with an embedder configured that is a fallback,
+        logged and counted once per taxonomy version.
+        """
         if self._transport is not None:
             return self._transport
-        if self._bridge is not None and matches(self._dense, config):
-            return self._bridge
+        if self._bridge is not None:
+            if matches(self._dense, config):
+                return self._bridge
+            self._note_fallback(taxonomy, config)
         return None
+
+    def _note_fallback(self, taxonomy: ResolvedTaxonomy, config: Dict[str, Any]) -> None:
+        version = taxonomy.taxonomy_version
+        with self._note_lock:
+            if version in self._fallback_noted:
+                return
+            self._fallback_noted.add(version)
+        wanted = config.get("embedding") or {}
+        logger.warning(
+            "taxonomy %s embeds with %s (%s dimensions) but the deployment's embedder is %s "
+            "(%s dimensions): this version uses the package's own OpenAI client, outside "
+            "Airweave's limits and cost control",
+            version,
+            wanted.get("model"),
+            wanted.get("dimensions"),
+            self._dense.model_name if self._dense else None,
+            self._dense.dimensions if self._dense else None,
+        )
+        self._tally.note_embed_fallback(version)
 
     def close(self) -> None:
         """Stop the threads and delete this process's cache files (the worker is shutting down).

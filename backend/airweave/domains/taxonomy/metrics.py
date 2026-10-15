@@ -35,6 +35,7 @@ class TaxonomyTally:
         self._per_sync: Dict[str, Counter] = {}
         self._versions: Dict[str, set] = {}
         self._alerted: set = set()
+        self._embed_fallbacks = 0
 
     def record(self, sync_job_id: str, counts: Mapping[str, int]) -> Counter:
         """Add one batch's counts; return the sync's counts so far."""
@@ -71,6 +72,16 @@ class TaxonomyTally:
             self._alerted.discard(sync_job_id)
             return self._per_sync.pop(sync_job_id, None)
 
+    def note_embed_fallback(self, version: str) -> None:
+        """Count a taxonomy version whose classifier uses the package's own embeddings client."""
+        with self._lock:
+            self._embed_fallbacks += 1
+
+    def embed_fallbacks(self) -> int:
+        """Taxonomy versions that fell back to the package's embeddings client."""
+        with self._lock:
+            return self._embed_fallbacks
+
     def totals(self) -> Counter:
         """Process totals per status."""
         with self._lock:
@@ -93,6 +104,13 @@ class TaxonomyChunksCollector(Collector):
         for status in STATUSES:
             family.add_metric([status], float(totals.get(status, 0)))
         yield family
+        fallback = CounterMetricFamily(
+            "taxonomy_embed_fallback",
+            "Taxonomy versions classified with the package's own embeddings client because "
+            "their embedding model or dimensions differ from the deployment's",
+        )
+        fallback.add_metric([], float(self._tally.embed_fallbacks()))
+        yield fallback
 
 
 # The worker process's tally: the taxonomy step writes it, the worker's metrics endpoint and

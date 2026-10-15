@@ -21,6 +21,7 @@ from airweave.domains.taxonomy.artifacts import ResolvedTaxonomy
 from airweave.domains.taxonomy.classifier_pool import ClassifierPool
 from airweave.domains.taxonomy.embed_transport import AirweaveEmbedTransport, matches
 from airweave.domains.taxonomy.mapping import RegistryMap
+from airweave.domains.taxonomy.metrics import TaxonomyChunksCollector, TaxonomyTally
 
 
 class FakeDense:
@@ -181,8 +182,8 @@ def stand_in(monkeypatch):
         monkeypatch.setitem(sys.modules, name, mod)
 
 
-def taxonomy(model, dims, sha="a" * 64):
-    return ResolvedTaxonomy("neo-acme", "t-acme", "acme-1", sha, 1, "calibrated", None,
+def taxonomy(model, dims, sha="a" * 64, version="acme-1"):
+    return ResolvedTaxonomy("neo-acme", "t-acme", version, sha, 1, "calibrated", None,
                             Path("/tmp/none"), {"embedding": {"model": model, "dimensions": dims}},
                             RegistryMap("acme-1", {}, {}))
 
@@ -230,3 +231,65 @@ class TestPoolChoice:
             await pool.classify(taxonomy("text-embedding-3-small", 4), ROWS, 0.2)
         await asyncio.sleep(0.4)  # the bridge gives up at the same deadline and cancels the call
         pool.close()
+
+
+class TestFallbackIsVisible:
+    """A taxonomy built with another model keeps the package's client: say so, once, and count."""
+
+    async def test_warns_once_per_version_with_both_model_names(self, tmp_path, stand_in, caplog):
+        tally = TaxonomyTally()
+        pool = ClassifierPool(2, tmp_path, dense_embedder=FakeDense(), tally=tally)
+        other = taxonomy("text-embedding-3-large", 3072, version="acme-2")
+        with caplog.at_level("WARNING"):
+            for _ in range(4):  # two threads, repeated batches
+                await pool.classify(other, ROWS, 10)
+        messages = [r.getMessage() for r in caplog.records]
+        warnings = [m for m in messages if "package's own OpenAI client" in m]
+        assert len(warnings) == 1
+        for needle in ("acme-2", "text-embedding-3-large", "3072", "text-embedding-3-small", "4"):
+            assert needle in warnings[0]
+        assert tally.embed_fallbacks() == 1
+        pool.close()
+
+    async def test_each_version_warns_and_counts_on_its_own(self, tmp_path, stand_in, caplog):
+        tally = TaxonomyTally()
+        pool = ClassifierPool(1, tmp_path, dense_embedder=FakeDense(), tally=tally)
+        with caplog.at_level("WARNING"):
+            await pool.classify(taxonomy("other", 4, version="v1"), ROWS, 10)
+            await pool.classify(taxonomy("other", 4, version="v2"), ROWS, 10)
+        assert tally.embed_fallbacks() == 2
+        pool.close()
+
+    async def test_matching_taxonomy_is_silent(self, tmp_path, stand_in, caplog):
+        tally = TaxonomyTally()
+        pool = ClassifierPool(1, tmp_path, dense_embedder=FakeDense(), tally=tally)
+        with caplog.at_level("WARNING"):
+            await pool.classify(taxonomy("text-embedding-3-small", 4), ROWS, 10)
+        assert not [r for r in caplog.records if "package's own OpenAI client" in r.getMessage()]
+        assert tally.embed_fallbacks() == 0
+        pool.close()
+
+    async def test_dimensions_alone_trigger_it(self, tmp_path, stand_in, caplog):
+        tally = TaxonomyTally()
+        pool = ClassifierPool(1, tmp_path, dense_embedder=FakeDense(), tally=tally)
+        with caplog.at_level("WARNING"):
+            await pool.classify(taxonomy("text-embedding-3-small", 1024), ROWS, 10)
+        assert tally.embed_fallbacks() == 1
+        pool.close()
+
+    async def test_explicit_transport_or_no_embedder_is_not_a_fallback(self, tmp_path, stand_in):
+        tally = TaxonomyTally()
+        no_embedder = ClassifierPool(1, tmp_path, tally=tally)
+        await no_embedder.classify(taxonomy("other", 4), ROWS, 10)
+        explicit = ClassifierPool(1, tmp_path, embed_transport=lambda b: ([], 0), tally=tally)
+        await explicit.classify(taxonomy("other", 4, sha="b" * 64), ROWS, 10)
+        assert tally.embed_fallbacks() == 0
+        no_embedder.close()
+        explicit.close()
+
+    def test_exposed_as_a_prometheus_counter(self):
+        tally = TaxonomyTally()
+        tally.note_embed_fallback("acme-2")
+        families = {f.name: f for f in TaxonomyChunksCollector(tally).collect()}
+        sample = families["taxonomy_embed_fallback"].samples[0]
+        assert sample.name == "taxonomy_embed_fallback_total" and sample.value == 1.0
