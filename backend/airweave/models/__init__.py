@@ -25,6 +25,7 @@ from .sync import Sync
 from .sync_connection import SyncConnection
 from .sync_cursor import SyncCursor
 from .sync_job import SyncJob
+from .taxonomy_job import TaxonomyJob
 from .taxonomy_relabel_job import TaxonomyRelabelJob
 from .usage import Usage
 from .user import User
@@ -32,6 +33,7 @@ from .user_organization import UserOrganization
 from .vector_db_deployment_metadata import VectorDbDeploymentMetadata
 
 __all__ = [
+    "TaxonomyJob",
     "TaxonomyRelabelJob",
     "AccessControlMembership",
     "APIKey",

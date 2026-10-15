@@ -127,6 +127,26 @@ class S3Backend(StorageBackend):
         except Exception as e:
             raise StorageException(f"Failed to write file to {path}: {e}")
 
+    async def write_file_once(self, path: str, content: bytes) -> bool:
+        """Write only if the object does not exist (S3 conditional put, ``If-None-Match: *``).
+
+        Returns ``True`` if written, ``False`` if the key already exists. Never overwrites.
+        """
+        key = self._resolve(path)
+        try:
+            client = await self._get_client()
+            await client.put_object(Bucket=self.bucket, Key=key, Body=content, IfNoneMatch="*")
+            return True
+        except Exception as e:
+            text = str(e)
+            if (
+                "PreconditionFailed" in text
+                or "412" in text
+                or "ConditionalRequestConflict" in text
+            ):
+                return False
+            raise StorageException(f"Failed to write file to {path}: {e}")
+
     async def read_file(self, path: str) -> bytes:
         """Read binary content from S3."""
         key = self._resolve(path)

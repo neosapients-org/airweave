@@ -628,6 +628,7 @@ def create_container(settings: Settings) -> Container:
         taxonomy_processor=taxonomy_processor,
         relabel_service=relabel_service,
         relabel_runner=relabel_runner,
+        taxonomy_job_service=_create_taxonomy_job_service(settings, taxonomy_processor),
     )
 
 
@@ -1457,6 +1458,29 @@ def _create_relabel(
         resume_interval=settings.RELABEL_RESUME_INTERVAL_SECONDS,
     )
     return service, runner
+
+
+def _create_taxonomy_job_service(
+    settings: Settings, taxonomy_processor: Optional[TaxonomyProcessor]
+) -> Optional[Any]:
+    """The API side of the discover and propose jobs, or ``None`` while they are off."""
+    if taxonomy_processor is None or not settings.TAXONOMY_JOBS_ENABLED:
+        return None
+    from airweave.domains.taxonomy.jobs.records import SqlTaxonomyJobRepository
+    from airweave.domains.taxonomy.jobs.service import TaxonomyJobService
+    from airweave.domains.taxonomy.jobs.temporal import start_job_workflow
+
+    async def enqueue(job: Any) -> None:
+        from airweave.domains.temporal.client import get_client
+
+        await start_job_workflow(await get_client(), settings.TAXONOMY_JOBS_TASK_QUEUE, job.id)
+
+    return TaxonomyJobService(
+        SqlTaxonomyJobRepository(),
+        enqueue,
+        discover_cap_usd=settings.DISCOVER_SPEND_CAP_USD,
+        evolution_cap_usd=settings.EVOLUTION_SPEND_CAP_USD,
+    )
 
 
 def _create_storage_backend(settings: Settings):  # -> StorageBackend

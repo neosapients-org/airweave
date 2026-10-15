@@ -17,6 +17,8 @@ from airweave.domains.taxonomy.mapping import PARTIALLY_ASSIGNED, UNRESOLVED
 from airweave.domains.taxonomy.relabel.chunk_store import ChunkStore, decode_token
 from airweave.domains.taxonomy.relabel.chunks import (
     F_CHUNK_INDEX,
+    F_ENTITY_TYPE,
+    F_SOURCE,
     F_TEXT,
     PAGE_FIELDS,
     SCAN_FIELDS,
@@ -44,7 +46,14 @@ _KEY = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 MAX_UNRESOLVED_PAGE = 500
 UNRESOLVED_STATUSES = (UNRESOLVED, PARTIALLY_ASSIGNED)
-UNRESOLVED_FIELDS = (*SCAN_FIELDS, F_TEXT, F_CHUNK_INDEX, *PAGE_FIELDS)
+UNRESOLVED_FIELDS = (
+    *SCAN_FIELDS,
+    F_TEXT,
+    F_CHUNK_INDEX,
+    F_SOURCE,
+    F_ENTITY_TYPE,
+    *PAGE_FIELDS,
+)
 
 
 def _encode_cursor(token: Optional[str]) -> Optional[str]:
@@ -73,6 +82,8 @@ def _unresolved_item(row: ChunkRow) -> Dict[str, Any]:
         "schema": row.schema,
         "document_id": row.document_id,
         "chunk_index": f.get(F_CHUNK_INDEX),
+        "source_name": f.get(F_SOURCE),
+        "entity_type": f.get(F_ENTITY_TYPE),
         "text": row.own_text(),
         "taxonomy_status": row.status,
         "taxonomy_version": row.version,
@@ -98,6 +109,42 @@ class RelabelRefused(Exception):
     def detail(self) -> Dict[str, Any]:
         """The response body's ``detail``."""
         return {"code": self.code, "message": self.message, **self.extra}
+
+
+async def unresolved_page(
+    store: ChunkStore,
+    collection_id: UUID,
+    limit: int,
+    cursor: Optional[str] = None,
+    taxonomy_version: Optional[str] = None,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """One page of UNRESOLVED and PARTIALLY_ASSIGNED chunks (the endpoint and the propose job).
+
+    The caller closes the store.
+    """
+    if not 1 <= limit <= MAX_UNRESOLVED_PAGE:
+        raise RelabelRefused(422, "bad_limit", f"limit must be 1 to {MAX_UNRESOLVED_PAGE}")
+    if taxonomy_version and not _VERSION.match(taxonomy_version):
+        raise RelabelRefused(422, "bad_version", "taxonomy_version is malformed")
+    token = _decode_cursor(cursor)
+    items: List[Dict[str, Any]] = []
+    while True:
+        try:
+            rows, token = await store.scroll(
+                collection_id, UNRESOLVED_FIELDS, limit, token, UNRESOLVED_STATUSES
+            )
+        except ValueError as e:
+            raise RelabelRefused(422, "bad_cursor", "the cursor is not usable") from e
+        items += [
+            _unresolved_item(r)
+            for r in rows
+            if r.labellable
+            and r.status in UNRESOLVED_STATUSES
+            and (not taxonomy_version or r.version == taxonomy_version)
+        ]
+        if token is None or len(items) >= limit:
+            break
+    return items, _encode_cursor(token)
 
 
 @dataclass
@@ -208,33 +255,11 @@ class RelabelService:
         ``limit`` is a target: a page returns every row of the last Vespa page it needed, so no
         row is ever skipped between pages. Text chunks only; the text is the chunk's own text.
         """
-        if not 1 <= limit <= MAX_UNRESOLVED_PAGE:
-            raise RelabelRefused(422, "bad_limit", f"limit must be 1 to {MAX_UNRESOLVED_PAGE}")
-        if taxonomy_version and not _VERSION.match(taxonomy_version):
-            raise RelabelRefused(422, "bad_version", "taxonomy_version is malformed")
-        token = _decode_cursor(cursor)
         store = self._store_factory()
-        items: List[Dict[str, Any]] = []
         try:
-            while True:
-                try:
-                    rows, token = await store.scroll(
-                        collection_id, UNRESOLVED_FIELDS, limit, token, UNRESOLVED_STATUSES
-                    )
-                except ValueError as e:
-                    raise RelabelRefused(422, "bad_cursor", "the cursor is not usable") from e
-                items += [
-                    _unresolved_item(r)
-                    for r in rows
-                    if r.labellable
-                    and r.status in UNRESOLVED_STATUSES
-                    and (not taxonomy_version or r.version == taxonomy_version)
-                ]
-                if token is None or len(items) >= limit:
-                    break
+            return await unresolved_page(store, collection_id, limit, cursor, taxonomy_version)
         finally:
             await store.close()
-        return items, _encode_cursor(token)
 
     async def get(self, job_id: UUID, organization_id: UUID) -> Optional[RelabelJob]:
         """The job, only inside the caller's organization."""

@@ -95,6 +95,21 @@ class FilesystemBackend(StorageBackend):
         except Exception as e:
             raise StorageException(f"Failed to write file to {path}: {e}")
 
+    async def write_file_once(self, path: str, content: bytes) -> bool:
+        """Write only if the file does not exist (exclusive create); ``False`` if it does."""
+        full_path = self._resolve(path)
+        await self._ensure_parent_dir(full_path)
+
+        def _write() -> bool:
+            try:
+                with open(full_path, "xb") as f:
+                    f.write(content)
+                return True
+            except FileExistsError:
+                return False
+
+        return await asyncio.to_thread(_write)
+
     async def read_file(self, path: str) -> bytes:
         """Read binary content from filesystem."""
         full_path = self._resolve(path)

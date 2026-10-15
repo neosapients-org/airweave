@@ -349,3 +349,156 @@ class TestUnresolvedEndpoint:
 
         paths = {(m, r.path) for r in api_router.routes for m in getattr(r, "methods", ())}
         assert ("GET", "/admin/collections/{readable_id}/unresolved") in paths
+
+
+class TestTaxonomyJobEndpoints:
+    def svc(self, cap=5.0):
+        from airweave.domains.taxonomy.jobs.records import InMemoryTaxonomyJobRepository
+        from airweave.domains.taxonomy.jobs.service import TaxonomyJobService
+
+        async def enqueue(job):
+            return None
+
+        return TaxonomyJobService(
+            InMemoryTaxonomyJobRepository(), enqueue, discover_cap_usd=cap, evolution_cap_usd=cap
+        )
+
+    def resolver(self, result="ok"):
+        from airweave.domains.taxonomy.relabel.tests.helpers import FakeResolver
+
+        return FakeResolver(None if result == "ok" else result)
+
+    def container(self, monkeypatch, resolver):
+        from airweave.core import container as container_mod
+
+        monkeypatch.setattr(
+            container_mod,
+            "container",
+            SimpleNamespace(taxonomy_processor=SimpleNamespace(resolver=resolver)),
+            raising=False,
+        )
+
+    async def discover(self, svc, c=None, found=True, **kw):
+        body = ep.DiscoveryRequest(
+            **{
+                "candidate_version": "acme-first",
+                "idempotency_key": "k1",
+                "tenant_id": "t-acme",
+                **kw,
+            }
+        )
+        return await ep.start_taxonomy_discovery(
+            readable_id="neo-acme",
+            body=body,
+            db=AsyncMock(),
+            ctx=c or ctx(),
+            collection_repo=CollectionRepo(found),
+            service=svc,
+        )
+
+    async def propose(self, svc, c=None, **kw):
+        body = ep.ProposalRequest(**{"candidate_version": "acme-v2", "idempotency_key": "p1", **kw})
+        return await ep.start_taxonomy_proposal(
+            readable_id="neo-acme",
+            body=body,
+            db=AsyncMock(),
+            ctx=c or ctx(),
+            collection_repo=CollectionRepo(True),
+            service=svc,
+        )
+
+    async def test_discover_accepts_and_replays(self):
+        svc = self.svc()
+        first = await self.discover(svc)
+        again = await self.discover(svc)
+        assert (
+            first["kind"] == "discover"
+            and first["state"] == "PENDING"
+            and first["replayed"] is False
+        )
+        assert again["job_id"] == first["job_id"] and again["replayed"] is True
+
+    async def test_discover_needs_a_cap(self):
+        with pytest.raises(HTTPException) as e:
+            await self.discover(self.svc(cap=0.0))
+        assert e.value.status_code == 422 and e.value.detail["code"] == "spend_cap_not_approved"
+
+    async def test_propose_takes_the_tenant_from_the_active_file(self, monkeypatch):
+        self.container(monkeypatch, self.resolver())
+        out = await self.propose(self.svc())
+        assert out["kind"] == "propose" and out["state"] == "PENDING"
+
+    async def test_propose_without_an_active_taxonomy_is_409(self, monkeypatch):
+        self.container(monkeypatch, self.resolver("none"))
+        with pytest.raises(HTTPException) as e:
+            await self.propose(self.svc())
+        assert e.value.status_code == 409 and e.value.detail["code"] == "no_active_taxonomy"
+
+    async def test_propose_with_an_unusable_taxonomy_is_409(self, monkeypatch):
+        from airweave.domains.taxonomy.artifacts import TaxonomyResolutionError
+
+        self.container(monkeypatch, self.resolver(TaxonomyResolutionError("checksum mismatch")))
+        with pytest.raises(HTTPException) as e:
+            await self.propose(self.svc())
+        assert e.value.status_code == 409 and "checksum mismatch" in e.value.detail["message"]
+
+    @pytest.mark.parametrize("call", ["discover", "propose", "get", "cancel"])
+    async def test_admin_permission_is_required(self, call, monkeypatch):
+        self.container(monkeypatch, self.resolver())
+        c, svc = ctx(features=()), self.svc()
+        with pytest.raises(HTTPException) as e:
+            if call == "discover":
+                await self.discover(svc, c)
+            elif call == "propose":
+                await self.propose(svc, c)
+            elif call == "get":
+                await ep.get_taxonomy_job(uuid4(), ctx=c, service=svc)
+            else:
+                await ep.cancel_taxonomy_job(uuid4(), ctx=c, service=svc)
+        assert e.value.status_code == 403
+
+    async def test_unknown_collection_is_404(self):
+        with pytest.raises(HTTPException) as e:
+            await self.discover(self.svc(), found=False)
+        assert e.value.status_code == 404
+
+    async def test_get_and_cancel_are_organization_scoped(self):
+        svc = self.svc()
+        job = await self.discover(svc)
+        for call in (ep.get_taxonomy_job, ep.cancel_taxonomy_job):
+            with pytest.raises(HTTPException) as e:
+                await call(UUID(job["job_id"]), ctx=ctx(), service=svc)
+            assert e.value.status_code == 404
+
+    async def test_cancel_an_unclaimed_job(self):
+        svc, c = self.svc(), ctx()
+        job = await self.discover(svc, c)
+        out = await ep.cancel_taxonomy_job(UUID(job["job_id"]), ctx=c, service=svc)
+        assert out["state"] == "CANCELLED" and out["status"] == "cancelled"
+
+    def test_unknown_body_fields_are_refused(self):
+        with pytest.raises(ValueError):
+            ep.DiscoveryRequest(
+                candidate_version="a", idempotency_key="k", tenant_id="t", surprise=1
+            )
+        with pytest.raises(ValueError):
+            ep.ProposalRequest(candidate_version="a", idempotency_key="k", tenant_id="t")
+
+    def test_503_while_the_jobs_are_off(self, monkeypatch):
+        from airweave.core import container as container_mod
+
+        monkeypatch.setattr(
+            container_mod, "container", SimpleNamespace(taxonomy_job_service=None), raising=False
+        )
+        with pytest.raises(HTTPException) as e:
+            ep.get_job_service()
+        assert e.value.status_code == 503
+
+    def test_routes_are_mounted(self):
+        from airweave.api.v1.api import api_router
+
+        paths = {(m, r.path) for r in api_router.routes for m in getattr(r, "methods", ())}
+        assert ("POST", "/admin/collections/{readable_id}/taxonomy-discovery") in paths
+        assert ("POST", "/admin/collections/{readable_id}/taxonomy-evolution/propose") in paths
+        assert ("GET", "/admin/taxonomy-jobs/{job_id}") in paths
+        assert ("POST", "/admin/taxonomy-jobs/{job_id}/cancel") in paths

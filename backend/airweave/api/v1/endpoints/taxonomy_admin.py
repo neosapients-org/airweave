@@ -225,3 +225,175 @@ async def cancel_relabel_job(
     if job is None:
         raise HTTPException(status_code=404, detail="Re-label job not found")
     return job_view(job)
+
+
+# --------------------------------------------------------------------------- discover and propose
+
+
+class DiscoveryRequest(BaseModel):
+    """Body of ``POST /admin/collections/{readable_id}/taxonomy-discovery``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_version: str = Field(..., description="Name of the candidate folder and version")
+    idempotency_key: str = Field(..., description="A replay returns the same job")
+    tenant_id: str = Field(
+        ...,
+        description="The tenant whose prefix receives the candidate (a first version has no "
+        "active file to read it from)",
+    )
+    spend_cap_usd: Optional[float] = Field(None, description="Lowers the approved ceiling")
+    sample_size: Optional[int] = Field(None, description="Documents to sample")
+    corpus_description: Optional[str] = Field(
+        None, max_length=500, description="Inserted into the reviewer's prompts"
+    )
+
+
+class ProposalRequest(BaseModel):
+    """Body of ``POST /admin/collections/{readable_id}/taxonomy-evolution/propose``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_version: str
+    idempotency_key: str
+    spend_cap_usd: Optional[float] = None
+
+
+def get_job_service() -> Any:
+    """The discover/propose service, or 503 while the jobs are off."""
+    service = getattr(container_mod.container, "taxonomy_job_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Taxonomy discover and propose jobs are not enabled (TAXONOMY_JOBS_ENABLED)",
+        )
+    return service
+
+
+def _serving_tenant(container: Any) -> Any:
+    processor = getattr(container, "taxonomy_processor", None)
+    return processor.resolver if processor is not None else None
+
+
+async def _start_job(
+    kind: str,
+    readable_id: str,
+    body: Any,
+    tenant_id: Optional[str],
+    db: AsyncSession,
+    ctx: ApiContext,
+    collection_repo: CollectionRepositoryProtocol,
+    service: Any,
+) -> Dict[str, Any]:
+    from airweave.domains.taxonomy.artifacts import TaxonomyResolutionError
+    from airweave.domains.taxonomy.jobs.service import JobRequest
+    from airweave.domains.taxonomy.jobs.service import job_view as view
+
+    _require_admin_permission(ctx, FeatureFlagEnum.API_KEY_ADMIN_SYNC)
+    collection = await _collection(db, collection_repo, readable_id, ctx)
+    if tenant_id is None:  # propose: the serving version's tenant, from the active file
+        resolver = _serving_tenant(container_mod.container)
+        try:
+            taxonomy = (
+                await resolver.resolve(collection.readable_id, fresh=True) if resolver else None
+            )
+        except TaxonomyResolutionError as e:
+            raise HTTPException(
+                status_code=409, detail={"code": "taxonomy_unusable", "message": str(e)}
+            ) from e
+        if taxonomy is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "no_active_taxonomy",
+                    "message": "the collection has no taxonomy to evolve",
+                },
+            )
+        tenant_id = taxonomy.tenant_id
+    request = JobRequest(
+        kind=kind,
+        organization_id=ctx.organization.id,
+        collection_id=collection.id,
+        collection_readable_id=collection.readable_id,
+        tenant_id=tenant_id,
+        candidate_version=body.candidate_version,
+        idempotency_key=body.idempotency_key,
+        spend_cap_usd=body.spend_cap_usd,
+        sample_size=getattr(body, "sample_size", None),
+        corpus_description=getattr(body, "corpus_description", None),
+    )
+    try:
+        job, created = await service.start(request)
+    except RelabelRefused as e:
+        raise HTTPException(status_code=e.status, detail=e.detail()) from e
+    ctx.logger.info(
+        f"Taxonomy {kind} job {job.id} for {readable_id} -> {job.candidate_version} "
+        f"({'accepted' if created else 'replay'}, cap=USD {job.spend_cap_usd})"
+    )
+    return {**view(job), "replayed": not created}
+
+
+@router.post("/collections/{readable_id}/taxonomy-discovery", status_code=202)
+async def start_taxonomy_discovery(
+    readable_id: str = Path(..., description="The readable ID of the collection"),
+    body: DiscoveryRequest = Body(...),
+    db: AsyncSession = Depends(deps.get_db),
+    ctx: ApiContext = Depends(deps.get_context),
+    collection_repo: CollectionRepositoryProtocol = Inject(CollectionRepositoryProtocol),
+    service: Any = Depends(get_job_service),
+) -> Dict[str, Any]:
+    """Admin-only: enqueue a discover job (A13). It writes a candidate first taxonomy version."""
+    from airweave.domains.taxonomy.jobs.records import KIND_DISCOVER
+
+    return await _start_job(
+        KIND_DISCOVER, readable_id, body, body.tenant_id, db, ctx, collection_repo, service
+    )
+
+
+@router.post("/collections/{readable_id}/taxonomy-evolution/propose", status_code=202)
+async def start_taxonomy_proposal(
+    readable_id: str = Path(..., description="The readable ID of the collection"),
+    body: ProposalRequest = Body(...),
+    db: AsyncSession = Depends(deps.get_db),
+    ctx: ApiContext = Depends(deps.get_context),
+    collection_repo: CollectionRepositoryProtocol = Inject(CollectionRepositoryProtocol),
+    service: Any = Depends(get_job_service),
+) -> Dict[str, Any]:
+    """Admin-only: enqueue a propose job (A12): one evolution wave on the unresolved chunks."""
+    from airweave.domains.taxonomy.jobs.records import KIND_PROPOSE
+
+    return await _start_job(
+        KIND_PROPOSE, readable_id, body, None, db, ctx, collection_repo, service
+    )
+
+
+@router.get("/taxonomy-jobs/{job_id}")
+async def get_taxonomy_job(
+    job_id: UUID = Path(...),
+    ctx: ApiContext = Depends(deps.get_context),
+    service: Any = Depends(get_job_service),
+) -> Dict[str, Any]:
+    """Admin-only: a discover or propose job's state, result and cost."""
+    from airweave.domains.taxonomy.jobs.service import job_view as view
+
+    _require_admin_permission(ctx, FeatureFlagEnum.API_KEY_ADMIN_SYNC)
+    job = await service.get(job_id, ctx.organization.id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Taxonomy job not found")
+    return view(job)
+
+
+@router.post("/taxonomy-jobs/{job_id}/cancel")
+async def cancel_taxonomy_job(
+    job_id: UUID = Path(...),
+    ctx: ApiContext = Depends(deps.get_context),
+    service: Any = Depends(get_job_service),
+) -> Dict[str, Any]:
+    """Admin-only: stop a job. Nothing is written to S3 after the cancel is seen."""
+    from airweave.domains.taxonomy.jobs.service import job_view as view
+
+    _require_admin_permission(ctx, FeatureFlagEnum.API_KEY_ADMIN_SYNC)
+    job = await service.cancel(job_id, ctx.organization.id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Taxonomy job not found")
+    return view(job)

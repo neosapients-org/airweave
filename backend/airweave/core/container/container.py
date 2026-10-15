@@ -281,6 +281,9 @@ class Container:
     relabel_service: Optional[Any] = None
     relabel_runner: Optional[Any] = None
 
+    # Discover and propose jobs (None unless TAXONOMY_ENABLED and TAXONOMY_JOBS_ENABLED)
+    taxonomy_job_service: Optional[Any] = None
+
     # -----------------------------------------------------------------
     # Convenience methods
     # -----------------------------------------------------------------

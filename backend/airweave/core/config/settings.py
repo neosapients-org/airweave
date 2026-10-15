@@ -165,6 +165,20 @@ class Settings(BaseSettings):
     RELABEL_LEASE_SECONDS: int = 120  # a running job renews its lease; an expired one is resumed
     RELABEL_RESUME_INTERVAL_SECONDS: int = 60  # how often this process looks for jobs to resume
 
+    # Discover and propose jobs (P7 design sections 6 and 12). They run on their own Temporal task
+    # queue in a separate Deployment, never in the sync workers. Spend caps default to 0, which
+    # approves nothing (a paid run also needs the owner's approval).
+    TAXONOMY_JOBS_ENABLED: bool = False  # the API enqueues, the jobs worker runs; both need this
+    TAXONOMY_JOBS_TASK_QUEUE: str = "airweave-taxonomy-jobs-queue"
+    TAXONOMY_JOBS_WORK_DIR: str = "/tmp/airweave/taxonomy-jobs"  # scratch; holds customer text
+    TAXONOMY_JOBS_BUILD_CONFIG: Optional[str] = None  # the classifier package's YAML (discover)
+    TAXONOMY_JOBS_LEASE_SECONDS: int = 300
+    TAXONOMY_JOBS_MAX_CHUNKS: int = 20000  # chunks a job reads into memory at most
+    DISCOVER_SPEND_CAP_USD: float = 0.0
+    DISCOVER_SAMPLE_DOCUMENTS: int = 200  # documents sampled when the request gives no size
+    DISCOVER_MIN_DOCUMENTS: int = 12  # fewer substantive documents: the job fails, nothing is spent
+    EVOLUTION_SPEND_CAP_USD: float = 0.0
+
     # Search: honour OR between a request's filter groups (contract C8). False keeps the
     # upstream behaviour, where every user filter group is merged into one AND group.
     SEARCH_FILTER_GROUPS_OR: bool = False
@@ -369,6 +383,25 @@ class Settings(BaseSettings):
     @field_validator("TAXONOMY_CLASSIFY_THREADS", "TAXONOMY_CLASSIFY_TIMEOUT_SECONDS")
     def validate_taxonomy_positive(cls, v: int, info: ValidationInfo) -> int:
         """Require at least one classifier thread and a positive timeout."""
+        if v < 1:
+            raise ValueError(f"{info.field_name} must be at least 1")
+        return v
+
+    @field_validator("DISCOVER_SPEND_CAP_USD", "EVOLUTION_SPEND_CAP_USD")
+    def validate_job_caps(cls, v: float, info: ValidationInfo) -> float:
+        """Spend caps cannot be negative."""
+        if v < 0:
+            raise ValueError(f"{info.field_name} must be 0 or more")
+        return v
+
+    @field_validator(
+        "TAXONOMY_JOBS_LEASE_SECONDS",
+        "TAXONOMY_JOBS_MAX_CHUNKS",
+        "DISCOVER_SAMPLE_DOCUMENTS",
+        "DISCOVER_MIN_DOCUMENTS",
+    )
+    def validate_job_counts(cls, v: int, info: ValidationInfo) -> int:
+        """Lease, chunk and document limits must be at least 1."""
         if v < 1:
             raise ValueError(f"{info.field_name} must be at least 1")
         return v
