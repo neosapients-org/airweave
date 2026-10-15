@@ -68,6 +68,10 @@ class ResolvedTaxonomy:
     local_path: Path
     config: Dict[str, Any]  # taxonomy.yaml, with the verified model's local paths filled in
     registry: RegistryMap
+    # From the active file (P7 design section 3). ``taxonomy_version`` above is the LABELLING
+    # version; the serving version is only logged, never used to pick a classifier.
+    serving_version: Optional[str] = None
+    migration_id: Optional[str] = None
 
     @property
     def cache_key(self) -> Tuple[str, str]:
@@ -159,7 +163,11 @@ class TaxonomyResolver:
                 f"{active.get('collection_readable_id')!r}"
             )
         tenant = _safe(active.get("tenant_id"), "tenant_id")
-        version = _safe(active.get("taxonomy_version"), "taxonomy_version")
+        version = self._labelling_version(active)
+        serving = active.get("serving_version")
+        serving = _safe(serving, "serving_version") if serving is not None else None
+        migration_id = active.get("migration_id")
+        migration_id = _safe(migration_id, "migration_id") if migration_id is not None else None
         manifest_sha = active.get("manifest_sha256")
         if not isinstance(manifest_sha, str) or not re.fullmatch(r"[0-9a-f]{64}", manifest_sha):
             raise TaxonomyResolutionError(f"active file for {readable_id!r}: bad manifest_sha256")
@@ -184,7 +192,29 @@ class TaxonomyResolver:
             local_path=v.local_path,
             config=v.config,
             registry=v.registry,
+            serving_version=serving,
+            migration_id=migration_id,
         )
+
+    @staticmethod
+    def _labelling_version(active: Dict[str, Any]) -> str:
+        """The version new and changed chunks are labelled with (P7 design section 3).
+
+        ``labelling_version`` when the file has it; an older file has only ``taxonomy_version``,
+        which then is the labelling version. The platform writes both equal, so a disagreement
+        is refused rather than guessed.
+        """
+        legacy = active.get("taxonomy_version")
+        labelling = active.get("labelling_version")
+        if labelling is None:
+            return _safe(legacy, "taxonomy_version")
+        labelling = _safe(labelling, "labelling_version")
+        if legacy is not None and legacy != labelling:
+            raise TaxonomyResolutionError(
+                f"active file: taxonomy_version {legacy!r} and labelling_version "
+                f"{labelling!r} disagree"
+            )
+        return labelling
 
     async def _load_version(
         self, tenant: str, version: str, manifest_sha: str, prefix: str

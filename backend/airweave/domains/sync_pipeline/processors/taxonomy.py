@@ -136,7 +136,11 @@ class TaxonomyProcessor:
             self._set_all(positioned, NOT_LABELLED, counts)
             return
         self._tally.note_version(
-            str(sync_context.sync_job_id), taxonomy.taxonomy_version, taxonomy.generation
+            str(sync_context.sync_job_id),
+            taxonomy.taxonomy_version,
+            taxonomy.generation,
+            taxonomy.migration_id,
+            taxonomy.serving_version,
         )
         await self._classify(positioned, taxonomy, sync_context, counts)
 

@@ -45,13 +45,22 @@ class TaxonomyTally:
             sync.update(counts)
             return Counter(sync)
 
-    def note_version(self, sync_job_id: str, version: str, generation: int) -> None:
-        """Record which taxonomy version (and generation) labelled the sync (contract 8)."""
+    def note_version(
+        self,
+        sync_job_id: str,
+        version: str,
+        generation: int,
+        migration_id: Optional[str] = None,
+        serving_version: Optional[str] = None,
+    ) -> None:
+        """Record which taxonomy version, generation and migration labelled the sync (section 8)."""
         with self._lock:
-            self._versions.setdefault(sync_job_id, set()).add((version, generation))
+            self._versions.setdefault(sync_job_id, set()).add(
+                (version, generation, migration_id or "", serving_version or "")
+            )
 
     def pop_versions(self, sync_job_id: str) -> list:
-        """Remove and return the sync's ``(version, generation)`` pairs, sorted."""
+        """Remove and return the sync's ``(version, generation, migration id, serving)``, sorted."""
         with self._lock:
             return sorted(self._versions.pop(sync_job_id, set()))
 
@@ -123,6 +132,16 @@ def format_counts(counts: Mapping[str, int]) -> str:
     return " ".join(f"{s}={counts.get(s, 0)}" for s in STATUSES)
 
 
+def _describe(version: str, generation: int, migration_id: str, serving: str) -> str:
+    """``v (generation 3, migration m-1, serving v0)``; the migration parts only when present."""
+    parts = [f"generation {generation}"]
+    if migration_id:
+        parts.append(f"migration {migration_id}")
+    if serving and serving != version:
+        parts.append(f"serving {serving}")
+    return f"{version} ({', '.join(parts)})"
+
+
 def log_sync_summary(
     sync_job_id: str, logger: "ContextualLogger", tally: TaxonomyTally = TAXONOMY_TALLY
 ) -> None:
@@ -133,7 +152,7 @@ def log_sync_summary(
         return
     total = sum(counts.values())
     share = counts.get(ERROR, 0) / total if total else 0.0
-    taxonomy = ", ".join(f"{v} (generation {g})" for v, g in versions) or "none"
+    taxonomy = ", ".join(_describe(*v) for v in versions) or "none"
     message = (
         f"[Taxonomy] sync summary: {total} chunks, {format_counts(counts)}, "
         f"ERROR share {share:.2%}, taxonomy {taxonomy}"
