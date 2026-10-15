@@ -30,6 +30,7 @@ def _sanitize_for_vespa(text: str) -> str:
     Vespa strictly rejects:
     1. Control characters (code points < 32) except \n (0x0A), \r (0x0D), \t (0x09)
     2. Unicode noncharacters (U+FDD0..U+FDEF, U+FFFE, U+FFFF, and plane pairs)
+    3. Lone surrogates (U+D800..U+DFFF), which a Python str can hold but UTF-8 cannot
 
     Common culprits:
     - Control: 0x00 (null), 0x01 (SOH), 0x0B (vertical tab)
@@ -44,11 +45,12 @@ def _sanitize_for_vespa(text: str) -> str:
     if not text:
         return text
 
-    # Remove ASCII control characters (except \n, \r, \t) and Unicode noncharacters
+    # Remove ASCII control characters (except \n, \r, \t), lone surrogates and Unicode noncharacters
+    # U+D800..U+DFFF: lone surrogates (contract airweave-neo/1, C19)
     # U+FDD0..U+FDEF: 32 noncharacters
     # U+FFFE, U+FFFF and pairs in all planes (U+1FFFE, U+1FFFF, ..., U+10FFFE, U+10FFFF)
     return re.sub(
-        r"[\x00-\x08\x0B\x0C\x0E-\x1F\uFDD0-\uFDEF\uFFFE\uFFFF]|"
+        r"[\x00-\x08\x0B\x0C\x0E-\x1F\uD800-\uDFFF\uFDD0-\uFDEF\uFFFE\uFFFF]|"
         r"[\U0001FFFE\U0001FFFF\U0002FFFE\U0002FFFF\U0003FFFE\U0003FFFF"
         r"\U0004FFFE\U0004FFFF\U0005FFFE\U0005FFFF\U0006FFFE\U0006FFFF"
         r"\U0007FFFE\U0007FFFF\U0008FFFE\U0008FFFF\U0009FFFE\U0009FFFF"
