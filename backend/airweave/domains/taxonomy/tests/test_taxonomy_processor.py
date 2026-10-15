@@ -208,6 +208,7 @@ class TestCountsAndAlert:
         log_sync_summary(str(ctx.sync_job_id), logger, tally)
         (msg,), _ = logger.error.call_args
         assert "6 chunks" in msg and "ASSIGNED=3" in msg and "ERROR=3" in msg
+        assert "taxonomy acme-2026.10 (generation 3)" in msg
         log_sync_summary(str(ctx.sync_job_id), logger, tally)  # popped: nothing twice
         assert logger.error.call_count == 1 and not logger.info.called
 

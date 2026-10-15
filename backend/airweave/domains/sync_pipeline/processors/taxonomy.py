@@ -122,6 +122,9 @@ class TaxonomyProcessor:
         if taxonomy is None:
             self._set_all(positioned, NOT_LABELLED, counts)
             return
+        self._tally.note_version(
+            str(sync_context.sync_job_id), taxonomy.taxonomy_version, taxonomy.generation
+        )
         await self._classify(positioned, taxonomy, sync_context, counts)
 
     async def _classify(

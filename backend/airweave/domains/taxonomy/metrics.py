@@ -33,6 +33,7 @@ class TaxonomyTally:
         self._lock = threading.Lock()
         self._totals: Counter = Counter()
         self._per_sync: Dict[str, Counter] = {}
+        self._versions: Dict[str, set] = {}
         self._alerted: set = set()
 
     def record(self, sync_job_id: str, counts: Mapping[str, int]) -> Counter:
@@ -42,6 +43,16 @@ class TaxonomyTally:
             sync = self._per_sync.setdefault(sync_job_id, Counter())
             sync.update(counts)
             return Counter(sync)
+
+    def note_version(self, sync_job_id: str, version: str, generation: int) -> None:
+        """Record which taxonomy version (and generation) labelled the sync (contract 8)."""
+        with self._lock:
+            self._versions.setdefault(sync_job_id, set()).add((version, generation))
+
+    def pop_versions(self, sync_job_id: str) -> list:
+        """Remove and return the sync's ``(version, generation)`` pairs, sorted."""
+        with self._lock:
+            return sorted(self._versions.pop(sync_job_id, set()))
 
     def should_alert(self, sync_job_id: str, counts: Mapping[str, int]) -> bool:
         """True once per sync, when ``ERROR`` first passes 1% of its chunks."""
@@ -99,12 +110,15 @@ def log_sync_summary(
 ) -> None:
     """Write the sync's label summary when it ends; nothing if the step never ran."""
     counts = tally.pop_sync(sync_job_id)
+    versions = tally.pop_versions(sync_job_id)
     if not counts:
         return
     total = sum(counts.values())
     share = counts.get(ERROR, 0) / total if total else 0.0
+    taxonomy = ", ".join(f"{v} (generation {g})" for v, g in versions) or "none"
     message = (
-        f"[Taxonomy] sync summary: {total} chunks, {format_counts(counts)}, ERROR share {share:.2%}"
+        f"[Taxonomy] sync summary: {total} chunks, {format_counts(counts)}, "
+        f"ERROR share {share:.2%}, taxonomy {taxonomy}"
     )
     if share > ERROR_SHARE_ALERT:
         logger.error(f"{message} (above {ERROR_SHARE_ALERT:.0%}: labelling is failing)")
