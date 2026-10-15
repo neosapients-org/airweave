@@ -8,8 +8,8 @@
     "offset_unit": "Unicode code points, end-exclusive",
     "refused_characters": "replaced by one space (U+0020) before positions are counted (contract 3.2)"
   },
-  "source_text": "# Q3 credit risk report.pdf\nSource: google_drive · Path: Finance / Risk / 2026\n\n# Content\nAcme Corp's late payments rose 12% in the quarter, driven mainly by small-business loans.\u0003 📈 The allowance for credit losses increased to €4.2 million, up from €3.1 million.\nUmsatz in Zürich stieg im dritten Quartal um 3 Prozent.\n売上高は前年同期比で12%増加しました。\nCharge-offs﷐ stayed below 0.5% of the loan book. Page 2 of 2 · Internal use only.\n",
-  "document_text": "# Q3 credit risk report.pdf\nSource: google_drive · Path: Finance / Risk / 2026\n\n# Content\nAcme Corp's late payments rose 12% in the quarter, driven mainly by small-business loans.  📈 The allowance for credit losses increased to €4.2 million, up from €3.1 million.\nUmsatz in Zürich stieg im dritten Quartal um 3 Prozent.\n売上高は前年同期比で12%増加しました。\nCharge-offs  stayed below 0.5% of the loan book. Page 2 of 2 · Internal use only.\n",
+  "source_text": "# Q3 credit risk report.pdf\nSource: google_drive · Path: Finance / Risk / 2026\n\n# Content\nAcme Corp's late payments rose 12% in the quarter, driven mainly by small-business loans.\u0003 📈 The allowance for credit losses increased to €4.2 million, up from €3.1 million.\nUmsatz in Zürich stieg im dritten Quartal um 3 Prozent.\n売上高は前年同期比で12%増加しました。\n地域別の売上と営業利益の推移📈📉は北米🇺🇸と欧州🇪🇺とアジア🌏でそれぞれ大きく異なり前年同期比の増減率も為替🌐の影響を強く受けて変動しており第3四半期の利益率改善は主に日本🇯🇵と韓国🇰🇷の需要回復💹によるものでした\nCharge-offs﷐ stayed below 0.5% of the loan book. Page 2 of 2 · Internal use only.\n",
+  "document_text": "# Q3 credit risk report.pdf\nSource: google_drive · Path: Finance / Risk / 2026\n\n# Content\nAcme Corp's late payments rose 12% in the quarter, driven mainly by small-business loans.  📈 The allowance for credit losses increased to €4.2 million, up from €3.1 million.\nUmsatz in Zürich stieg im dritten Quartal um 3 Prozent.\n売上高は前年同期比で12%増加しました。\n地域別の売上と営業利益の推移📈📉は北米🇺🇸と欧州🇪🇺とアジア🌏でそれぞれ大きく異なり前年同期比の増減率も為替🌐の影響を強く受けて変動しており第3四半期の利益率改善は主に日本🇯🇵と韓国🇰🇷の需要回復💹によるものでした\nCharge-offs  stayed below 0.5% of the loan book. Page 2 of 2 · Internal use only.\n",
   "page_starts": [
     {
       "offset": 90,
@@ -149,32 +149,30 @@
       "entity_id": "f3a1__chunk_4",
       "chunk_index": 4,
       "chunk_char_start": 320,
-      "chunk_char_end": 390,
+      "chunk_char_end": 355,
       "chunk_own_start": 320,
       "chunk_body_offset": 74,
       "page_from": 2,
       "page_to": 2,
-      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 2\n売上高は前年同期比で12%増加しました。\nCharge-offs  stayed below 0.5% of the loan book. ",
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 2\n売上高は前年同期比で12%増加しました。\n地域別の売上と営業利益の推移",
       "topic_ids": {
-        "acme:credit.loan_credit_quality": 1,
         "acme:revenue.revenue_growth": 1
       },
       "broad_family_ids": [
-        "acme:credit",
         "acme:revenue"
       ],
-      "taxonomy_spans": "[{\"c\":\"acme:credit.loan_credit_quality\",\"s\":320,\"e\":390,\"p\":[0,0]},{\"c\":\"acme:revenue.revenue_growth\",\"s\":320,\"e\":390,\"p\":[0,0]}]",
+      "taxonomy_spans": "[{\"c\":\"acme:revenue.revenue_growth\",\"s\":320,\"e\":355,\"p\":[0,0]}]",
       "taxonomy_status": "ASSIGNED",
       "taxonomy_version": "acme-2026.10",
       "taxonomy_piece_count": 1,
       "taxonomy_admin_pieces": 0,
       "taxonomy_unresolved_pieces": 0,
       "_test": {
-        "body": "売上高は前年同期比で12%増加しました。\nCharge-offs  stayed below 0.5% of the loan book. ",
-        "body_tokens": 35,
+        "body": "売上高は前年同期比で12%増加しました。\n地域別の売上と営業利益の推移",
+        "body_tokens": 39,
         "utf16": {
           "chunk_char_start": 321,
-          "chunk_char_end": 391,
+          "chunk_char_end": 356,
           "chunk_own_start": 321
         }
       }
@@ -182,13 +180,129 @@
     {
       "entity_id": "f3a1__chunk_5",
       "chunk_index": 5,
-      "chunk_char_start": 390,
-      "chunk_char_end": 423,
-      "chunk_own_start": 390,
+      "chunk_char_start": 355,
+      "chunk_char_end": 380,
+      "chunk_own_start": 355,
       "chunk_body_offset": 74,
       "page_from": 2,
       "page_to": 2,
-      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 2\nPage 2 of 2 · Internal use only.\n",
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 2\n📈📉は北米🇺🇸と欧州🇪🇺とアジア🌏でそれぞれ大きく",
+      "topic_ids": {},
+      "broad_family_ids": [],
+      "taxonomy_spans": "[]",
+      "taxonomy_status": "UNRESOLVED",
+      "taxonomy_version": "acme-2026.10",
+      "taxonomy_piece_count": 1,
+      "taxonomy_admin_pieces": 0,
+      "taxonomy_unresolved_pieces": 1,
+      "_test": {
+        "body": "📈📉は北米🇺🇸と欧州🇪🇺とアジア🌏でそれぞれ大きく",
+        "body_tokens": 40,
+        "utf16": {
+          "chunk_char_start": 356,
+          "chunk_char_end": 388,
+          "chunk_own_start": 356
+        }
+      }
+    },
+    {
+      "entity_id": "f3a1__chunk_6",
+      "chunk_index": 6,
+      "chunk_char_start": 380,
+      "chunk_char_end": 407,
+      "chunk_own_start": 380,
+      "chunk_body_offset": 74,
+      "page_from": 2,
+      "page_to": 2,
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 2\n異なり前年同期比の増減率も為替🌐の影響を強く受けて変動",
+      "topic_ids": {},
+      "broad_family_ids": [],
+      "taxonomy_spans": "[]",
+      "taxonomy_status": "UNRESOLVED",
+      "taxonomy_version": "acme-2026.10",
+      "taxonomy_piece_count": 1,
+      "taxonomy_admin_pieces": 0,
+      "taxonomy_unresolved_pieces": 1,
+      "_test": {
+        "body": "異なり前年同期比の増減率も為替🌐の影響を強く受けて変動",
+        "body_tokens": 40,
+        "utf16": {
+          "chunk_char_start": 388,
+          "chunk_char_end": 416,
+          "chunk_own_start": 388
+        }
+      }
+    },
+    {
+      "entity_id": "f3a1__chunk_7",
+      "chunk_index": 7,
+      "chunk_char_start": 407,
+      "chunk_char_end": 435,
+      "chunk_own_start": 407,
+      "chunk_body_offset": 74,
+      "page_from": 2,
+      "page_to": 2,
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 2\nしており第3四半期の利益率改善は主に日本🇯🇵と韓国🇰🇷の",
+      "topic_ids": {},
+      "broad_family_ids": [],
+      "taxonomy_spans": "[]",
+      "taxonomy_status": "UNRESOLVED",
+      "taxonomy_version": "acme-2026.10",
+      "taxonomy_piece_count": 1,
+      "taxonomy_admin_pieces": 0,
+      "taxonomy_unresolved_pieces": 1,
+      "_test": {
+        "body": "しており第3四半期の利益率改善は主に日本🇯🇵と韓国🇰🇷の",
+        "body_tokens": 40,
+        "utf16": {
+          "chunk_char_start": 416,
+          "chunk_char_end": 448,
+          "chunk_own_start": 416
+        }
+      }
+    },
+    {
+      "entity_id": "f3a1__chunk_8",
+      "chunk_index": 8,
+      "chunk_char_start": 435,
+      "chunk_char_end": 498,
+      "chunk_own_start": 435,
+      "chunk_body_offset": 74,
+      "page_from": 2,
+      "page_to": 2,
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 2\n需要回復💹によるものでした\nCharge-offs  stayed below 0.5% of the loan book. ",
+      "topic_ids": {
+        "acme:credit.loan_credit_quality": 1
+      },
+      "broad_family_ids": [
+        "acme:credit"
+      ],
+      "taxonomy_spans": "[{\"c\":\"acme:credit.loan_credit_quality\",\"s\":435,\"e\":498,\"p\":[0,0]}]",
+      "taxonomy_status": "ASSIGNED",
+      "taxonomy_version": "acme-2026.10",
+      "taxonomy_piece_count": 1,
+      "taxonomy_admin_pieces": 0,
+      "taxonomy_unresolved_pieces": 0,
+      "_test": {
+        "body": "需要回復💹によるものでした\nCharge-offs  stayed below 0.5% of the loan book. ",
+        "body_tokens": 30,
+        "utf16": {
+          "chunk_char_start": 448,
+          "chunk_char_end": 512,
+          "chunk_own_start": 448
+        }
+      }
+    },
+    {
+      "entity_id": "f3a1__chunk_9",
+      "chunk_index": 9,
+      "chunk_char_start": 449,
+      "chunk_char_end": 531,
+      "chunk_own_start": 498,
+      "chunk_body_offset": 74,
+      "page_from": 2,
+      "page_to": 2,
+      "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · page 2\nCharge-offs  stayed below 0.5% of the loan book. Page 2 of 2 · Internal use only.\n",
       "topic_ids": {},
       "broad_family_ids": [],
       "taxonomy_spans": "[]",
@@ -198,12 +312,12 @@
       "taxonomy_admin_pieces": 1,
       "taxonomy_unresolved_pieces": 0,
       "_test": {
-        "body": "Page 2 of 2 · Internal use only.\n",
-        "body_tokens": 11,
+        "body": "Charge-offs  stayed below 0.5% of the loan book. Page 2 of 2 · Internal use only.\n",
+        "body_tokens": 26,
         "utf16": {
-          "chunk_char_start": 391,
-          "chunk_char_end": 424,
-          "chunk_own_start": 391
+          "chunk_char_start": 463,
+          "chunk_char_end": 545,
+          "chunk_own_start": 512
         }
       }
     }
@@ -217,6 +331,7 @@
     "chunk_own_start == previous chunk_char_end; for chunk 0 it equals chunk_char_start; chunk_own_start < chunk_char_end (every chunk adds new text)",
     "own ranges [chunk_own_start, chunk_char_end) never overlap and together cover document_text",
     "every taxonomy_spans entry lies inside [chunk_own_start, chunk_char_end)",
+    "the long Japanese/emoji sentence is split into windows at exact code-point edges (tiktoken decode_with_offsets), never through a character",
     "TypeScript only: String.prototype.slice with these offsets gives the wrong text after the emoji; _test.utf16 shows the JavaScript indexes"
   ]
 }

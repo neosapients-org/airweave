@@ -846,7 +846,7 @@ def test_container(
 # ---------------------------------------------------------------------------
 
 _AIRWEAVE_NEO_FIXTURES = Path(__file__).parent / "tests" / "fixtures" / "airweave_neo"
-_CHUNK_FIXTURE_SHA256 = "c2ea2e55d3a87c83eea112abe00e58e7b201a2eea13c0842a638a0582ec80448"
+_CHUNK_FIXTURE_SHA256 = "62481704fc006498d42c5c65984e70ae03613a4224d82aab36a11ec30839e8a7"
 
 
 @pytest.fixture(scope="session")
