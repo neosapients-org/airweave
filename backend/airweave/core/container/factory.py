@@ -402,7 +402,7 @@ def create_container(settings: Settings) -> Container:
         usage_ledger=usage_ledger,
         storage_backend=storage_backend,
         state_machine=sync_deps["sync_job_state_machine"],
-        taxonomy_processor=_create_taxonomy_processor(settings),
+        taxonomy_processor=_create_taxonomy_processor(settings, dense_embedder),
     )
 
     sync_service = SyncService(
@@ -1377,12 +1377,15 @@ def _create_search_services(
     }
 
 
-def _create_taxonomy_processor(settings: Settings) -> Optional[TaxonomyProcessor]:
+def _create_taxonomy_processor(
+    settings: Settings, dense_embedder: Optional[DenseEmbedderProtocol] = None
+) -> Optional[TaxonomyProcessor]:
     """The taxonomy step (plan A7), or None while TAXONOMY_ENABLED is off (upstream writes).
 
     One resolver and one classifier pool per process. The taxonomy bucket is read with the S3
     backend; region and endpoint come from the storage settings. An unset bucket is not fatal
-    here: every labelled chunk is then written as ERROR, logged and counted.
+    here: every labelled chunk is then written as ERROR, logged and counted. A taxonomy built
+    with the deployment's embedding model embeds through ``dense_embedder``.
     """
     if not settings.TAXONOMY_ENABLED:
         return None
@@ -1402,7 +1405,9 @@ def _create_taxonomy_processor(settings: Settings) -> Optional[TaxonomyProcessor
         active_cache_seconds=settings.TAXONOMY_ACTIVE_CACHE_SECONDS,
     )
     pool = ClassifierPool(
-        threads=settings.TAXONOMY_CLASSIFY_THREADS, cache_dir=settings.TAXONOMY_EMBED_CACHE_DIR
+        threads=settings.TAXONOMY_CLASSIFY_THREADS,
+        cache_dir=settings.TAXONOMY_EMBED_CACHE_DIR,
+        dense_embedder=dense_embedder,
     )
     return TaxonomyProcessor(
         resolver=resolver, pool=pool, timeout_seconds=settings.TAXONOMY_CLASSIFY_TIMEOUT_SECONDS

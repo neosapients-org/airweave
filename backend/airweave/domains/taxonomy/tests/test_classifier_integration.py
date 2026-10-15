@@ -32,7 +32,9 @@ from airweave.domains.taxonomy.classifier_pool import ClassifierPool  # noqa: E4
 from airweave.domains.taxonomy.metrics import TaxonomyTally  # noqa: E402
 from airweave.domains.taxonomy.tests.taxonomy_fixtures import (  # noqa: E402
     CORPORA,
+    DIM,
     BowEmbeddings,
+    bow_vector,
     build_taxonomy,
     publish,
     sentence,
@@ -200,6 +202,61 @@ class TestPolicies:
         assert {c.taxonomy_status for c in chunks} == {"ERROR"}
         assert all(c.topic_ids is None for c in chunks)
         assert pool.calls == 0  # nothing was classified, by any policy
+        pool.close()
+
+
+class AirweaveBow:
+    """A stand-in for Airweave's dense embedder that serves the same fake model as the build."""
+
+    model_name = "fake-bow"
+    dimensions = DIM
+
+    def __init__(self):
+        self.texts: list = []
+        self.thread = None
+
+    async def embed_many(self, texts):
+        from airweave.domains.embedders.types import DenseEmbedding
+
+        self.thread = threading.get_ident()
+        self.texts.extend(texts)
+        return [DenseEmbedding(vector=bow_vector(t).tolist()) for t in texts]
+
+
+class TestAirweaveEmbedder:
+    async def test_same_labels_through_airweaves_embedder(self, world, tmp_path, enabled):
+        resolver = TaxonomyResolver(FilesystemBackend(world["s3"]), "taxonomy/", tmp_path / "l", 300)
+        dense = AirweaveBow()
+        pool = ClassifierPool(2, tmp_path / "via-airweave", dense_embedder=dense)
+        proc = TaxonomyProcessor(resolver, pool, 60.0, TaxonomyTally())
+        via = await make_chunks("acme")
+        await proc.process(via, ctx_for("neo-acme"))
+        direct_proc, direct_pool = make_processor(world, tmp_path / "direct")
+        direct = await make_chunks("acme")
+        await direct_proc.process(direct, ctx_for("neo-acme"))
+        assert dense.texts, "the classifier never used Airweave's embedder"
+        assert dense.thread == threading.get_ident(), "the embedder must run on the event loop"
+        assert [c.taxonomy_status for c in via] == [c.taxonomy_status for c in direct]
+        assert [c.topic_ids for c in via] == [c.topic_ids for c in direct]
+        assert [c.taxonomy_spans for c in via] == [c.taxonomy_spans for c in direct]
+        for c in via:
+            assert_contract_fields(c, "acme", "acme-2026.10")
+        pool.close()
+        direct_pool.close()
+
+    async def test_embedder_failure_is_error_and_the_sync_goes_on(self, world, tmp_path, enabled):
+        class Broken(AirweaveBow):
+            async def embed_many(self, texts):
+                raise RuntimeError("provider down")
+
+        resolver = TaxonomyResolver(FilesystemBackend(world["s3"]), "taxonomy/", tmp_path / "l", 300)
+        pool = ClassifierPool(1, tmp_path / "c", dense_embedder=Broken())
+        tally = TaxonomyTally()
+        proc = TaxonomyProcessor(resolver, pool, 60.0, tally)
+        chunks = await make_chunks("acme")
+        out = await proc.process(chunks, ctx_for("neo-acme"))
+        assert out is chunks
+        assert {c.taxonomy_status for c in chunks} == {"ERROR"}
         pool.close()
 
 

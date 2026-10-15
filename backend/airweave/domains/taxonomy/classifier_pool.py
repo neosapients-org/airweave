@@ -22,7 +22,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from airweave.domains.embedders.protocols import DenseEmbedderProtocol
 from airweave.domains.taxonomy.artifacts import ResolvedTaxonomy
+from airweave.domains.taxonomy.embed_transport import AirweaveEmbedTransport, matches
 
 # Loaded taxonomy versions kept per thread; memory is bounded by threads x this
 CLASSIFIERS_PER_THREAD = 4
@@ -39,17 +41,22 @@ class ClassifierPool:
         cache_dir: str | Path,
         embed_transport: Optional[EmbedTransport] = None,
         classifiers_per_thread: int = CLASSIFIERS_PER_THREAD,
+        dense_embedder: Optional[DenseEmbedderProtocol] = None,
     ) -> None:
         """Initialize; threads start on first use.
 
         ``embed_transport`` replaces the classifier's own OpenAI embeddings call (tests use a
-        fake); None keeps the package's default, which reads ``OPENAI_API_KEY``.
+        fake). Otherwise a taxonomy whose embedding model and dimensions are the
+        ``dense_embedder``'s embeds through it (Airweave's timeouts, retries and limits apply);
+        any other taxonomy keeps the package's default client, which reads ``OPENAI_API_KEY``.
         """
         if threads < 1:
             raise ValueError("threads must be at least 1")
         self._n = threads
         self._cache_dir = Path(cache_dir)
         self._transport = embed_transport
+        self._dense = dense_embedder
+        self._bridge = AirweaveEmbedTransport(dense_embedder) if dense_embedder else None
         self._lru_size = classifiers_per_thread
         self._executors: List[ThreadPoolExecutor] = []
         self._round_robin = itertools.count()
@@ -81,15 +88,22 @@ class ClassifierPool:
         index = next(self._round_robin) % self._n
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(
-            self._executors[index], self._classify_on_thread, index, taxonomy, rows
+            self._executors[index], self._classify_on_thread, index, taxonomy, rows, loop, timeout
         )
         return await asyncio.wait_for(future, timeout)
 
     def _classify_on_thread(
-        self, index: int, taxonomy: ResolvedTaxonomy, rows: List[Dict[str, Any]]
+        self,
+        index: int,
+        taxonomy: ResolvedTaxonomy,
+        rows: List[Dict[str, Any]],
+        loop: asyncio.AbstractEventLoop,
+        timeout: float,
     ) -> List[Dict[str, Any]]:
         from taxonomy_classifier.contract import to_contract  # type: ignore[import-not-found]
 
+        if self._bridge is not None:
+            self._bridge.bind(loop, timeout)
         classifier = self._classifier(index, taxonomy)
         result = classifier.classify(rows)
         return [to_contract(e, classifier.taxonomy) for e in result.enriched]
@@ -111,12 +125,20 @@ class ClassifierPool:
         config.setdefault("embedding", {})["cache_path"] = str(
             self._cache_dir / f"{os.getpid()}-{index}.sqlite"
         )
-        classifier = TaxonomyClassifier(taxonomy.local_path, config, self._transport)
+        classifier = TaxonomyClassifier(taxonomy.local_path, config, self._transport_for(config))
         cache[key] = classifier
         while len(cache) > self._lru_size:
             _, old = cache.popitem(last=False)
             _close(old)
         return classifier
+
+    def _transport_for(self, config: Dict[str, Any]) -> Optional[EmbedTransport]:
+        """The explicit transport, else Airweave's embedder if the model matches, else None."""
+        if self._transport is not None:
+            return self._transport
+        if self._bridge is not None and matches(self._dense, config):
+            return self._bridge
+        return None
 
     def close(self) -> None:
         """Stop the threads; queued batches are abandoned (the process is shutting down)."""
