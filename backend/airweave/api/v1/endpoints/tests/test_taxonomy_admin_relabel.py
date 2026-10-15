@@ -210,3 +210,77 @@ def test_routes_are_mounted_under_admin():
     assert ("POST", "/admin/collections/{readable_id}/relabel") in paths
     assert ("GET", "/admin/relabel-jobs/{relabel_job_id}") in paths
     assert ("POST", "/admin/relabel-jobs/{relabel_job_id}/cancel") in paths
+
+
+class TestStatisticsEndpoint:
+    def world(self):
+        return FakeChunkStore(
+            [
+                chunk(0, doc="a", status="ASSIGNED", version=OLD),
+                chunk(1, doc="a", status="UNRESOLVED", version=OLD, unresolved=1),
+                chunk(0, doc="b", status="ASSIGNED", version=NEW),
+                chunk(0, doc="c"),
+            ]
+        )
+
+    async def call(self, svc, c=None, target=NEW, found=True):
+        return await ep.taxonomy_statistics(
+            readable_id="neo-acme",
+            target_version=target,
+            db=AsyncMock(),
+            ctx=c or ctx(),
+            collection_repo=CollectionRepo(found),
+            service=svc,
+        )
+
+    async def test_returns_the_ports_fields_and_the_airweave_collection_id(self):
+        out = await self.call(service(store=self.world()))
+        assert out["collectionId"] == str(COLLECTION)
+        assert (out["total"], out["otherVersion"], out["documentsAtVersion"]) == (4, 3, 1)
+        assert out["incrementalBacklog"] == 2 and out["labelled"] == 2
+        assert {
+            "errorChunks",
+            "pieces",
+            "unresolvedPieces",
+            "notLabelledChunks",
+            "notLabelledDocuments",
+        } <= set(out)
+
+    async def test_callable_with_an_empty_target(self):
+        out = await self.call(service(store=self.world()), target="")
+        assert out["documentsAtVersion"] == 0 and out["notLabelledChunks"] == 1
+
+    async def test_needs_the_admin_permission(self):
+        with pytest.raises(HTTPException) as e:
+            await self.call(service(store=self.world()), c=ctx(features=()))
+        assert e.value.status_code == 403
+
+    async def test_unknown_collection_is_404(self):
+        with pytest.raises(HTTPException) as e:
+            await self.call(service(store=self.world()), found=False)
+        assert e.value.status_code == 404
+
+    async def test_malformed_target_is_422(self):
+        with pytest.raises(HTTPException) as e:
+            await self.call(service(store=self.world()), target="../x")
+        assert e.value.status_code == 422
+
+    async def test_store_is_closed_and_nothing_is_written(self):
+        store = self.world()
+        await self.call(service(store=store))
+        assert store.closed and store.updates == []
+
+    async def test_vespa_failure_is_a_502_not_a_wrong_answer(self):
+        class Down(FakeChunkStore):
+            async def scroll(self, *a, **k):
+                raise RuntimeError("vespa down")
+
+        with pytest.raises(HTTPException) as e:
+            await self.call(service(store=Down()))
+        assert e.value.status_code == 502
+
+    def test_route_is_mounted(self):
+        from airweave.api.v1.api import api_router
+
+        paths = {(m, r.path) for r in api_router.routes for m in getattr(r, "methods", ())}
+        assert ("GET", "/admin/collections/{readable_id}/taxonomy-statistics") in paths

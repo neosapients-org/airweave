@@ -82,7 +82,7 @@ def chunk(
         fields["taxonomy_status"] = status
     if version:
         fields["taxonomy_version"] = version
-    if status:
+    if status and status not in ("ERROR", "NOT_LABELLED"):  # those carry no counts
         fields["taxonomy_piece_count"] = pieces
         fields["taxonomy_unresolved_pieces"] = unresolved
         fields["taxonomy_admin_pieces"] = 0

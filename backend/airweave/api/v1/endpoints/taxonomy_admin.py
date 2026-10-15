@@ -8,7 +8,7 @@ organization: another organization's collection or job is answered as not found.
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from fastapi import Body, Depends, Header, HTTPException, Path
+from fastapi import Body, Depends, Header, HTTPException, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -139,6 +139,32 @@ async def start_relabel(
         f"estimate=USD {job.spend_estimate_usd}, cap=USD {job.spend_cap_usd})"
     )
     return {**job_view(job), "replayed": not created}
+
+
+@router.get("/collections/{readable_id}/taxonomy-statistics")
+async def taxonomy_statistics(
+    readable_id: str = Path(..., description="The readable ID of the collection"),
+    target_version: str = Query("", description="The version to compare with; may be empty"),
+    db: AsyncSession = Depends(deps.get_db),
+    ctx: ApiContext = Depends(deps.get_context),
+    collection_repo: CollectionRepositoryProtocol = Inject(CollectionRepositoryProtocol),
+    service: RelabelService = Depends(get_relabel_service),
+) -> Dict[str, Any]:
+    """Admin-only: chunk counts for a collection against a target taxonomy version.
+
+    ``collectionId`` is Airweave's own id of the collection, which is what its chunks carry.
+    Read-only: one scroll over the collection's chunks, small fields only.
+    """
+    _require_admin_permission(ctx, FeatureFlagEnum.API_KEY_ADMIN_SYNC)
+    collection = await _collection(db, collection_repo, readable_id, ctx)
+    try:
+        stats = await service.statistics(collection.id, target_version)
+    except RelabelRefused as e:
+        raise HTTPException(status_code=e.status, detail=e.detail()) from e
+    except Exception as e:
+        ctx.logger.error(f"Taxonomy statistics for {readable_id} failed: {e}")
+        raise HTTPException(status_code=502, detail="Vespa could not be read") from e
+    return stats.to_port()
 
 
 @router.get("/relabel-jobs/{relabel_job_id}")

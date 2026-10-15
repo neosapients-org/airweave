@@ -27,7 +27,7 @@ from airweave.domains.taxonomy.relabel.planning import (
     effective_cap,
     estimate_usd,
 )
-from airweave.domains.taxonomy.relabel.stats import collect_stats
+from airweave.domains.taxonomy.relabel.stats import ChunkStats, collect_stats
 
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 _KEY = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -131,6 +131,16 @@ class RelabelService:
             return await self._repo.create(job), True
         except ActiveJobExists as e:  # lost a race with another start
             return self._same_or_conflict(e.job, req), False
+
+    async def statistics(self, collection_id: UUID, target_version: str) -> ChunkStats:
+        """Chunk statistics against ``target_version`` (empty is allowed: bootstrap)."""
+        if target_version and not _VERSION.match(target_version):
+            raise RelabelRefused(422, "bad_version", "target_version is malformed")
+        store = self._store_factory()
+        try:
+            return await collect_stats(store, collection_id, target_version, self._scan_page)
+        finally:
+            await store.close()
 
     async def get(self, job_id: UUID, organization_id: UUID) -> Optional[RelabelJob]:
         """The job, only inside the caller's organization."""
