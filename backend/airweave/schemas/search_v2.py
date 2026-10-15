@@ -5,9 +5,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from airweave.domains.search.types import FilterGroup, RetrievalStrategy, SearchResult
+from airweave.domains.search.types import FilterGroup, RetrievalStrategy, SearchResult, TopicBoost
 
 
 class SearchTier(str, Enum):
@@ -44,6 +44,13 @@ class InstantSearchRequest(BaseModel):
     )
     limit: int = Field(default=100, ge=1, le=1000, description="Max results to return.")
     offset: int = Field(default=0, ge=0, description="Number of results to skip.")
+    boost: Optional[TopicBoost] = Field(
+        default=None,
+        description=(
+            "Rank chunks labelled with these topics higher (hybrid retrieval only). "
+            "Without it, ranking is unchanged."
+        ),
+    )
 
     @field_validator("query")
     @classmethod
@@ -52,6 +59,13 @@ class InstantSearchRequest(BaseModel):
         if not v.strip():
             raise ValueError("Query cannot be empty")
         return v
+
+    @model_validator(mode="after")
+    def boost_needs_hybrid(self) -> "InstantSearchRequest":
+        """A topic boost extends the hybrid ranking profile, so it needs hybrid retrieval."""
+        if self.boost is not None and self.retrieval_strategy != RetrievalStrategy.HYBRID:
+            raise ValueError("boost requires retrieval_strategy 'hybrid'")
+        return self
 
 
 class ClassicSearchRequest(BaseModel):

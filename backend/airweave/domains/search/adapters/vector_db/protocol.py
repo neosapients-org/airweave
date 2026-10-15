@@ -2,6 +2,7 @@
 
 from typing import Optional, Protocol
 
+from airweave.domains.search.types.boost import TopicBoost
 from airweave.domains.search.types.embeddings import QueryEmbeddings
 from airweave.domains.search.types.filters import FilterGroup
 from airweave.domains.search.types.plan import SearchPlan
@@ -24,6 +25,7 @@ class VectorDBProtocol(Protocol):
         embeddings: QueryEmbeddings,
         collection_id: str,
         acl_principals: Optional[list[str]] = None,
+        boost: Optional[TopicBoost] = None,
     ) -> CompiledQuery:
         """Compile plan and embeddings into a DB-specific query.
 
@@ -35,6 +37,7 @@ class VectorDBProtocol(Protocol):
                 None = no AC sources in collection (skip filtering).
                 [] = user has no principals (only public entities visible).
                 ["user:x", "group:y"] = match these principals.
+            boost: Optional topic boost; None ranks exactly as without it.
 
         Returns:
             CompiledQuery with raw (full) and display (no embeddings) versions.

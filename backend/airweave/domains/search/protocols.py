@@ -12,6 +12,7 @@ from airweave.domains.search.types import (
     FilterGroup,
     SearchPlan,
     SearchResults,
+    TopicBoost,
 )
 
 if TYPE_CHECKING:
@@ -42,8 +43,9 @@ class SearchPlanExecutorProtocol(Protocol):
         ctx: ApiContext,
         collection_readable_id: str,
         user_principal: Optional[str] = None,
+        boost: Optional[TopicBoost] = None,
     ) -> SearchResults:
-        """Execute a search plan and return results."""
+        """Execute a search plan and return results (boost: topic boost, instant search)."""
         ...
 
 

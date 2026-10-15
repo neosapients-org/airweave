@@ -10,7 +10,9 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, List, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, GetJsonSchemaHandler, model_validator
+from pydantic.json_schema import JsonSchemaValue
+from pydantic_core import CoreSchema
 
 
 class FilterableField(str, Enum):
@@ -41,6 +43,27 @@ class FilterableField(str, Enum):
     SYSTEM_METADATA_CHUNK_INDEX = "airweave_system_metadata.chunk_index"
     SYSTEM_METADATA_SYNC_ID = "airweave_system_metadata.sync_id"
     SYSTEM_METADATA_SYNC_JOB_ID = "airweave_system_metadata.sync_job_id"
+
+    # Chunk positions, pages and topic labels (contract airweave-neo/1, section 5.1).
+    # Accepted in request filters, but left out of the JSON schema (below), so the schemas the
+    # LLM search planners are given stay exactly as upstream.
+    TOPIC_IDS = "topic_ids"
+    BROAD_FAMILY_IDS = "broad_family_ids"
+    TAXONOMY_STATUS = "taxonomy_status"
+    TAXONOMY_VERSION = "taxonomy_version"
+    PAGE_FROM = "page_from"
+    PAGE_TO = "page_to"
+    CHUNK_CHAR_START = "chunk_char_start"
+
+    @classmethod
+    def __get_pydantic_json_schema__(
+        cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        """Leave the chunk fields out of the enum's JSON schema."""
+        json_schema = handler.resolve_ref_schema(handler(core_schema))
+        hidden = {f.value for f in _CHUNK_FIELD_OPERATORS}
+        json_schema["enum"] = [v for v in json_schema["enum"] if v not in hidden]
+        return json_schema
 
 
 class FilterOperator(str, Enum):
@@ -73,6 +96,10 @@ _TEXT_FIELDS: frozenset[FilterableField] = frozenset(
         FilterableField.SYSTEM_METADATA_ORIGINAL_ENTITY_ID,
         FilterableField.SYSTEM_METADATA_SYNC_ID,
         FilterableField.SYSTEM_METADATA_SYNC_JOB_ID,
+        FilterableField.TOPIC_IDS,
+        FilterableField.BROAD_FAMILY_IDS,
+        FilterableField.TAXONOMY_STATUS,
+        FilterableField.TAXONOMY_VERSION,
     }
 )
 
@@ -83,10 +110,22 @@ _DATE_FIELDS: frozenset[FilterableField] = frozenset(
     }
 )
 
-_NUMERIC_FIELDS: frozenset[FilterableField] = frozenset(
+# Chunk position and page fields: integer attributes, integer values only.
+_INTEGER_FIELDS: frozenset[FilterableField] = frozenset(
     {
-        FilterableField.SYSTEM_METADATA_CHUNK_INDEX,
+        FilterableField.PAGE_FROM,
+        FilterableField.PAGE_TO,
+        FilterableField.CHUNK_CHAR_START,
     }
+)
+
+_NUMERIC_FIELDS: frozenset[FilterableField] = (
+    frozenset(
+        {
+            FilterableField.SYSTEM_METADATA_CHUNK_INDEX,
+        }
+    )
+    | _INTEGER_FIELDS
 )
 
 _ORDERABLE_FIELDS = _DATE_FIELDS | _NUMERIC_FIELDS
@@ -108,6 +147,17 @@ _LIST_OPS: frozenset[FilterOperator] = frozenset(
         FilterOperator.NOT_IN,
     }
 )
+
+# The operators each chunk field supports (contract airweave-neo/1, section 5.1).
+_CHUNK_FIELD_OPERATORS: dict[FilterableField, frozenset[FilterOperator]] = {
+    FilterableField.TOPIC_IDS: frozenset({FilterOperator.CONTAINS, FilterOperator.IN}),
+    FilterableField.BROAD_FAMILY_IDS: frozenset({FilterOperator.CONTAINS, FilterOperator.IN}),
+    **dict.fromkeys(
+        (FilterableField.TAXONOMY_STATUS, FilterableField.TAXONOMY_VERSION),
+        frozenset({FilterOperator.EQUALS, FilterOperator.NOT_EQUALS}) | _LIST_OPS,
+    ),
+    **dict.fromkeys(_INTEGER_FIELDS, frozenset({FilterOperator.EQUALS}) | _ORDERING_OPS),
+}
 
 
 def _validate_iso_timestamp(value: str) -> None:
@@ -201,6 +251,12 @@ class FilterCondition(BaseModel):
         if op in ("in", "not_in") and isinstance(v, str):
             data["value"] = [v] if v else []
 
+        # Integer string on a chunk position or page field → int (Vespa int attribute)
+        field = getattr(data.get("field"), "value", data.get("field"))
+        if field in {f.value for f in _INTEGER_FIELDS} and isinstance(v, str):
+            if v.strip().lstrip("-").isdigit():
+                data["value"] = int(v)
+
         return data
 
     # ── Semantic validation ────────────────────────────────────────────────────
@@ -217,6 +273,16 @@ class FilterCondition(BaseModel):
             5. Numeric fields require numeric (or numeric-string) values.
         """
         f, op, v = self.field, self.operator, self.value
+
+        # 0. Chunk fields support only the operators contract 5.1 lists for them
+        allowed = _CHUNK_FIELD_OPERATORS.get(f)
+        if allowed is not None and op not in allowed:
+            names = ", ".join(sorted(o.value for o in allowed))
+            raise ValueError(
+                f"Operator '{op.value}' is not supported on '{f.value}'. Use: {names}."
+            )
+        if f in _INTEGER_FIELDS and (isinstance(v, bool) or not isinstance(v, int)):
+            raise ValueError(f"Field '{f.value}' takes an integer value, got {v!r}.")
 
         # 1. Ordering operators on text fields are nonsensical
         #    e.g. entity_id > "boat"

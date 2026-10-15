@@ -112,6 +112,7 @@ class InstantSearchService(InstantSearchServiceProtocol):
             ctx=ctx,
             collection_readable_id=readable_id,
             user_principal=user_principal_override,
+            boost=request.boost,
         )
 
         duration_ms = int((time.monotonic() - start_time) * 1000)

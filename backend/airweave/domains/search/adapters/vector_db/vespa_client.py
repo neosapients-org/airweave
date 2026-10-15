@@ -24,6 +24,7 @@ from airweave.domains.search.adapters.vector_db.vespa_config import (
     HNSW_EXPLORE_ADDITIONAL,
     TARGET_HITS,
 )
+from airweave.domains.search.types.boost import TopicBoost
 from airweave.domains.search.types.embeddings import QueryEmbeddings
 from airweave.domains.search.types.plan import RetrievalStrategy, SearchPlan
 from airweave.domains.search.types.results import (
@@ -38,6 +39,9 @@ from airweave.domains.search.types.results import (
 
 if TYPE_CHECKING:
     from vespa.application import Vespa
+
+# Rank profile for a topic boost (vespa/app/schemas/base_entity.sd)
+TOPIC_BOOST_PROFILE = "hybrid_topic"
 
 
 class VespaVectorDB:
@@ -90,10 +94,13 @@ class VespaVectorDB:
         embeddings: QueryEmbeddings,
         collection_id: str,
         acl_principals: Optional[list[str]] = None,
+        boost: Optional[TopicBoost] = None,
     ) -> CompiledQuery:
         """Compile plan and embeddings into Vespa query."""
         yql = self._build_yql(plan, collection_id, acl_principals=acl_principals)
         params = self._build_params(plan, embeddings)
+        if boost is not None:
+            self._add_topic_boost(params, boost)
 
         raw_query = {"yql": yql, "params": params}
 
@@ -411,6 +418,19 @@ class VespaVectorDB:
         )
 
         return params
+
+    def _add_topic_boost(self, params: Dict[str, Any], boost: TopicBoost) -> None:
+        """Rank with hybrid_topic: the hybrid score plus weight x topic match (contract 5.1).
+
+        Each boosted topic gets weight 1 in the query tensor, so a chunk's topic match is the
+        number of its classifier pieces carrying a boosted topic. A boost, not a filter.
+        """
+        params["ranking.profile"] = TOPIC_BOOST_PROFILE
+        params["input.query(topics)"] = {"cells": {tid: 1.0 for tid in boost.topic_ids}}
+        params["input.query(topic_weight)"] = boost.weight
+        self._logger.debug(
+            f"[VespaVectorDB] Topic boost: {len(boost.topic_ids)} topics, weight={boost.weight}"
+        )
 
     def _convert_sparse_to_tensor(
         self, sparse_emb: SparseEmbedding

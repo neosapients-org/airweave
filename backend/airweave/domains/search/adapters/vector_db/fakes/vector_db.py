@@ -1,5 +1,6 @@
 """In-memory fake for VectorDBProtocol."""
 
+from airweave.domains.search.types.boost import TopicBoost
 from airweave.domains.search.types.embeddings import QueryEmbeddings
 from airweave.domains.search.types.filters import FilterGroup
 from airweave.domains.search.types.plan import SearchPlan
@@ -22,6 +23,7 @@ class FakeVectorDB:
         self._count: int = 0
         self._filter_results: list[SearchResult] = []
         self._calls: list[tuple] = []
+        self.boosts: list[TopicBoost | None] = []  # boost of each compile_query call
 
         self._compile_error: Exception | None = None
         self._execute_error: Exception | None = None
@@ -62,9 +64,11 @@ class FakeVectorDB:
         embeddings: QueryEmbeddings,
         collection_id: str,
         acl_principals: list[str] | None = None,
+        boost: TopicBoost | None = None,
     ) -> CompiledQuery:
         """Return a fake compiled query, or raise seeded error."""
         self._calls.append(("compile_query", plan, embeddings, collection_id))
+        self.boosts.append(boost)
         if self._compile_error:
             err = self._compile_error
             self._compile_error = None

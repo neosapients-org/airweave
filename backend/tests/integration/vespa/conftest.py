@@ -85,6 +85,12 @@ def vespa_deployed() -> str:
 
 
 @pytest.fixture
+def embedding_dim() -> int:
+    """Dimensions of the deployed schema's dense embedding."""
+    return EMBEDDING_DIM
+
+
+@pytest.fixture
 def collection_id(vespa_deployed) -> Iterator[str]:
     """A fresh collection id per test; its documents are deleted afterwards."""
     cid = str(uuid4())
