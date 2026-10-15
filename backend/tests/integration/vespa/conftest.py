@@ -3,11 +3,17 @@
 These tests DEPLOY the fork's application package (``vespa/app``) to the Vespa they are given,
 so point them only at a disposable Vespa, never at one another service uses. They are skipped
 unless both variables are set, for example for a container started with
-``docker run -d --name aw-neo-test-vespa -p 127.0.0.1:19072:19071 -p 127.0.0.1:19082:8081
-vespaengine/vespa:8``:
+``docker run -d --name aw-neo-test-vespa --memory 3g --memory-swap 3g
+-e VESPA_CONFIGSERVER_JVMARGS="-Xms32M -Xmx128M" -e VESPA_CONFIGPROXY_JVMARGS="-Xms32M -Xmx32M"
+-p 127.0.0.1:19072:19071 -p 127.0.0.1:19082:8081 vespaengine/vespa:8``:
 
     AIRWEAVE_NEO_TEST_VESPA=http://localhost:19082          # query and document API
     AIRWEAVE_NEO_TEST_VESPA_CONFIG=http://localhost:19072   # config server (deploys)
+
+Memory: with a 3 GB limit and Vespa's default JVM sizing the container service was killed
+(signal Killed, then a restart penalty of several minutes) after repeated deploys, so the two
+JVM settings above matter. The session fixture deploys once per run: start a fresh container for
+each run of the suite.
 
 The schema is templated with 8-dimensional embeddings; documents carry tiny fake vectors, so no
 embedding provider is called.
@@ -36,7 +42,6 @@ VESPA_URL = os.environ.get("AIRWEAVE_NEO_TEST_VESPA")
 CONFIG_URL = os.environ.get("AIRWEAVE_NEO_TEST_VESPA_CONFIG")
 EMBEDDING_DIM = 8
 APP_DIR = Path(__file__).resolve().parents[4] / "vespa" / "app"
-
 
 
 def pytest_collection_modifyitems(config, items):  # noqa: D103
