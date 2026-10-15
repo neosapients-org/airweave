@@ -18,6 +18,8 @@ from airweave.platform.entities.stub import PdfStubFileEntity
 def _entity_from_record(record: dict, entity_id: str, with_fields: bool) -> PdfStubFileEntity:
     meta = record["airweave_system_metadata"]
     entity = PdfStubFileEntity(
+        entity_id=entity_id,
+        name=record["name"],
         stub_id=entity_id,
         file_name=record["name"],
         breadcrumbs=[Breadcrumb(**b) for b in record["breadcrumbs"]],

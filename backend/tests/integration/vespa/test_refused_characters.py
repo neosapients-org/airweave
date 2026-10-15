@@ -23,7 +23,7 @@ REFUSED = {
     "C0 FF": "\x0c",
     "C0 US": "\x1f",
     "noncharacter FDD0": "\ufdd0",
-    "noncharacter FDEF": "\ufdef",
+    "noncharacter FDDF": "\ufddf",
     "noncharacter FFFE": "\ufffe",
     "noncharacter FFFF": "\uffff",
     "noncharacter 1FFFE": "\U0001fffe",
@@ -77,3 +77,54 @@ def test_kept_class_is_accepted(vespa_deployed, collection_id, name):
     assert _feed_raw(vespa_deployed, collection_id, ch).status_code == 200, (
         f"Vespa refused {name}: add it to the refused list (contract 3.2, C19)"
     )
+
+
+def _status(vespa: str, cid: str, cp: int) -> int:
+    return _feed_raw(vespa, cid, chr(cp)).status_code
+
+
+def test_every_c0_code_point_matches_the_list(vespa_deployed, collection_id):
+    """All of U+0000 to U+001F, one by one: only tab, line feed and carriage return are kept."""
+    for cp in range(0x20):
+        expected = 200 if cp in (0x09, 0x0A, 0x0D) else 400
+        assert _status(vespa_deployed, collection_id, cp) == expected, hex(cp)
+        cleaned = replace_refused_characters(chr(cp))
+        assert cleaned == (chr(cp) if expected == 200 else " "), hex(cp)
+
+
+def test_every_c1_code_point_and_del_is_kept(vespa_deployed, collection_id):
+    """U+007F and all of U+0080 to U+009F are accepted by Vespa and kept by the cleaner."""
+    for cp in range(0x7F, 0xA0):
+        assert _status(vespa_deployed, collection_id, cp) == 200, hex(cp)
+        assert replace_refused_characters(chr(cp)) == chr(cp), hex(cp)
+
+
+def test_noncharacter_block_refused_by_vespa_is_fdd0_to_fddf(vespa_deployed, collection_id):
+    """Measured on Vespa 8: U+FDD0 to U+FDDF are refused, U+FDE0 to U+FDEF are accepted."""
+    for cp in range(0xFDD0, 0xFDE0):
+        assert _status(vespa_deployed, collection_id, cp) == 400, hex(cp)
+    for cp in range(0xFDE0, 0xFDF0):
+        assert _status(vespa_deployed, collection_id, cp) == 200, hex(cp)
+
+
+def test_cleaner_also_replaces_fde0_to_fdef_which_vespa_would_accept(vespa_deployed, collection_id):
+    """C19 lists all 32 Unicode noncharacters; 16 of them Vespa takes.
+
+    Replacing them is a harmless superset (one space for one code point, so every offset holds).
+    """
+    for cp in range(0xFDD0, 0xFDF0):
+        assert replace_refused_characters(chr(cp)) == " ", hex(cp)
+
+
+def test_every_plane_noncharacter_pair_is_refused(vespa_deployed, collection_id):
+    for plane in range(0x11):
+        for low in (0xFFFE, 0xFFFF):
+            cp = plane * 0x10000 + low
+            assert _status(vespa_deployed, collection_id, cp) == 400, hex(cp)
+            assert replace_refused_characters(chr(cp)) == " ", hex(cp)
+
+
+def test_the_whole_surrogate_block_is_refused(vespa_deployed, collection_id):
+    for cp in (0xD800, 0xDB7F, 0xDBFF, 0xDC00, 0xDFFF):
+        assert _status(vespa_deployed, collection_id, cp) == 400, hex(cp)
+        assert replace_refused_characters(chr(cp)) == " ", hex(cp)
