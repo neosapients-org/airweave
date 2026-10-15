@@ -52,7 +52,16 @@ _LABEL_FIELDS = (
 
 
 class TaxonomyProcessor:
-    """Labels a batch of chunk entities in place; never raises."""
+    """Labels a batch of chunk entities in place; never raises.
+
+    INVARIANT: ``process`` must never remove or reorder a chunk; it returns the same list it was
+    given. ``DestinationHandler._do_process_and_insert`` computes which entities were dropped
+    (no chunk survived conversion and embedding) *before* it calls this step. A chunk removed
+    here would leave its entity recorded as synced with nothing written for it, and nothing
+    would flag it. Failures are written as ``ERROR`` on the chunk, never by dropping it. Pinned
+    by ``test_the_step_must_never_remove_or_reorder_a_chunk`` in
+    ``domains/taxonomy/tests/test_error_chunks_synced.py``.
+    """
 
     def __init__(
         self,

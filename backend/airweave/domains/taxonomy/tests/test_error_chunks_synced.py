@@ -120,14 +120,14 @@ class TestErrorChunkIsSynced:
         await dispatcher.dispatch(batch_of_one(), context, MagicMock())
         assert metadata.synced == [ENTITY_ID]
 
-    async def test_the_step_returns_every_chunk_it_was_given(self, make_step):
-        # The handler works out which entities were dropped before the labels are set, so the
-        # guarantee rests on the step never removing a chunk, whatever went wrong inside it.
+    async def test_the_step_must_never_remove_or_reorder_a_chunk(self, make_step):
+        # The handler works out the dropped entities BEFORE the labels are set, so the whole
+        # guarantee rests on the step returning every chunk, in order, whatever went wrong.
         given = chunks()
+        order = [c.entity_id for c in given]
         returned = await make_step().process(given, ctx())
-        assert returned is given and [c.entity_id for c in returned] == [
-            c.entity_id for c in chunks()
-        ]
+        assert returned is given
+        assert [c.entity_id for c in returned] == order
 
     async def test_no_dropped_entity_warning_is_logged(self, make_step):
         dispatcher, _, _, _ = build(make_step())
@@ -136,6 +136,29 @@ class TestErrorChunkIsSynced:
         warnings = " ".join(str(c) for c in context.logger.warning.call_args_list)
         assert "produced no destination" not in warnings
         assert "will not be marked synced" not in warnings
+
+
+class TestNeverRemovesOrReorders:
+    """The same invariant on the paths that do not fail."""
+
+    async def test_labelled(self):
+        given = chunks()
+        order = [c.entity_id for c in given]
+        returned = await processor().process(given, ctx())
+        assert returned is given and [c.entity_id for c in returned] == order
+
+    async def test_a_chunk_the_classifier_returns_nothing_for_is_still_returned(self):
+        given = chunks()
+        order = [c.entity_id for c in given]
+        step = processor(pool=FakePool(drop=[given[1].entity_id]))
+        returned = await step.process(given, ctx())
+        assert returned is given and [c.entity_id for c in returned] == order
+
+    async def test_step_off(self, monkeypatch):
+        monkeypatch.setattr(settings, "TAXONOMY_ENABLED", False)
+        given = chunks()
+        returned = await processor().process(given, ctx())
+        assert returned is given
 
 
 class TestControls:
