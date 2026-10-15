@@ -183,6 +183,26 @@ env:
   CLASSIFICATION_MODEL: gpt-4o-mini
   CLASSIFICATION_BATCH_SIZE: '25'
 
+  # Chunking, topic labels and search (contract airweave-neo/1, section 9).
+  # Every value here is the upstream default, so deploying the chart changes nothing.
+  # Switch on per environment in its own values file, in rollout order (plan section 6):
+  # size Vespa, publish each collection's taxonomy, then the chunk settings and labels.
+  # Neo values in comments.
+  CHUNK_TARGET_TOKENS: '4096'            # Neo: '300'
+  CHUNK_OVERLAP_TOKENS: '0'              # Neo: '45'
+  CHUNK_HEADER_ENABLED: 'false'          # Neo: 'true'
+  CHUNKER_MODE: semantic                 # Neo: sentence_pack
+  CHUNKER_VERSION: '1'                   # Neo: '2'
+  SEARCH_FILTER_GROUPS_OR: 'false'       # Neo: 'true'
+  TAXONOMY_ENABLED: 'false'              # Neo: 'true' (needs TAXONOMY_S3_BUCKET)
+  # TAXONOMY_S3_BUCKET: per environment  (read access via the service account's IAM role)
+  TAXONOMY_S3_PREFIX: taxonomy/
+  TAXONOMY_ACTIVE_CACHE_SECONDS: '300'
+  TAXONOMY_LOCAL_DIR: /data/airweave-taxonomy/versions        # worker volume "taxonomy"
+  TAXONOMY_EMBED_CACHE_DIR: /data/airweave-taxonomy/embed-cache
+  TAXONOMY_CLASSIFY_THREADS: '2'
+  TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: '60'
+
   # Storage backend
   STORAGE_BACKEND: aws
   STORAGE_AWS_REGION: us-east-1
@@ -247,6 +267,11 @@ worker:
     requests:
       cpu: 100m
       memory: 256Mi
+  # Writable volume for TAXONOMY_LOCAL_DIR and TAXONOMY_EMBED_CACHE_DIR (verified taxonomy
+  # versions and one SQLite embedding cache per classifier thread). Unused while
+  # TAXONOMY_ENABLED is off.
+  taxonomyVolume:
+    sizeLimit: 5Gi
 
 # =============================================================================
 # PostgreSQL

@@ -57,9 +57,14 @@ spec:
               mountPath: /tmp
             - name: local-storage
               mountPath: /data/airweave-storage
+            - name: taxonomy
+              mountPath: /data/airweave-taxonomy
       volumes:
         - name: tmp
           emptyDir: {}
         - name: local-storage
           emptyDir: {}
+        - name: taxonomy
+          emptyDir:
+            sizeLimit: {{ (.Values.worker.taxonomyVolume).sizeLimit | default "5Gi" }}
 {{- end }}
