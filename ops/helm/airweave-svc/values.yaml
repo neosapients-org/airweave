@@ -200,6 +200,7 @@ env:
   TAXONOMY_ACTIVE_CACHE_SECONDS: '300'
   TAXONOMY_LOCAL_DIR: /data/airweave-taxonomy/versions        # worker volume "taxonomy"
   TAXONOMY_EMBED_CACHE_DIR: /data/airweave-taxonomy/embed-cache
+  TAXONOMY_EMBED_CACHE_MAX_MB: '512'                           # each thread's cache file starts over past this
   TAXONOMY_CLASSIFY_THREADS: '2'
   TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: '60'
 
@@ -265,7 +266,8 @@ worker:
       cpu: 100m
       memory: 256Mi
   # Writable volume for TAXONOMY_LOCAL_DIR and TAXONOMY_EMBED_CACHE_DIR (verified taxonomy
-  # versions and one SQLite embedding cache per classifier thread). Unused while
+  # versions and one SQLite embedding cache per classifier thread, each capped near
+  # TAXONOMY_EMBED_CACHE_MAX_MB, so size the volume above threads x that plus the versions). Unused while
   # TAXONOMY_ENABLED is off.
   taxonomyVolume:
     sizeLimit: 5Gi

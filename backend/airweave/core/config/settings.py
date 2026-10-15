@@ -151,6 +151,7 @@ class Settings(BaseSettings):
     TAXONOMY_ACTIVE_CACHE_SECONDS: int = 300
     TAXONOMY_LOCAL_DIR: str = "/tmp/airweave/taxonomy"
     TAXONOMY_EMBED_CACHE_DIR: str = "/tmp/airweave/taxonomy-cache"  # one SQLite file per thread
+    TAXONOMY_EMBED_CACHE_MAX_MB: int = 512  # a thread starts a new cache file past this; 0 = never
     TAXONOMY_CLASSIFY_THREADS: int = 2
     TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: int = 60
 

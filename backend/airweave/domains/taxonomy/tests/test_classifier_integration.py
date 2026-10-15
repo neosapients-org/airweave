@@ -359,3 +359,24 @@ class TestTimeout:
         await proc.process(second, ctx_for("neo-acme"))  # queued behind the timed-out batch
         assert "ERROR" not in {c.taxonomy_status for c in second}
         pool.close()
+
+
+class TestCacheRotationOnDisk:
+    async def test_real_cache_starts_over_labels_unchanged(self, world, tmp_path, enabled):
+        resolver = TaxonomyResolver(
+            FilesystemBackend(world["s3"]), "taxonomy/", tmp_path / "l", 300
+        )
+        cache = tmp_path / "cache"
+        pool = ClassifierPool(1, cache, embed_transport=BowEmbeddings(), max_cache_mb=0.01)
+        proc = TaxonomyProcessor(resolver, pool, 60.0, TaxonomyTally())
+        first = await make_chunks("acme", n_docs=3, seed=300)
+        await proc.process(first, ctx_for("neo-acme"))
+        grown = sorted(cache.glob("*.sqlite"))
+        assert grown and grown[0].stat().st_size > 0.01 * 1024 * 1024
+        second = await make_chunks("acme", n_docs=3, seed=300)
+        await proc.process(second, ctx_for("neo-acme"))
+        files = sorted(p.name for p in cache.glob("*.sqlite"))
+        assert len(files) == 1 and "-g1" in files[0], files  # the full file was deleted
+        assert [c.topic_ids for c in second] == [c.topic_ids for c in first]
+        pool.close()
+        assert not list(cache.glob("*.sqlite*")), "close must leave nothing on the volume"

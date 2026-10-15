@@ -115,6 +115,101 @@ class TestThreads:
         pool.close()
 
 
+def _grow(path: str, mb: float) -> None:
+    """Make the thread's cache file as big as the real one would become."""
+    Path(path).write_bytes(b"x" * int(mb * 1024 * 1024))
+
+
+class TestCacheRotation:
+    async def test_file_over_the_limit_is_replaced_by_a_new_one(self, tmp_path, stand_in):
+        pool = ClassifierPool(1, tmp_path / "c", max_cache_mb=1)
+        await pool.classify(_taxonomy(), _rows(1), 10)
+        first = stand_in.created[0]
+        old = first.config["embedding"]["cache_path"]
+        _grow(old, 1.5)
+        await pool.classify(_taxonomy(), _rows(1), 10)
+        second = stand_in.created[1]
+        new = second.config["embedding"]["cache_path"]
+        assert new != old and first.closed and not second.closed
+        assert not Path(old).exists(), "the full file must be deleted, not left on the volume"
+        assert os.path.basename(new).startswith(f"{os.getpid()}-0-")
+        pool.close()
+
+    async def test_file_under_the_limit_is_kept(self, tmp_path, stand_in):
+        pool = ClassifierPool(1, tmp_path / "c", max_cache_mb=1)
+        await pool.classify(_taxonomy(), _rows(1), 10)
+        _grow(stand_in.created[0].config["embedding"]["cache_path"], 0.5)
+        await pool.classify(_taxonomy(), _rows(1), 10)
+        assert len(stand_in.created) == 1
+        pool.close()
+
+    async def test_every_loaded_version_moves_to_the_new_file(self, tmp_path, stand_in):
+        pool = ClassifierPool(1, tmp_path / "c", max_cache_mb=1)
+        for v in ("v1", "v2"):
+            await pool.classify(_taxonomy(version=v), _rows(1), 10)
+        _grow(stand_in.created[0].config["embedding"]["cache_path"], 2)
+        await pool.classify(_taxonomy(version="v1"), _rows(1), 10)
+        await pool.classify(_taxonomy(version="v2"), _rows(1), 10)
+        paths = {c.config["embedding"]["cache_path"] for c in stand_in.created[2:]}
+        assert len(stand_in.created) == 4 and len(paths) == 1
+        assert all(c.closed for c in stand_in.created[:2])
+        pool.close()
+
+    async def test_threads_rotate_independently(self, tmp_path, stand_in):
+        pool = ClassifierPool(2, tmp_path / "c", max_cache_mb=1)
+        for _ in range(2):
+            await pool.classify(_taxonomy(), _rows(1), 10)
+        _grow(stand_in.created[0].config["embedding"]["cache_path"], 2)
+        for _ in range(2):
+            await pool.classify(_taxonomy(), _rows(1), 10)
+        assert len(stand_in.created) == 3  # only thread 0 started over
+        pool.close()
+
+    async def test_sidecar_files_go_with_it(self, tmp_path, stand_in):
+        pool = ClassifierPool(1, tmp_path / "c", max_cache_mb=1)
+        await pool.classify(_taxonomy(), _rows(1), 10)
+        old = stand_in.created[0].config["embedding"]["cache_path"]
+        _grow(old, 1.5)
+        for suffix in ("-wal", "-shm", "-journal"):
+            Path(old + suffix).write_bytes(b"x")
+        await pool.classify(_taxonomy(), _rows(1), 10)
+        assert not [p for p in (tmp_path / "c").iterdir() if p.name.startswith(Path(old).name)]
+        pool.close()
+
+    async def test_zero_turns_rotation_off(self, tmp_path, stand_in):
+        pool = ClassifierPool(1, tmp_path / "c", max_cache_mb=0)
+        await pool.classify(_taxonomy(), _rows(1), 10)
+        _grow(stand_in.created[0].config["embedding"]["cache_path"], 3)
+        await pool.classify(_taxonomy(), _rows(1), 10)
+        assert len(stand_in.created) == 1
+        pool.close()
+
+    async def test_close_deletes_this_processes_files_only(self, tmp_path, stand_in):
+        cache = tmp_path / "c"
+        pool = ClassifierPool(2, cache, max_cache_mb=1)
+        for _ in range(2):
+            await pool.classify(_taxonomy(), _rows(1), 10)
+        mine = [Path(c.config["embedding"]["cache_path"]) for c in stand_in.created]
+        for p in mine:
+            p.write_bytes(b"x")
+        theirs = cache / "999999-0.sqlite"  # another worker process on a shared directory
+        theirs.write_bytes(b"x")
+        pool.close()
+        assert not any(p.exists() for p in mine) and theirs.exists()
+
+    async def test_close_closes_the_connections_on_their_own_threads(self, tmp_path, stand_in):
+        pool = ClassifierPool(2, tmp_path / "c")
+        for _ in range(2):
+            await pool.classify(_taxonomy(), _rows(1), 10)
+        pool.close()
+        assert all(c.closed for c in stand_in.created)
+
+    async def test_close_is_safe_twice_and_before_use(self, tmp_path, stand_in):
+        pool = ClassifierPool(2, tmp_path / "c")
+        pool.close()
+        pool.close()
+
+
 class TestTimeout:
     async def test_timeout_raises_and_next_batch_waits_behind(self, tmp_path, stand_in):
         pool = ClassifierPool(1, tmp_path)

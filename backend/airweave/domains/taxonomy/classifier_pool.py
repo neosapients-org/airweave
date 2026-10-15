@@ -5,7 +5,9 @@ connection used from another thread (``ProgrammingError``). ``asyncio.to_thread`
 call on any thread of a shared pool, so calls would fail and fail-open would hide it. Instead the
 pool keeps ``TAXONOMY_CLASSIFY_THREADS`` single-thread executors. Each thread creates and only
 ever uses its own classifiers, cached by ``(taxonomy_version, manifest_sha256)`` in a small LRU,
-with its own cache file ``<cache dir>/<pid>-<thread n>.sqlite``. A batch runs on one thread,
+with its own cache file ``<cache dir>/<pid>-<thread n>.sqlite``. When that file passes
+``max_cache_mb`` the thread closes its classifiers, deletes the file and starts a new one
+(``<pid>-<n>-g<generation>.sqlite``); ``close`` deletes the files too. A batch runs on one thread,
 chosen round-robin; a timed-out batch still finishes on its thread, and the next batch for that
 thread waits behind it.
 """
@@ -18,7 +20,7 @@ import itertools
 import os
 import threading
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -31,6 +33,11 @@ CLASSIFIERS_PER_THREAD = 4
 
 EmbedTransport = Callable[[List[str]], Any]
 
+# SQLite writes these next to the main file
+_SIDECARS = ("", "-wal", "-shm", "-journal")
+# How long close() waits for each thread to close its connections before deleting the files
+_CLOSE_WAIT_SECONDS = 5.0
+
 
 class ClassifierPool:
     """Runs classifier calls on dedicated threads, one classifier set per thread."""
@@ -42,6 +49,7 @@ class ClassifierPool:
         embed_transport: Optional[EmbedTransport] = None,
         classifiers_per_thread: int = CLASSIFIERS_PER_THREAD,
         dense_embedder: Optional[DenseEmbedderProtocol] = None,
+        max_cache_mb: float = 512,
     ) -> None:
         """Initialize; threads start on first use.
 
@@ -49,6 +57,7 @@ class ClassifierPool:
         fake). Otherwise a taxonomy whose embedding model and dimensions are the
         ``dense_embedder``'s embeds through it (Airweave's timeouts, retries and limits apply);
         any other taxonomy keeps the package's default client, which reads ``OPENAI_API_KEY``.
+        ``max_cache_mb`` (0 = never) is the size at which a thread starts a new cache file.
         """
         if threads < 1:
             raise ValueError("threads must be at least 1")
@@ -58,6 +67,7 @@ class ClassifierPool:
         self._dense = dense_embedder
         self._bridge = AirweaveEmbedTransport(dense_embedder) if dense_embedder else None
         self._lru_size = classifiers_per_thread
+        self._max_cache_bytes = int(max_cache_mb * 1024 * 1024)
         self._executors: List[ThreadPoolExecutor] = []
         self._round_robin = itertools.count()
         self._local = threading.local()
@@ -104,6 +114,7 @@ class ClassifierPool:
 
         if self._bridge is not None:
             self._bridge.bind(loop, timeout)
+        self._rotate_cache(index)
         classifier = self._classifier(index, taxonomy)
         result = classifier.classify(rows)
         return [to_contract(e, classifier.taxonomy) for e in result.enriched]
@@ -122,15 +133,41 @@ class ClassifierPool:
             return cache[key]
         config = copy.deepcopy(taxonomy.config)
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        config.setdefault("embedding", {})["cache_path"] = str(
-            self._cache_dir / f"{os.getpid()}-{index}.sqlite"
-        )
+        config.setdefault("embedding", {})["cache_path"] = str(self._cache_path(index))
         classifier = TaxonomyClassifier(taxonomy.local_path, config, self._transport_for(config))
         cache[key] = classifier
         while len(cache) > self._lru_size:
             _, old = cache.popitem(last=False)
             _close(old)
         return classifier
+
+    def _cache_path(self, index: int) -> Path:
+        """This thread's current cache file; later generations carry a suffix."""
+        generation = getattr(self._local, "generation", 0)
+        suffix = f"-g{generation}" if generation else ""
+        return self._cache_dir / f"{os.getpid()}-{index}{suffix}.sqlite"
+
+    def _rotate_cache(self, index: int) -> None:
+        """Start a new cache file once the thread's file is over the limit (on its thread).
+
+        Every loaded classifier shares the file, so all of them are closed and reopened lazily
+        on the new one; the full file is deleted. Vectors in it are recomputed on demand.
+        """
+        if self._max_cache_bytes <= 0:
+            return
+        path = self._cache_path(index)
+        if _size(path) <= self._max_cache_bytes:
+            return
+        self._release_thread_state()
+        _delete(path)
+        self._local.generation = getattr(self._local, "generation", 0) + 1
+
+    def _release_thread_state(self) -> None:
+        """Close this thread's classifiers (run on the thread that owns them)."""
+        cache = getattr(self._local, "classifiers", None)
+        while cache:
+            _, old = cache.popitem(last=False)
+            _close(old)
 
     def _transport_for(self, config: Dict[str, Any]) -> Optional[EmbedTransport]:
         """The explicit transport, else Airweave's embedder if the model matches, else None."""
@@ -141,10 +178,40 @@ class ClassifierPool:
         return None
 
     def close(self) -> None:
-        """Stop the threads; queued batches are abandoned (the process is shutting down)."""
-        for executor in self._executors:
-            executor.shutdown(wait=False, cancel_futures=True)
-        self._executors = []
+        """Stop the threads and delete this process's cache files (the worker is shutting down).
+
+        Each thread first closes its own classifiers, because SQLite connections close on the
+        thread that opened them. Batches already queued finish first; a thread still busy
+        with a timed-out batch is given a few seconds, then its files are deleted anyway.
+        """
+        executors, self._executors = self._executors, []
+        closers = [executor.submit(self._release_thread_state) for executor in executors]
+        for executor in executors:
+            executor.shutdown(wait=False)  # queued closers still run
+        wait(closers, timeout=_CLOSE_WAIT_SECONDS)
+        for path in self._cache_dir.glob(f"{os.getpid()}-*.sqlite"):
+            for suffix in _SIDECARS:
+                _delete(Path(str(path) + suffix))
+
+
+def _size(path: Path) -> int:
+    """File size including SQLite's write-ahead log; 0 when absent."""
+    total = 0
+    for suffix in _SIDECARS[:2]:
+        try:
+            total += os.path.getsize(str(path) + suffix)
+        except OSError:
+            pass
+    return total
+
+
+def _delete(path: Path) -> None:
+    """Remove a cache file and its SQLite sidecars; missing files are fine."""
+    for suffix in _SIDECARS:
+        try:
+            os.remove(str(path) + suffix)
+        except OSError:
+            pass
 
 
 def _close(classifier: Any) -> None:

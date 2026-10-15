@@ -13,6 +13,7 @@ def _settings(enabled: bool, bucket: str = ""):
         TAXONOMY_LOCAL_DIR="/tmp/none",
         TAXONOMY_ACTIVE_CACHE_SECONDS=300,
         TAXONOMY_EMBED_CACHE_DIR="/tmp/none-cache",
+        TAXONOMY_EMBED_CACHE_MAX_MB=7,
         TAXONOMY_CLASSIFY_THREADS=2,
         TAXONOMY_CLASSIFY_TIMEOUT_SECONDS=60,
     )
@@ -32,3 +33,8 @@ def test_on_hands_the_dense_embedder_to_the_pool():
 def test_on_without_an_embedder_keeps_the_packages_client():
     processor = _create_taxonomy_processor(_settings(True))
     assert processor._pool._bridge is None
+
+
+def test_cache_limit_comes_from_the_setting():
+    processor = _create_taxonomy_processor(_settings(True))
+    assert processor._pool._max_cache_bytes == 7 * 1024 * 1024

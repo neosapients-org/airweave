@@ -1408,6 +1408,7 @@ def _create_taxonomy_processor(
         threads=settings.TAXONOMY_CLASSIFY_THREADS,
         cache_dir=settings.TAXONOMY_EMBED_CACHE_DIR,
         dense_embedder=dense_embedder,
+        max_cache_mb=settings.TAXONOMY_EMBED_CACHE_MAX_MB,
     )
     return TaxonomyProcessor(
         resolver=resolver, pool=pool, timeout_seconds=settings.TAXONOMY_CLASSIFY_TIMEOUT_SECONDS
