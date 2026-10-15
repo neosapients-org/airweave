@@ -155,6 +155,16 @@ class Settings(BaseSettings):
     TAXONOMY_CLASSIFY_THREADS: int = 2
     TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: int = 60
 
+    # Re-label jobs (P7 design section 5). The cap is the deployment's approved spend ceiling per
+    # job in USD; 0 approves nothing, so no job can start until the owner sets it.
+    RELABEL_SPEND_CAP_USD: float = 0.0
+    RELABEL_USD_PER_THOUSAND_CHUNKS: float = 0.006  # embedding cost of classifying 1,000 chunks
+    RELABEL_BATCH_SIZE: int = 64  # chunks per classifier call
+    RELABEL_PAGE_SIZE: int = 100  # chunks per Vespa visit page (also the unresolved scroll's)
+    RELABEL_WRITE_CONCURRENCY: int = 8  # parallel conditional updates
+    RELABEL_LEASE_SECONDS: int = 120  # a running job renews its lease; an expired one is resumed
+    RELABEL_RESUME_INTERVAL_SECONDS: int = 60  # how often this process looks for jobs to resume
+
     # Search: honour OR between a request's filter groups (contract C8). False keeps the
     # upstream behaviour, where every user filter group is merged into one AND group.
     SEARCH_FILTER_GROUPS_OR: bool = False
@@ -359,6 +369,26 @@ class Settings(BaseSettings):
     @field_validator("TAXONOMY_CLASSIFY_THREADS", "TAXONOMY_CLASSIFY_TIMEOUT_SECONDS")
     def validate_taxonomy_positive(cls, v: int, info: ValidationInfo) -> int:
         """Require at least one classifier thread and a positive timeout."""
+        if v < 1:
+            raise ValueError(f"{info.field_name} must be at least 1")
+        return v
+
+    @field_validator("RELABEL_SPEND_CAP_USD", "RELABEL_USD_PER_THOUSAND_CHUNKS")
+    def validate_relabel_money(cls, v: float, info: ValidationInfo) -> float:
+        """Spend figures cannot be negative."""
+        if v < 0:
+            raise ValueError(f"{info.field_name} must be 0 or more")
+        return v
+
+    @field_validator(
+        "RELABEL_BATCH_SIZE",
+        "RELABEL_PAGE_SIZE",
+        "RELABEL_WRITE_CONCURRENCY",
+        "RELABEL_LEASE_SECONDS",
+        "RELABEL_RESUME_INTERVAL_SECONDS",
+    )
+    def validate_relabel_positive(cls, v: int, info: ValidationInfo) -> int:
+        """Batch, page, concurrency and timing settings must be at least 1."""
         if v < 1:
             raise ValueError(f"{info.field_name} must be at least 1")
         return v

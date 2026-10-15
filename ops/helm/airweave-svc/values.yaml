@@ -203,6 +203,15 @@ env:
   TAXONOMY_EMBED_CACHE_MAX_MB: '512'                           # each thread's cache file starts over past this
   TAXONOMY_CLASSIFY_THREADS: '2'
   TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: '60'
+  # Re-label jobs. The cap is the approved spend ceiling per job in USD; '0' approves nothing,
+  # so no job can start until the owner sets a value for the environment.
+  RELABEL_SPEND_CAP_USD: '0'
+  RELABEL_USD_PER_THOUSAND_CHUNKS: '0.006'
+  RELABEL_BATCH_SIZE: '64'
+  RELABEL_PAGE_SIZE: '100'
+  RELABEL_WRITE_CONCURRENCY: '8'
+  RELABEL_LEASE_SECONDS: '120'
+  RELABEL_RESUME_INTERVAL_SECONDS: '60'
 
   # Storage backend
   STORAGE_BACKEND: aws

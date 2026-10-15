@@ -40,6 +40,42 @@ class TestDefaults:
         assert s.TAXONOMY_CLASSIFY_THREADS == 2
         assert s.TAXONOMY_CLASSIFY_TIMEOUT_SECONDS == 60
 
+    def test_relabel_defaults_approve_nothing(self, monkeypatch):
+        s = _build_settings(monkeypatch, {})
+        assert s.RELABEL_SPEND_CAP_USD == 0.0  # no job can start until the owner approves a cap
+        assert s.RELABEL_USD_PER_THOUSAND_CHUNKS == 0.006
+        assert (s.RELABEL_BATCH_SIZE, s.RELABEL_PAGE_SIZE, s.RELABEL_WRITE_CONCURRENCY) == (
+            64,
+            100,
+            8,
+        )
+        assert (s.RELABEL_LEASE_SECONDS, s.RELABEL_RESUME_INTERVAL_SECONDS) == (120, 60)
+
+    def test_relabel_cap_is_read(self, monkeypatch):
+        assert (
+            _build_settings(monkeypatch, {"RELABEL_SPEND_CAP_USD": "12.5"}).RELABEL_SPEND_CAP_USD
+            == 12.5
+        )
+
+    @pytest.mark.parametrize("name", ["RELABEL_SPEND_CAP_USD", "RELABEL_USD_PER_THOUSAND_CHUNKS"])
+    def test_relabel_money_cannot_be_negative(self, monkeypatch, name):
+        with pytest.raises(ValidationError, match=name):
+            _build_settings(monkeypatch, {name: "-1"})
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "RELABEL_BATCH_SIZE",
+            "RELABEL_PAGE_SIZE",
+            "RELABEL_WRITE_CONCURRENCY",
+            "RELABEL_LEASE_SECONDS",
+            "RELABEL_RESUME_INTERVAL_SECONDS",
+        ],
+    )
+    def test_relabel_counts_must_be_positive(self, monkeypatch, name):
+        with pytest.raises(ValidationError, match=name):
+            _build_settings(monkeypatch, {name: "0"})
+
     def test_search_default(self, monkeypatch):
         s = _build_settings(monkeypatch, {})
         assert s.SEARCH_FILTER_GROUPS_OR is False
