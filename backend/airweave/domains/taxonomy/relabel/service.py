@@ -149,7 +149,7 @@ class RelabelService:
             await store.close()
         classify = chunks_to_classify(stats, req.mode, req.scope)
         estimate = estimate_usd(classify, self._rate)
-        if cap <= 0:
+        if cap <= 0 and classify > 0:  # a job that calls no embedder needs no approved spend
             raise RelabelRefused(
                 422,
                 "spend_cap_not_approved",

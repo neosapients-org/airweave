@@ -45,10 +45,40 @@ class TestSpendCap:
         assert (e.value.status, e.value.code) == (422, "spend_cap_not_approved")
         assert repo.jobs == {}
 
-    async def test_zero_cap_refuses_even_a_job_that_would_cost_nothing(self):
-        svc, _ = service(FakeChunkStore([]), cap=0.0)
+    async def test_zero_cap_allows_a_stamp_only_incremental_job(self):
+        # carried-over chunks only: nothing is classified, so nothing calls the embedder
+        store = FakeChunkStore([chunk(i, status="ASSIGNED", version=OLD) for i in range(4)])
+        svc, repo = service(store, cap=0.0)
+        job, created = await svc.start(req(mode=MODE_INCREMENTAL))
+        assert created and job.spend_estimate_usd == 0 and job.chunks_total == 4
+        assert job.spend_cap_usd == 0.0 and len(repo.jobs) == 1
+
+    async def test_zero_cap_still_refuses_an_incremental_job_with_a_backlog(self):
+        store = FakeChunkStore(
+            [chunk(0, status="UNRESOLVED", version=OLD), chunk(1, status="ASSIGNED", version=OLD)]
+        )
+        svc, repo = service(store, cap=0.0)
+        with pytest.raises(RelabelRefused) as e:
+            await svc.start(req(mode=MODE_INCREMENTAL))
+        assert e.value.code == "spend_cap_not_approved" and repo.jobs == {}
+
+    async def test_zero_cap_still_refuses_full_and_not_labelled_jobs(self):
+        for kw in ({}, {"scope": SCOPE_NOT_LABELLED}):
+            store = FakeChunkStore([chunk(0), chunk(1, status="ASSIGNED", version=OLD)])
+            svc, _ = service(store, cap=0.0)
+            with pytest.raises(RelabelRefused):
+                await svc.start(req(**kw))
+
+    async def test_a_request_cannot_raise_a_zero_cap(self):
+        store = FakeChunkStore([chunk(0, status="UNRESOLVED", version=OLD)])
+        svc, _ = service(store, cap=0.0)
         with pytest.raises(RelabelRefused):
-            await svc.start(req())
+            await svc.start(req(mode=MODE_INCREMENTAL, spend_cap_usd=100.0))
+
+    async def test_a_stamp_only_job_with_nothing_to_do_is_allowed_at_zero(self):
+        svc, _ = service(FakeChunkStore([]), cap=0.0)
+        job, created = await svc.start(req(mode=MODE_INCREMENTAL))
+        assert created and job.chunks_total == 0
 
     async def test_estimate_above_the_cap_is_refused_before_anything_is_written(self):
         store = FakeChunkStore([chunk(i, status="ASSIGNED", version=OLD) for i in range(5)])
