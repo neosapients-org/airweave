@@ -12,14 +12,17 @@ with benefits of pre-trained vocabulary/IDF, stopword removal, and learned term 
 """
 
 import json
-from typing import TYPE_CHECKING, Any, Dict, List, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from airweave.core.config import settings
 from airweave.domains.converters.protocols import ConverterRegistryProtocol
 from airweave.domains.embedders.exceptions import EmbedderProviderError, EmbedderQuotaError
 from airweave.domains.embedders.protocols import DenseEmbedderProtocol, SparseEmbedderProtocol
 from airweave.domains.sync_pipeline.exceptions import EntityProcessingError, SyncFailureError
 from airweave.domains.sync_pipeline.pipeline.text_builder import TextualRepresentationBuilder
+from airweave.domains.sync_pipeline.processors.chunk_layout import ChunkLayout
 from airweave.domains.sync_pipeline.processors.utils import filter_empty_representations
+from airweave.platform.chunkers.sentence_pack import SentencePackChunker
 from airweave.platform.entities._base import BaseEntity, CodeFileEntity
 
 if TYPE_CHECKING:
@@ -136,18 +139,29 @@ class ChunkEmbedProcessor:
         entities: List[BaseEntity],
         sync_context: "SyncContext",
     ) -> List[BaseEntity]:
-        """Chunk text with SemanticChunker."""
+        """Chunk text with the chunker CHUNKER_MODE selects (SemanticChunker by default)."""
+        texts = [e.textual_representation for e in entities]
+        layout = ChunkLayout.from_settings()
+
+        if settings.CHUNKER_MODE == "sentence_pack":
+            chunker = SentencePackChunker(
+                settings.CHUNK_TARGET_TOKENS, settings.CHUNK_OVERLAP_TOKENS
+            )
+            try:
+                chunk_lists = await chunker.chunk_batch([t or "" for t in texts])
+            except Exception as e:
+                raise SyncFailureError(f"[ChunkEmbedProcessor] SentencePackChunker failed: {e}")
+            return self._multiply_entities(entities, chunk_lists, sync_context, layout)
+
         from airweave.platform.chunkers.semantic import SemanticChunker
 
-        chunker = SemanticChunker()
-        texts = [e.textual_representation for e in entities]
-
+        semantic = SemanticChunker()
         try:
-            chunk_lists = await chunker.chunk_batch(texts)
+            chunk_lists = await semantic.chunk_batch(texts)
         except Exception as e:
             raise SyncFailureError(f"[ChunkEmbedProcessor] SemanticChunker failed: {e}")
 
-        return self._multiply_entities(entities, chunk_lists, sync_context)
+        return self._multiply_entities(entities, chunk_lists, sync_context, layout)
 
     async def _filter_unsupported_languages(
         self,
@@ -181,9 +195,15 @@ class ChunkEmbedProcessor:
         entities: List[BaseEntity],
         chunk_lists: List[List[Dict[str, Any]]],
         sync_context: "SyncContext",
+        layout: Optional[ChunkLayout] = None,
     ) -> List[BaseEntity]:
-        """Create chunk entities from chunker output."""
+        """Create chunk entities from chunker output.
+
+        With a layout that has positions, every chunk is kept (even whitespace only), so the
+        chunks' own ranges keep covering the whole document text.
+        """
         chunk_entities: List[BaseEntity] = []
+        keep_every_chunk = layout is not None and layout.positions
 
         for entity, chunks in zip(entities, chunk_lists, strict=True):
             if not chunks:
@@ -193,7 +213,7 @@ class ChunkEmbedProcessor:
 
             for idx, chunk in enumerate(chunks):
                 chunk_text = chunk.get("text", "")
-                if not chunk_text or not chunk_text.strip():
+                if not keep_every_chunk and (not chunk_text or not chunk_text.strip()):
                     continue
 
                 chunk_entity = entity.model_copy(deep=True)
@@ -201,6 +221,8 @@ class ChunkEmbedProcessor:
                 chunk_entity.entity_id = f"{original_id}__chunk_{idx}"
                 chunk_entity.airweave_system_metadata.chunk_index = idx
                 chunk_entity.airweave_system_metadata.original_entity_id = original_id
+                if layout is not None and layout.active:
+                    layout.apply(chunk_entity, chunk)
 
                 chunk_entities.append(chunk_entity)
 
