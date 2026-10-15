@@ -132,11 +132,27 @@ class TemporalWorker:
             self._state.running = False
             await self._worker.shutdown()
 
+        await self._close_taxonomy_pool()
         await self._control_server.stop()
 
         from airweave.domains.temporal.client import close as close_temporal_client
 
         await close_temporal_client()
+
+    async def _close_taxonomy_pool(self) -> None:
+        """Close the classifier threads and delete their cache files, after the worker drained.
+
+        Never raises: the rest of the shutdown must still run.
+        """
+        from airweave.core import container as container_mod
+
+        processor = getattr(getattr(container_mod, "container", None), "taxonomy_processor", None)
+        if processor is None:
+            return
+        try:
+            await asyncio.to_thread(processor.close)
+        except Exception as e:
+            logger.warning(f"Failed to close the taxonomy classifier pool: {e}")
 
     async def _on_drain(self) -> None:
         """Called when drain is requested via control server."""

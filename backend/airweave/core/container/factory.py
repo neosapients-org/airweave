@@ -380,6 +380,7 @@ def create_container(settings: Settings) -> Container:
     # -----------------------------------------------------------------
     # Sync factory + service
     # -----------------------------------------------------------------
+    taxonomy_processor = _create_taxonomy_processor(settings, dense_embedder)
     sync_factory = SyncFactory(
         # Repositories
         sc_repo=source_deps["sc_repo"],
@@ -402,7 +403,7 @@ def create_container(settings: Settings) -> Container:
         usage_ledger=usage_ledger,
         storage_backend=storage_backend,
         state_machine=sync_deps["sync_job_state_machine"],
-        taxonomy_processor=_create_taxonomy_processor(settings, dense_embedder),
+        taxonomy_processor=taxonomy_processor,
     )
 
     sync_service = SyncService(
@@ -623,6 +624,7 @@ def create_container(settings: Settings) -> Container:
         classic_search=search_deps["classic_search"],
         agentic_search=search_deps["agentic_search"],
         browse_service=search_deps["browse_service"],
+        taxonomy_processor=taxonomy_processor,
     )
 
 

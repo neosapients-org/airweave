@@ -38,3 +38,11 @@ def test_on_without_an_embedder_keeps_the_packages_client():
 def test_cache_limit_comes_from_the_setting():
     processor = _create_taxonomy_processor(_settings(True))
     assert processor._pool._max_cache_bytes == 7 * 1024 * 1024
+
+
+def test_processor_close_closes_the_pool():
+    processor = _create_taxonomy_processor(_settings(True))
+    closed = []
+    processor._pool.close = lambda: closed.append(True)
+    processor.close()
+    assert closed == [True]

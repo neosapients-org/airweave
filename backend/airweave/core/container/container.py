@@ -272,6 +272,10 @@ class Container:
     # OCR provider (with fallback chain + circuit breaking)
     ocr_provider: Optional[OcrProvider] = None
 
+    # Taxonomy step of the sync pipeline (None while TAXONOMY_ENABLED is off); the worker
+    # closes its classifier threads and cache files on shutdown
+    taxonomy_processor: Optional[Any] = None
+
     # -----------------------------------------------------------------
     # Convenience methods
     # -----------------------------------------------------------------

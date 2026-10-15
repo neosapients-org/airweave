@@ -67,6 +67,10 @@ class TaxonomyProcessor:
         self._timeout = timeout_seconds
         self._tally = tally
 
+    def close(self) -> None:
+        """Release the classifier threads and cache files (worker shutdown); blocking."""
+        self._pool.close()
+
     async def process(
         self, chunks: List[BaseEntity], sync_context: "SyncContext"
     ) -> List[BaseEntity]:
