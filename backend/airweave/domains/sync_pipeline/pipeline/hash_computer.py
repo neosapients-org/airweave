@@ -5,6 +5,8 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
+from airweave.core.config import settings
+from airweave.core.config.settings import Settings
 from airweave.core.shared_models import AirweaveFieldFlag
 from airweave.domains.sync_pipeline.async_helpers import run_in_thread_pool
 from airweave.domains.sync_pipeline.exceptions import EntityProcessingError, SyncFailureError
@@ -13,6 +15,33 @@ from airweave.platform.entities._base import BaseEntity, CodeFileEntity, FileEnt
 if TYPE_CHECKING:
     from airweave.domains.sync_pipeline.contexts import SyncContext
     from airweave.domains.sync_pipeline.contexts.runtime import SyncRuntime
+
+# The settings that decide how a text entity is chunked (contract airweave-neo/1, section 9).
+CHUNK_FINGERPRINT_SETTINGS = (
+    "CHUNKER_VERSION",
+    "CHUNKER_MODE",
+    "CHUNK_TARGET_TOKENS",
+    "CHUNK_OVERLAP_TOKENS",
+    "CHUNK_HEADER_ENABLED",
+)
+
+
+def chunk_fingerprint(entity: BaseEntity) -> Optional[str]:
+    """Return the chunk fingerprint that goes into the entity's hash, or None.
+
+    An unchanged entity hashes to "keep", so without this it would keep chunks made under
+    other settings forever. With every chunk setting at its default the fingerprint is None
+    and the hash stays exactly as upstream computes it; any other value (for example a target
+    of 300 instead of 600) changes every text entity's hash once, so each is re-chunked on its
+    next sync. Code files are chunked by the code chunker whatever the settings: no fingerprint.
+    """
+    if isinstance(entity, CodeFileEntity):
+        return None
+    values = {name: getattr(settings, name) for name in CHUNK_FINGERPRINT_SETTINGS}
+    defaults = {name: Settings.model_fields[name].default for name in CHUNK_FINGERPRINT_SETTINGS}
+    if values == defaults:
+        return None
+    return json.dumps(values, sort_keys=True, separators=(",", ":"))
 
 
 class HashComputer:
@@ -80,6 +109,11 @@ class HashComputer:
             if isinstance(entity, (FileEntity, CodeFileEntity)):
                 content_hash = await self._compute_file_content_hash(entity)
                 entity_dict["_content_hash"] = content_hash
+
+            # Step 2b: How the entity is chunked, so a chunk-settings change re-chunks it once
+            fingerprint = chunk_fingerprint(entity)
+            if fingerprint is not None:
+                entity_dict["_chunk_fingerprint"] = fingerprint
 
             # Step 3: Exclude volatile fields
             content_dict = self._exclude_volatile_fields(entity, entity_dict)
