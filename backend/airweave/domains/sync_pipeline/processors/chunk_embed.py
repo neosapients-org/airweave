@@ -249,7 +249,7 @@ class ChunkEmbedProcessor:
                 chunk_entity.airweave_system_metadata.chunk_index = idx
                 chunk_entity.airweave_system_metadata.original_entity_id = original_id
                 if layout is not None and layout.active:
-                    layout.apply(chunk_entity, chunk, starts)
+                    layout.apply(chunk_entity, chunk, starts, sync_context.source_short_name)
 
                 chunk_entities.append(chunk_entity)
 
