@@ -17,5 +17,7 @@ class PdfConverter(HybridDocumentConverter):
     async def _try_extract(self, path: str) -> Optional[str]:
         extraction = await extract_pdf_text(path)
         if extraction.fully_extracted and extraction.full_text:
-            return text_to_markdown(extraction.full_text)
+            # Page markers pass through text_to_markdown unchanged; the chunk processor
+            # removes them and records where each page starts.
+            return text_to_markdown(extraction.full_text_with_page_markers)
         return None

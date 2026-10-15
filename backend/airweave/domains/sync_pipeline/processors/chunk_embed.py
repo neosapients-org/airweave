@@ -15,12 +15,16 @@ import json
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from airweave.core.config import settings
+from airweave.domains.converters.page_markers import PageStarts, strip_page_markers
 from airweave.domains.converters.protocols import ConverterRegistryProtocol
 from airweave.domains.embedders.exceptions import EmbedderProviderError, EmbedderQuotaError
 from airweave.domains.embedders.protocols import DenseEmbedderProtocol, SparseEmbedderProtocol
 from airweave.domains.sync_pipeline.exceptions import EntityProcessingError, SyncFailureError
 from airweave.domains.sync_pipeline.pipeline.text_builder import TextualRepresentationBuilder
-from airweave.domains.sync_pipeline.processors.chunk_layout import ChunkLayout
+from airweave.domains.sync_pipeline.processors.chunk_layout import (
+    ChunkLayout,
+    replace_refused_characters,
+)
 from airweave.domains.sync_pipeline.processors.utils import filter_empty_representations
 from airweave.platform.chunkers.sentence_pack import SentencePackChunker
 from airweave.platform.entities._base import BaseEntity, CodeFileEntity
@@ -140,8 +144,9 @@ class ChunkEmbedProcessor:
         sync_context: "SyncContext",
     ) -> List[BaseEntity]:
         """Chunk text with the chunker CHUNKER_MODE selects (SemanticChunker by default)."""
-        texts = [e.textual_representation for e in entities]
         layout = ChunkLayout.from_settings()
+        page_starts = self._prepare_document_texts(entities, layout)
+        texts = [e.textual_representation for e in entities]
 
         if settings.CHUNKER_MODE == "sentence_pack":
             chunker = SentencePackChunker(
@@ -151,7 +156,7 @@ class ChunkEmbedProcessor:
                 chunk_lists = await chunker.chunk_batch([t or "" for t in texts])
             except Exception as e:
                 raise SyncFailureError(f"[ChunkEmbedProcessor] SentencePackChunker failed: {e}")
-            return self._multiply_entities(entities, chunk_lists, sync_context, layout)
+            return self._multiply_entities(entities, chunk_lists, sync_context, layout, page_starts)
 
         from airweave.platform.chunkers.semantic import SemanticChunker
 
@@ -161,7 +166,27 @@ class ChunkEmbedProcessor:
         except Exception as e:
             raise SyncFailureError(f"[ChunkEmbedProcessor] SemanticChunker failed: {e}")
 
-        return self._multiply_entities(entities, chunk_lists, sync_context, layout)
+        return self._multiply_entities(entities, chunk_lists, sync_context, layout, page_starts)
+
+    @staticmethod
+    def _prepare_document_texts(
+        entities: List[BaseEntity], layout: ChunkLayout
+    ) -> List[PageStarts]:
+        """Turn each built text into the document text (contract 3.2), in place.
+
+        Page markers are removed (in every mode; without them the text is what upstream
+        built) and each page's start recorded. With positions, every character Vespa refuses
+        is then replaced by one space, before any position is counted.
+        """
+        page_starts: List[PageStarts] = []
+        for entity in entities:
+            text, starts = strip_page_markers(entity.textual_representation or "")
+            if layout.positions:
+                text = replace_refused_characters(text)
+            if entity.textual_representation is not None:
+                entity.textual_representation = text
+            page_starts.append(starts)
+        return page_starts
 
     async def _filter_unsupported_languages(
         self,
@@ -196,6 +221,7 @@ class ChunkEmbedProcessor:
         chunk_lists: List[List[Dict[str, Any]]],
         sync_context: "SyncContext",
         layout: Optional[ChunkLayout] = None,
+        page_starts: Optional[List[PageStarts]] = None,
     ) -> List[BaseEntity]:
         """Create chunk entities from chunker output.
 
@@ -204,8 +230,9 @@ class ChunkEmbedProcessor:
         """
         chunk_entities: List[BaseEntity] = []
         keep_every_chunk = layout is not None and layout.positions
+        starts_per_entity = page_starts or [[] for _ in entities]
 
-        for entity, chunks in zip(entities, chunk_lists, strict=True):
+        for entity, chunks, starts in zip(entities, chunk_lists, starts_per_entity, strict=True):
             if not chunks:
                 continue
 
@@ -222,7 +249,7 @@ class ChunkEmbedProcessor:
                 chunk_entity.airweave_system_metadata.chunk_index = idx
                 chunk_entity.airweave_system_metadata.original_entity_id = original_id
                 if layout is not None and layout.active:
-                    layout.apply(chunk_entity, chunk)
+                    layout.apply(chunk_entity, chunk, starts)
 
                 chunk_entities.append(chunk_entity)
 

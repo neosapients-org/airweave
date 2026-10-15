@@ -176,7 +176,8 @@ class MistralOcrClient:
             await self._delete_file(file_resp.id)
 
             logger.debug(f"OCR completed for {file_name}")
-            return OcrResult(chunk=chunk, markdown=markdown)
+            pages = self._page_markdowns(ocr_resp) if self._is_pdf(chunk) else None
+            return OcrResult(chunk=chunk, markdown=markdown, pages=pages)
 
         except Exception as exc:
             logger.error(f"OCR failed for {file_name}: {exc}")
@@ -266,6 +267,20 @@ class MistralOcrClient:
             return ""
 
         return "\n\n".join(markdown_parts)
+
+    @staticmethod
+    def _is_pdf(chunk: FileChunk) -> bool:
+        """Whether the chunk is (part of) a PDF, whose pages become page markers."""
+        return os.path.splitext(chunk.original_path)[1].lower() == ".pdf"
+
+    @staticmethod
+    def _page_markdowns(ocr_resp: Any) -> list[str]:
+        """Return each page's markdown (``""`` for a page without text).
+
+        Kept in response order, the order ``_extract_markdown`` joins; Mistral returns the
+        pages of a document in page order.
+        """
+        return [getattr(p, "markdown", "") or "" for p in getattr(ocr_resp, "pages", None) or []]
 
     async def _delete_file(self, file_id: str) -> None:
         """Best-effort deletion of uploaded file from Mistral."""
