@@ -76,6 +76,16 @@ class TaxonomyProcessor:
         self._timeout = timeout_seconds
         self._tally = tally
 
+    @property
+    def resolver(self) -> TaxonomyResolver:
+        """The resolver, shared with the re-label runner."""
+        return self._resolver
+
+    @property
+    def pool(self) -> ClassifierPool:
+        """The classifier pool, shared with the re-label runner."""
+        return self._pool
+
     def close(self) -> None:
         """Release the classifier threads and cache files (worker shutdown); blocking."""
         self._pool.close()

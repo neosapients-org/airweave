@@ -21,6 +21,7 @@ from airweave.api.v1.endpoints import (
     source_rate_limits,
     sources,
     sync,
+    taxonomy_admin,
     usage,
     users,
     webhooks,
@@ -55,6 +56,7 @@ api_router.include_router(
     neo_file_uploads.router, prefix="/file-uploads", tags=["neo-file-uploads"]
 )
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
+api_router.include_router(taxonomy_admin.router, prefix="/admin", tags=["admin"])
 api_router.include_router(search.admin_router, prefix="/admin/collections", tags=["admin"])
 api_router.include_router(
     browse_tree.router,

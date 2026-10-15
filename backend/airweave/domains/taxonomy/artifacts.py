@@ -120,19 +120,23 @@ class TaxonomyResolver:
         self._models: Dict[Tuple[str, str], Tuple[Path, Path]] = {}
         self._lock = asyncio.Lock()
 
-    async def resolve(self, collection_readable_id: str) -> Optional[ResolvedTaxonomy]:
+    async def resolve(
+        self, collection_readable_id: str, fresh: bool = False
+    ) -> Optional[ResolvedTaxonomy]:
         """Return the collection's verified taxonomy, or None when it has no active file.
 
         The answer (including a failure) is cached for ``TAXONOMY_ACTIVE_CACHE_SECONDS``, so a
-        collection switches version, or recovers, on a sync after that.
+        collection switches version, or recovers, on a sync after that. ``fresh`` skips the
+        cached answer and reads the active file again (a re-label job starting right after the
+        platform rewrote the file must not label with the previous version).
         """
         now = self._clock()
         cached = self._active.get(collection_readable_id)
-        if cached is not None and cached[0] > now:
+        if not fresh and cached is not None and cached[0] > now:
             return self._unwrap(cached[1])
         async with self._lock:
             cached = self._active.get(collection_readable_id)
-            if cached is not None and cached[0] > self._clock():
+            if not fresh and cached is not None and cached[0] > self._clock():
                 return self._unwrap(cached[1])
             try:
                 result: Any = await self._resolve(collection_readable_id)

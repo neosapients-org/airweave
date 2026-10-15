@@ -69,6 +69,8 @@ class TemporalWorker:
         )
         self._worker: Worker | None = None
         self._state = WorkerState()
+        self._relabel_stop = asyncio.Event()
+        self._relabel_task: asyncio.Task | None = None
 
         registry = CollectorRegistry()
         if settings.TAXONOMY_ENABLED:
@@ -92,6 +94,8 @@ class TemporalWorker:
             logger.warning(f"Failed to start control server (metrics unavailable): {e}")
 
         from airweave.domains.temporal.client import get_client as get_temporal_client
+
+        self._start_relabel_runner()
 
         client = await get_temporal_client(runtime=self._runtime)
         logger.info(f"Starting Temporal worker on task queue: {self._config.task_queue}")
@@ -132,12 +136,39 @@ class TemporalWorker:
             self._state.running = False
             await self._worker.shutdown()
 
+        await self._stop_relabel_runner()
         await self._close_taxonomy_pool()
         await self._control_server.stop()
 
         from airweave.domains.temporal.client import close as close_temporal_client
 
         await close_temporal_client()
+
+    def _start_relabel_runner(self) -> None:
+        """Run the re-label sweeper in this process: the taxonomy volume and pool are here."""
+        from airweave.core import container as container_mod
+
+        runner = getattr(getattr(container_mod, "container", None), "relabel_runner", None)
+        if runner is None or self._relabel_task is not None:
+            return
+        self._relabel_stop.clear()
+        self._relabel_task = asyncio.create_task(runner.run_forever(self._relabel_stop))
+        logger.info("Re-label job runner started")
+
+    async def _stop_relabel_runner(self) -> None:
+        """Stop sweeping.
+
+        A job still running keeps its lease until it expires, then resumes from its checkpoint
+        on another worker (or on this one after a restart).
+        """
+        task, self._relabel_task = self._relabel_task, None
+        if task is None:
+            return
+        self._relabel_stop.set()
+        try:
+            await asyncio.wait_for(task, timeout=10)
+        except Exception as e:
+            logger.warning(f"Re-label runner did not stop cleanly: {e}")
 
     async def _close_taxonomy_pool(self) -> None:
         """Close the classifier threads and delete their cache files, after the worker drained.

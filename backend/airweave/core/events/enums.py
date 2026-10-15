@@ -77,6 +77,12 @@ class SearchEventType(str, Enum):
     TOOL_CALLED = "search.tool_called"  # agentic only
 
 
+class TaxonomyEventType(str, Enum):
+    """Taxonomy event types (contract 6.2)."""
+
+    RELABEL_COMPLETED = "taxonomy.relabel.completed"
+
+
 # Union of all known event types.
 # DomainEvent.event_type is typed to this, ensuring only known values are used.
 EventType = (
@@ -88,6 +94,7 @@ EventType = (
     | SourceConnectionEventType
     | OrganizationEventType
     | SearchEventType
+    | TaxonomyEventType
 )
 
 # Ordered tuple of every event-type enum class.
@@ -101,4 +108,5 @@ ALL_EVENT_TYPE_ENUMS: tuple[type[Enum], ...] = (
     SourceConnectionEventType,
     OrganizationEventType,
     SearchEventType,
+    TaxonomyEventType,
 )

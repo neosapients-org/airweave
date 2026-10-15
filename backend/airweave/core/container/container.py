@@ -276,6 +276,11 @@ class Container:
     # closes its classifier threads and cache files on shutdown
     taxonomy_processor: Optional[Any] = None
 
+    # Re-label jobs (None while TAXONOMY_ENABLED is off). The API accepts and reports on jobs
+    # through the service; the worker claims and runs them through the runner.
+    relabel_service: Optional[Any] = None
+    relabel_runner: Optional[Any] = None
+
     # -----------------------------------------------------------------
     # Convenience methods
     # -----------------------------------------------------------------

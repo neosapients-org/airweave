@@ -10,7 +10,7 @@ Design principles:
 - Testable: can unit test factory logic with mock settings
 """
 
-from typing import Optional
+from typing import Any, Optional, Tuple
 
 from prometheus_client import CollectorRegistry
 
@@ -381,6 +381,7 @@ def create_container(settings: Settings) -> Container:
     # Sync factory + service
     # -----------------------------------------------------------------
     taxonomy_processor = _create_taxonomy_processor(settings, dense_embedder)
+    relabel_service, relabel_runner = _create_relabel(settings, taxonomy_processor, event_bus)
     sync_factory = SyncFactory(
         # Repositories
         sc_repo=source_deps["sc_repo"],
@@ -625,6 +626,8 @@ def create_container(settings: Settings) -> Container:
         agentic_search=search_deps["agentic_search"],
         browse_service=search_deps["browse_service"],
         taxonomy_processor=taxonomy_processor,
+        relabel_service=relabel_service,
+        relabel_runner=relabel_runner,
     )
 
 
@@ -1415,6 +1418,45 @@ def _create_taxonomy_processor(
     return TaxonomyProcessor(
         resolver=resolver, pool=pool, timeout_seconds=settings.TAXONOMY_CLASSIFY_TIMEOUT_SECONDS
     )
+
+
+def _create_relabel(
+    settings: Settings, taxonomy_processor: Optional[TaxonomyProcessor], event_bus: Any
+) -> Tuple[Optional[Any], Optional[Any]]:
+    """The re-label service (API side) and runner (worker side), or ``(None, None)`` while off.
+
+    Both use the job table and Vespa's document API; the runner shares the sync's resolver and
+    classifier pool, so a job classifies exactly as a sync does.
+    """
+    if taxonomy_processor is None:
+        return None, None
+    from airweave.domains.taxonomy.relabel.chunk_store import VespaChunkStore
+    from airweave.domains.taxonomy.relabel.repository import SqlJobRepository
+    from airweave.domains.taxonomy.relabel.runner import RelabelRunner
+    from airweave.domains.taxonomy.relabel.service import RelabelService
+
+    repo = SqlJobRepository()
+    service = RelabelService(
+        repo,
+        VespaChunkStore,
+        configured_cap_usd=settings.RELABEL_SPEND_CAP_USD,
+        usd_per_thousand=settings.RELABEL_USD_PER_THOUSAND_CHUNKS,
+    )
+    runner = RelabelRunner(
+        repo,
+        VespaChunkStore,
+        taxonomy_processor.resolver,
+        taxonomy_processor.pool,
+        event_bus,
+        batch_size=settings.RELABEL_BATCH_SIZE,
+        page_size=settings.RELABEL_PAGE_SIZE,
+        write_concurrency=settings.RELABEL_WRITE_CONCURRENCY,
+        lease_seconds=settings.RELABEL_LEASE_SECONDS,
+        classify_timeout=settings.TAXONOMY_CLASSIFY_TIMEOUT_SECONDS,
+        usd_per_thousand=settings.RELABEL_USD_PER_THOUSAND_CHUNKS,
+        resume_interval=settings.RELABEL_RESUME_INTERVAL_SECONDS,
+    )
+    return service, runner
 
 
 def _create_storage_backend(settings: Settings):  # -> StorageBackend
