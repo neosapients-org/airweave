@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
+from airweave.core.logging import logger
 from airweave.domains.taxonomy.artifacts import ResolvedTaxonomy
 
 PASSAGE_CHARS = 400
@@ -136,7 +137,7 @@ class PackageGateway:
                 taxonomy_id=tenant_id,
                 domain=None,
                 version=candidate_version,
-                log=lambda m: None,
+                log=lambda m: logger.info(f"[Taxonomy build] {m}"),
             )
         except RuntimeError as e:
             if "cost cap" in str(e):
