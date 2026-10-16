@@ -130,9 +130,6 @@ class PackageGateway:
         cfg = self._job_config(work_dir, spend_cap_usd, tenant_id=tenant_id)
         if corpus_description:
             cfg["llm"]["corpus_description"] = corpus_description
-        # No ``group`` key: the package then groups by document, so its leave-group-out
-        # calibration has many groups even in a collection with a single source.
-        cfg.setdefault("input", {})["fields"] = {"segment": "source", "doc_type": "entity_type"}
         store = LocalTaxonomyStore(work_dir / "store")
         engine = TaxonomyEngine(
             cfg, store=store, embed_transport=self._embed, llm_transport=self._llm
@@ -249,6 +246,10 @@ class PackageGateway:
         if self._cache_dir is not None and tenant_id:
             root = self._cache_dir / hashlib.sha256(tenant_id.encode()).hexdigest()[:32]
             root.mkdir(parents=True, exist_ok=True)
+        # No ``group`` key: the package then groups by document, so its leave-group-out calibration
+        # and a new topic's "at least two groups" rule count documents, not sources. Without this a
+        # collection with a single source never gets a new topic (every cluster has one group).
+        cfg.setdefault("input", {})["fields"] = {"segment": "source", "doc_type": "entity_type"}
         cfg.setdefault("embedding", {})["cache_path"] = str(root / "embeddings.sqlite")
         cfg.setdefault("llm", {}).update(
             {"cache_dir": str(root / "llm_cache"), "max_cost_usd": float(cap)}

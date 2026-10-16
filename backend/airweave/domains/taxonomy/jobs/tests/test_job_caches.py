@@ -28,3 +28,13 @@ class TestJobCaches:
         gw = PackageGateway({}, cache_dir=str(tmp_path / "keep"))
         cfg = gw._job_config(tmp_path / "job", 1.0)
         assert cfg["llm"]["cache_dir"] == str(tmp_path / "job" / "llm_cache")
+
+
+class TestGrouping:
+    def test_both_jobs_group_by_document_not_by_source(self, tmp_path):
+        from airweave.domains.taxonomy.jobs.gateway import PackageGateway
+
+        stale = {"input": {"fields": {"group": "source", "segment": "x"}}}
+        for base in (None, stale):
+            cfg = PackageGateway({})._job_config(tmp_path, 1.0, base=base)
+            assert cfg["input"]["fields"] == {"segment": "source", "doc_type": "entity_type"}
