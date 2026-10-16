@@ -218,6 +218,8 @@ class PackageGateway:
         folder = Path(wave.new_taxonomy_path)
         final = json.loads((folder / "final_taxonomy.json").read_text())
         files = self._allowed_files(folder, final)
+        if place_new_topics_in_families(final, _load_centroids(folder)):
+            files["final_taxonomy.json"] = json.dumps(final, indent=2).encode()
         # the candidate keeps the serving version's own taxonomy.yaml (same embedding, same policy)
         files["taxonomy.yaml"] = (serving.local_path / "taxonomy.yaml").read_bytes()
         cost = _ledger_total(
@@ -382,6 +384,54 @@ class PackageGateway:
             },
             "cost_usd": cost,
         }
+
+
+def _load_centroids(folder: Path) -> Any:
+    import numpy as np
+
+    return np.load(folder / "category_centroids.npy")
+
+
+def place_new_topics_in_families(final: Dict[str, Any], centroids: Any) -> bool:
+    """Give each topic a wave added, which the package leaves without a family, its nearest family.
+
+    The nearest family is the one of the existing topic whose centroid is closest (cosine). The
+    registry needs every topic in a family, and a reviewer can still move a topic later.
+
+    Args:
+        final: ``final_taxonomy.json`` as a dict; changed in place.
+        centroids: One row per topic, in the order of ``final["categories"]``.
+
+    Returns:
+        True when something was changed.
+
+    Raises:
+        ValueError: When the rows do not match the topics, or no topic has a family.
+    """
+    import numpy as np
+
+    categories = final["categories"]
+    missing = [i for i, c in enumerate(categories) if not c.get("broad_family_id")]
+    if not missing:
+        return False
+    if len(centroids) != len(categories):
+        raise ValueError("the candidate's centroids do not match its topics")
+    families = {f["broad_family_id"]: f for f in final.get("broad_families", [])}
+    homed = [i for i, c in enumerate(categories) if c.get("broad_family_id") in families]
+    if not homed:
+        raise ValueError("no existing topic has a family to place a new topic in")
+    matrix = np.asarray(centroids, dtype=np.float64)
+    matrix = matrix / np.where(
+        np.linalg.norm(matrix, axis=1, keepdims=True) == 0,
+        1,
+        np.linalg.norm(matrix, axis=1, keepdims=True),
+    )
+    for i in missing:
+        nearest = homed[int(np.argmax(matrix[homed] @ matrix[i]))]
+        family = categories[nearest]["broad_family_id"]
+        categories[i]["broad_family_id"] = family
+        categories[i]["broad_family"] = families[family]["name"]
+    return True
 
 
 def translate_package_error(error: Exception) -> Exception:
