@@ -244,5 +244,8 @@ class SqlJobRepository:
     async def _returning(self, statement: Update) -> Optional[RelabelJob]:
         async with self._session() as db:
             row = (await db.execute(statement)).scalar_one_or_none()
+            # Read the row before the commit: a commit expires it, and reading an expired
+            # attribute outside the greenlet raises MissingGreenlet (found on a real database).
+            job = to_job(row) if row is not None else None
             await db.commit()
-            return to_job(row) if row is not None else None
+            return job

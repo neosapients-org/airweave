@@ -117,3 +117,42 @@ class TestMigration:
         for column in TaxonomyRelabelJob.__table__.columns:
             assert f'"{column.name}"' in source, column.name
         assert "uq_relabel_job_active_collection" in source and "uq_relabel_job_key" in source
+
+
+class TestReturningReadsBeforeCommit:
+    """A commit expires the row; reading it afterwards fails outside the greenlet on a real database."""
+
+    async def test_the_row_is_read_before_the_commit(self):
+        from types import SimpleNamespace
+        from uuid import uuid4
+
+        from airweave.domains.taxonomy.relabel import repository as repo_mod
+
+        committed = {"yes": False}
+        values = {c: None for c in repo_mod._COLUMNS}
+        values["id"] = uuid4()
+
+        class ExpiringRow:
+            def __getattr__(self, name):
+                if committed["yes"]:
+                    raise RuntimeError("MissingGreenlet: the row expired at commit")
+                return values[name]
+
+        class Db:
+            async def execute(self, _statement):
+                return SimpleNamespace(scalar_one_or_none=lambda: ExpiringRow())
+
+            async def commit(self):
+                committed["yes"] = True
+
+        class Session:
+            async def __aenter__(self):
+                return Db()
+
+            async def __aexit__(self, *_):
+                return False
+
+        repo = repo_mod.SqlJobRepository(session=Session)
+        job = await repo._returning(object())
+
+        assert job is not None and job.id == values["id"]
