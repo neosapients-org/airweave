@@ -185,3 +185,37 @@ class TestSettings:
 
         with pytest.raises(ValidationError, match=name):
             _build_settings(monkeypatch, {name: "0"})
+
+
+class TestReturningReadsBeforeCommit:
+    """A commit expires the row; reading it afterwards fails outside the greenlet on a real database."""
+
+    async def test_the_row_is_read_before_the_commit(self):
+        committed = {"yes": False}
+        values = {c: None for c in r._COLUMNS}
+        values.update(params={}, id=uuid4())
+
+        class ExpiringRow:
+            def __getattr__(self, name):
+                if committed["yes"]:
+                    raise RuntimeError("MissingGreenlet: the row expired at commit")
+                return values[name]
+
+        class Db:
+            async def execute(self, _statement):
+                return SimpleNamespace(scalar_one_or_none=lambda: ExpiringRow())
+
+            async def commit(self):
+                committed["yes"] = True
+
+        class Session:
+            async def __aenter__(self):
+                return Db()
+
+            async def __aexit__(self, *_):
+                return False
+
+        repo = r.SqlTaxonomyJobRepository(session=Session)
+        record = await repo._returning(object())  # the statement is not inspected by the fake
+
+        assert record is not None and record.id == values["id"]

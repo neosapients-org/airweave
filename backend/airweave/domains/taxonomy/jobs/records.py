@@ -387,8 +387,11 @@ class SqlTaxonomyJobRepository:
     async def _returning(self, statement: Update) -> Optional[TaxonomyJobRecord]:
         async with self._session() as db:
             row = (await db.execute(statement)).scalar_one_or_none()
+            # Read the row before the commit: a commit expires it, and reading an expired
+            # attribute outside the greenlet raises MissingGreenlet (found on a real database).
+            record = to_record(row) if row is not None else None
             await db.commit()
-            return to_record(row) if row is not None else None
+            return record
 
 
 __all__: List[str] = [
