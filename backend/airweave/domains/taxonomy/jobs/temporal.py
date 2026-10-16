@@ -24,9 +24,10 @@ with workflow.unsafe.imports_passed_through():
 
 
 BUSY = "busy"
-# A lease is held for TAXONOMY_JOBS_LEASE_SECONDS (300 by default). A dead worker's lease expires after
-# that, so the workflow waits a little longer and asks again, instead of ending while the job row still
-# says RUNNING (it did once: the first attempt died holding the lease and the second saw "busy").
+# A lease is held for TAXONOMY_JOBS_LEASE_SECONDS (300 by default). A dead worker's lease
+# expires after that, so the workflow waits a little longer and asks again, instead of ending
+# while the job row still says RUNNING (it did once: the first attempt died holding the lease and
+# the second saw "busy").
 BUSY_WAIT = timedelta(seconds=330)
 BUSY_ATTEMPTS = 6
 

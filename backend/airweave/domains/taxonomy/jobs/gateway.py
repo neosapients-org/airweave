@@ -384,8 +384,10 @@ class PackageGateway:
 
 
 def translate_package_error(error: Exception) -> Exception:
-    """The package's "corpus too small" (a calibration that has nothing to calibrate on) as the job's
-    own "too little text", so the tab shows a sentence instead of a class name."""
+    """The package's "corpus too small" as the job's own "too little text".
+
+    A calibration that has nothing to calibrate on shows the tab a sentence, not a class name.
+    """
     if type(error).__name__ == "CorpusTooSmall":
         return TooFewDocuments(f"not enough text yet: {error}. Add more documents and try again")
     return error

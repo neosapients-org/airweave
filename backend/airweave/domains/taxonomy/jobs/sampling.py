@@ -28,7 +28,7 @@ class TooFewDocuments(Exception):
 
 
 def _order_key(collection_id: UUID, document_id: str) -> str:
-    """Seeded by the collection, not the job: a re-run on the same documents samples the same ones."""
+    """Seeded by the collection, not the job: a re-run samples the same documents."""
     return hashlib.sha256(f"{collection_id}:{document_id}".encode()).hexdigest()
 
 
