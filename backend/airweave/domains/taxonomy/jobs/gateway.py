@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Seque
 
 from airweave.core.logging import logger
 from airweave.domains.taxonomy.artifacts import ResolvedTaxonomy
+from airweave.domains.taxonomy.jobs.sampling import TooFewDocuments
 
 PASSAGE_CHARS = 400
 PASSAGES_PER_CATEGORY = 3
@@ -139,6 +140,11 @@ class PackageGateway:
                 version=candidate_version,
                 log=lambda m: logger.info(f"[Taxonomy build] {m}"),
             )
+        except ValueError as e:
+            mapped = translate_package_error(e)
+            if mapped is e:
+                raise
+            raise mapped from e
         except RuntimeError as e:
             if "cost cap" in str(e):
                 raise SpendCapReached(str(e)) from e
@@ -362,6 +368,14 @@ class PackageGateway:
             },
             "cost_usd": cost,
         }
+
+
+def translate_package_error(error: Exception) -> Exception:
+    """The package's "corpus too small" (a calibration that has nothing to calibrate on) as the job's
+    own "too little text", so the tab shows a sentence instead of a class name."""
+    if type(error).__name__ == "CorpusTooSmall":
+        return TooFewDocuments(f"not enough text yet: {error}. Add more documents and try again")
+    return error
 
 
 def _ledger_total(path: Path) -> float:

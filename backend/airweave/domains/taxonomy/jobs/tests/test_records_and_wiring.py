@@ -253,3 +253,22 @@ class TestWorkflowWaitsForAHeldLease:
 
         assert await t.run_until_not_busy(run, sleep, attempts=3) == "busy"
         assert len(calls) == 3
+
+
+class TestPackageErrorsAreTranslated:
+    def test_corpus_too_small_becomes_too_little_text(self):
+        from airweave.domains.taxonomy.jobs.gateway import translate_package_error
+        from airweave.domains.taxonomy.jobs.sampling import TooFewDocuments
+
+        class CorpusTooSmall(ValueError):  # the package's class, by name: the package is not imported here
+            pass
+
+        mapped = translate_package_error(CorpusTooSmall("no category has the 4 members needed to calibrate"))
+        assert isinstance(mapped, TooFewDocuments)
+        assert "not enough text yet" in str(mapped) and "Add more documents" in str(mapped)
+
+    def test_any_other_error_is_left_alone(self):
+        from airweave.domains.taxonomy.jobs.gateway import translate_package_error
+
+        error = ValueError("something else")
+        assert translate_package_error(error) is error
