@@ -94,6 +94,7 @@ class PackageGateway:
         embed_transport: Optional[Callable[..., Any]] = None,
         llm_transport: Optional[Callable[..., Any]] = None,
         reviewers: Optional[Tuple[Any, Any]] = None,
+        cache_dir: Optional[str] = None,
     ) -> None:
         """``build_config`` is the package's YAML as a dict; transports default to its own clients.
 
@@ -103,6 +104,10 @@ class PackageGateway:
         self._embed = embed_transport
         self._llm = llm_transport
         self._reviewers = reviewers
+        # Empty = every job starts with empty caches (and pays again for a re-run). Set = one
+        # embedding file and one LLM cache per tenant, kept between jobs: the same text is never
+        # paid for twice and a re-run on the same documents reuses the earlier answers.
+        self._cache_dir = Path(cache_dir) if cache_dir else None
 
     # --------------------------------------------------------------- discover
 
@@ -122,7 +127,7 @@ class PackageGateway:
             TaxonomyEngine,
         )
 
-        cfg = self._job_config(work_dir, spend_cap_usd)
+        cfg = self._job_config(work_dir, spend_cap_usd, tenant_id=tenant_id)
         if corpus_description:
             cfg["llm"]["corpus_description"] = corpus_description
         # No ``group`` key: the package then groups by document, so its leave-group-out
@@ -182,7 +187,7 @@ class PackageGateway:
         from taxonomy_classifier.taxonomy import artifacts  # type: ignore[import-not-found]
 
         cfg = copy.deepcopy(serving.config)  # the serving version's own taxonomy.yaml
-        job_cfg = self._job_config(work_dir, spend_cap_usd, base=cfg)
+        job_cfg = self._job_config(work_dir, spend_cap_usd, base=cfg, tenant_id=serving.tenant_id)
         base = artifacts.load(serving.local_path)
         store = LocalTaxonomyStore(work_dir / "store")
         engine = TaxonomyEngine(
@@ -232,13 +237,21 @@ class PackageGateway:
     # ---------------------------------------------------------------- helpers
 
     def _job_config(
-        self, work_dir: Path, cap: float, base: Optional[Mapping[str, Any]] = None
+        self,
+        work_dir: Path,
+        cap: float,
+        base: Optional[Mapping[str, Any]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """The package's config with this job's paths and spend cap (local, never shipped)."""
         cfg = copy.deepcopy(dict(base if base is not None else self._config))
-        cfg.setdefault("embedding", {})["cache_path"] = str(work_dir / "embeddings.sqlite")
+        root = work_dir
+        if self._cache_dir is not None and tenant_id:
+            root = self._cache_dir / hashlib.sha256(tenant_id.encode()).hexdigest()[:32]
+            root.mkdir(parents=True, exist_ok=True)
+        cfg.setdefault("embedding", {})["cache_path"] = str(root / "embeddings.sqlite")
         cfg.setdefault("llm", {}).update(
-            {"cache_dir": str(work_dir / "llm_cache"), "max_cost_usd": float(cap)}
+            {"cache_dir": str(root / "llm_cache"), "max_cost_usd": float(cap)}
         )
         return cfg
 

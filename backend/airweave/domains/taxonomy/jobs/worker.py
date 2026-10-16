@@ -42,7 +42,7 @@ def build_runner(container: Any) -> Any:
         SqlTaxonomyJobRepository(),
         VespaChunkStore,
         CandidateWriter(storage, settings.TAXONOMY_S3_PREFIX),
-        PackageGateway(build_config),
+        PackageGateway(build_config, cache_dir=settings.TAXONOMY_JOBS_CACHE_DIR or None),
         container.taxonomy_processor.resolver,
         work_dir=settings.TAXONOMY_JOBS_WORK_DIR,
         lease_seconds=settings.TAXONOMY_JOBS_LEASE_SECONDS,

@@ -182,6 +182,10 @@ class Settings(BaseSettings):
     # lower value here (see the T1 test plan, run D).
     DISCOVER_MIN_CHUNKS: int = 100
     EVOLUTION_SPEND_CAP_USD: float = 0.0
+    # Keeps the jobs' embedding and LLM caches between jobs, one folder per tenant (empty = each job
+    # starts empty). The folders hold customer text and the model's answers about it: put them on
+    # an encrypted volume and delete them with the tenant's data.
+    TAXONOMY_JOBS_CACHE_DIR: str = ""
 
     # Search: honour OR between a request's filter groups (contract C8). False keeps the
     # upstream behaviour, where every user filter group is merged into one AND group.

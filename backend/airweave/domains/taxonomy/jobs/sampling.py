@@ -27,8 +27,9 @@ class TooFewDocuments(Exception):
     """The collection has less text than a job needs (too few documents, or too few chunks)."""
 
 
-def _order_key(candidate_version: str, document_id: str) -> str:
-    return hashlib.sha256(f"{candidate_version}:{document_id}".encode()).hexdigest()
+def _order_key(collection_id: UUID, document_id: str) -> str:
+    """Seeded by the collection, not the job: a re-run on the same documents samples the same ones."""
+    return hashlib.sha256(f"{collection_id}:{document_id}".encode()).hexdigest()
 
 
 def to_package_chunk(row: ChunkRow) -> Dict[str, Any]:
@@ -47,7 +48,6 @@ def to_package_chunk(row: ChunkRow) -> Dict[str, Any]:
 async def sample_documents(
     store: ChunkStore,
     collection_id: UUID,
-    candidate_version: str,
     documents: int,
     max_chunks: int,
     min_documents: int,
@@ -64,7 +64,7 @@ async def sample_documents(
         raise TooFewDocuments(
             f"{len(seen)} substantive documents, a job needs at least {min_documents}"
         )
-    chosen = sorted(seen, key=lambda d: _order_key(candidate_version, d))[:documents]
+    chosen = sorted(seen, key=lambda d: _order_key(collection_id, d))[:documents]
     rank = {d: i for i, d in enumerate(chosen)}
     by_document = await _read_documents(store, collection_id, rank)
     sample: List[Dict[str, Any]] = []

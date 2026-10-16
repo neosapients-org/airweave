@@ -198,7 +198,6 @@ class TaxonomyJobRunner:
                 return await sample_documents(
                     store,
                     job.collection_id,
-                    job.candidate_version,
                     size,
                     self._max_chunks,
                     self._min_docs,

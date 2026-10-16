@@ -116,6 +116,15 @@ class TestDiscover:
         assert call["tenant_id"] == TENANT and call["candidate_version"] == CANDIDATE
         assert len({c["document_id"] for c in call["chunks"]}) == 5
 
+    async def test_sample_does_not_depend_on_the_candidate_version(self, tmp_path):
+        a = make(tmp_path / "a")
+        b = make(tmp_path / "b")
+        await run(a[0], a[1], params={"sample_size": 6})
+        await run(b[0], b[1], params={"sample_size": 6}, candidate_version="v-other")
+        ids = lambda gw: sorted({c["document_id"] for c in gw.calls[0]["chunks"]})  # noqa: E731
+        assert b[4].calls[0]["candidate_version"] == "v-other"
+        assert ids(a[4]) == ids(b[4])
+
     async def test_sample_is_deterministic_for_a_candidate_version(self, tmp_path):
         a = make(tmp_path / "a")
         b = make(tmp_path / "b")
