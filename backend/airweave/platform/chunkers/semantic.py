@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 
+from airweave.core.config import settings
 from airweave.core.logging import logger
 from airweave.domains.sync_pipeline.async_helpers import run_in_thread_pool
 from airweave.domains.sync_pipeline.exceptions import SyncFailureError
@@ -23,7 +24,8 @@ class SemanticChunker(BaseChunker):
 
     # Configuration constants
     MAX_TOKENS_PER_CHUNK = 8192  # OpenAI text-embedding-3-small hard limit (safety net)
-    SEMANTIC_CHUNK_SIZE = 4096  # Soft target for semantic groups (better search quality)
+    # Soft target for semantic groups (better search quality); CHUNK_TARGET_TOKENS, default 4096
+    SEMANTIC_CHUNK_SIZE = settings.CHUNK_TARGET_TOKENS
     OVERLAP_TOKENS = 128  # Token overlap between chunks
 
     # SemanticChunker configuration

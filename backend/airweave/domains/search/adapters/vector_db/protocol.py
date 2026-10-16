@@ -2,6 +2,7 @@
 
 from typing import Optional, Protocol
 
+from airweave.domains.search.types.boost import TopicBoost
 from airweave.domains.search.types.embeddings import QueryEmbeddings
 from airweave.domains.search.types.filters import FilterGroup
 from airweave.domains.search.types.plan import SearchPlan
@@ -24,6 +25,7 @@ class VectorDBProtocol(Protocol):
         embeddings: QueryEmbeddings,
         collection_id: str,
         acl_principals: Optional[list[str]] = None,
+        boost: Optional[TopicBoost] = None,
     ) -> CompiledQuery:
         """Compile plan and embeddings into a DB-specific query.
 
@@ -35,6 +37,7 @@ class VectorDBProtocol(Protocol):
                 None = no AC sources in collection (skip filtering).
                 [] = user has no principals (only public entities visible).
                 ["user:x", "group:y"] = match these principals.
+            boost: Optional topic boost; None ranks exactly as without it.
 
         Returns:
             CompiledQuery with raw (full) and display (no embeddings) versions.
@@ -59,12 +62,15 @@ class VectorDBProtocol(Protocol):
         self,
         filter_groups: list[FilterGroup],
         collection_id: str,
+        name_substring: Optional[str] = None,
     ) -> int:
         """Count entities matching filters without retrieving content.
 
         Args:
             filter_groups: Filter groups to narrow the count.
             collection_id: Collection readable ID for tenant filtering.
+            name_substring: Optional case-insensitive substring match against
+                the entity name (proper substring, not token-match).
 
         Returns:
             Total number of matching entities.
@@ -77,6 +83,7 @@ class VectorDBProtocol(Protocol):
         collection_id: str,
         limit: int = 50,
         offset: int = 0,
+        name_substring: Optional[str] = None,
     ) -> list[SearchResult]:
         """Retrieve entities matching filters without embeddings or ranking.
 
@@ -85,6 +92,8 @@ class VectorDBProtocol(Protocol):
             collection_id: Collection readable ID for tenant filtering.
             limit: Maximum number of results to return.
             offset: Number of results to skip.
+            name_substring: Optional case-insensitive substring match against
+                the entity name (proper substring, not token-match).
 
         Returns:
             List of matching results (unranked).

@@ -3,7 +3,7 @@
 Wraps environment variables and provides defaults.
 """
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import PostgresDsn, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings
@@ -36,6 +36,9 @@ _BANNED_SUPERUSER_EMAILS: frozenset[str] = frozenset(
     }
 )
 
+# Fallback base URL used by every Mistral SDK client when MISTRAL_BASE_URL is unset.
+MISTRAL_DEFAULT_BASE_URL: str = "https://api.mistral.ai"
+
 
 class Settings(BaseSettings):
     """Pydantic settings class.
@@ -63,13 +66,19 @@ class Settings(BaseSettings):
         RUN_ALEMBIC_MIGRATIONS (bool): Whether to run the alembic migrations.
         RUN_DB_SYNC (bool): Whether to run the system sync to process sources,
             destinations, and entity types.
-        REDIS_HOST (str): The Redis server hostname.
-        REDIS_PORT (int): The Redis server port.
+        REDIS_HOST (str): The Redis server hostname (single-host mode).
+        REDIS_PORT (int): The Redis server port (single-host mode).
         REDIS_PASSWORD (Optional[str]): The Redis password (if authentication is enabled).
         REDIS_DB (int): The Redis database number.
+        REDIS_NODES (Optional[str]): JSON list of Sentinel nodes ``[[host, port], ...]``.
+            When set together with ``REDIS_SERVICE_NAME``, enables Sentinel mode and
+            ``REDIS_HOST``/``REDIS_PORT`` are ignored.
+        REDIS_SERVICE_NAME (Optional[str]): The Sentinel master name to discover.
         TEXT2VEC_INFERENCE_URL (str): The URL for text2vec-transformers inference service.
         OPENAI_API_KEY (Optional[str]): The OpenAI API key.
         MISTRAL_API_KEY (Optional[str]): The Mistral AI API key.
+        MISTRAL_BASE_URL (Optional[str]): Override base URL for all Mistral SDK
+            clients (embedder, OCR, LLM). Unset → ``MISTRAL_DEFAULT_BASE_URL``.
         EMBEDDING_DIMENSIONS (int): Embedding dimensions for the stack (provider, Vespa).
         FIRECRAWL_API_KEY (Optional[str]): The FireCrawl API key.
         TEMPORAL_HOST (str): The host of the Temporal server.
@@ -126,6 +135,62 @@ class Settings(BaseSettings):
     CLASSIFICATION_BATCH_SIZE: int = 25
     CLASSIFICATION_RATE_LIMIT_PER_HOUR: int = 1000  # Max documents classified per org per hour
 
+    # Chunking (contract airweave-neo/1, section 3). Every default keeps upstream behaviour.
+    # The target counts the chunk body including its overlap; the header line is not counted.
+    CHUNK_TARGET_TOKENS: int = 4096
+    CHUNK_OVERLAP_TOKENS: int = 0  # sentence_pack only; the semantic chunker has no overlap
+    CHUNK_HEADER_ENABLED: bool = False
+    CHUNKER_MODE: Literal["semantic", "sentence_pack"] = "semantic"
+    CHUNKER_VERSION: str = "1"  # bumped only when the chunker's code changes
+
+    # Topic labels from the taxonomy classifier (contract section 8). There is deliberately
+    # no taxonomy version setting: the version is resolved per sync from the collection.
+    TAXONOMY_ENABLED: bool = False
+    TAXONOMY_S3_BUCKET: Optional[str] = None
+    TAXONOMY_S3_PREFIX: str = "taxonomy/"
+    TAXONOMY_ACTIVE_CACHE_SECONDS: int = 300
+    TAXONOMY_LOCAL_DIR: str = "/tmp/airweave/taxonomy"
+    TAXONOMY_EMBED_CACHE_DIR: str = "/tmp/airweave/taxonomy-cache"  # one SQLite file per thread
+    TAXONOMY_EMBED_CACHE_MAX_MB: int = 512  # a thread starts a new cache file past this; 0 = never
+    TAXONOMY_CLASSIFY_THREADS: int = 2
+    TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: int = 60
+
+    # Re-label jobs (P7 design section 5). The cap is the deployment's approved spend ceiling per
+    # job in USD; 0 approves nothing, so no job can start until the owner sets it.
+    RELABEL_SPEND_CAP_USD: float = 0.0
+    RELABEL_USD_PER_THOUSAND_CHUNKS: float = 0.006  # embedding cost of classifying 1,000 chunks
+    RELABEL_BATCH_SIZE: int = 64  # chunks per classifier call
+    RELABEL_PAGE_SIZE: int = 100  # chunks per Vespa visit page (also the unresolved scroll's)
+    RELABEL_WRITE_CONCURRENCY: int = 8  # parallel conditional updates
+    RELABEL_LEASE_SECONDS: int = 120  # a running job renews its lease; an expired one is resumed
+    RELABEL_RESUME_INTERVAL_SECONDS: int = 60  # how often this process looks for jobs to resume
+
+    # Discover and propose jobs (P7 design sections 6 and 12). They run on their own Temporal task
+    # queue in a separate Deployment, never in the sync workers. Spend caps default to 0, which
+    # approves nothing (a paid run also needs the owner's approval).
+    TAXONOMY_JOBS_ENABLED: bool = False  # the API enqueues, the jobs worker runs; both need this
+    TAXONOMY_JOBS_TASK_QUEUE: str = "airweave-taxonomy-jobs-queue"
+    TAXONOMY_JOBS_WORK_DIR: str = "/tmp/airweave/taxonomy-jobs"  # scratch; holds customer text
+    TAXONOMY_JOBS_BUILD_CONFIG: Optional[str] = None  # the classifier package's YAML (discover)
+    TAXONOMY_JOBS_LEASE_SECONDS: int = 300
+    TAXONOMY_JOBS_MAX_CHUNKS: int = 20000  # chunks a job reads into memory at most
+    DISCOVER_SPEND_CAP_USD: float = 0.0
+    DISCOVER_SAMPLE_DOCUMENTS: int = 200  # documents sampled when the request gives no size
+    DISCOVER_MIN_DOCUMENTS: int = 1  # fewer substantive documents: the job fails, nothing is spent
+    # Fewer chunks of text than this: the job fails before it spends anything. The classifier's
+    # clustering needs hundreds of pieces; a small collection needs its small-corpus settings and a
+    # lower value here (see the T1 test plan, run D).
+    DISCOVER_MIN_CHUNKS: int = 100
+    EVOLUTION_SPEND_CAP_USD: float = 0.0
+    # Keeps the jobs' embedding and LLM caches between jobs, one folder per tenant (empty = each job
+    # starts empty). The folders hold customer text and the model's answers about it: put them on
+    # an encrypted volume and delete them with the tenant's data.
+    TAXONOMY_JOBS_CACHE_DIR: str = ""
+
+    # Search: honour OR between a request's filter groups (contract C8). False keeps the
+    # upstream behaviour, where every user filter group is merged into one AND group.
+    SEARCH_FILTER_GROUPS_OR: bool = False
+
     # Debug configuration
     DEBUG: bool = False
 
@@ -146,11 +211,19 @@ class Settings(BaseSettings):
     RUN_DB_SYNC: bool = True
     ENABLE_INTERNAL_SOURCES: bool = False  # Enable internal/testing sources (stub, snapshot)
 
-    # Redis configuration
+    # Redis configuration.
+    # Two modes are supported:
+    # 1. Single-host (default): set REDIS_HOST + REDIS_PORT.
+    # 2. Sentinel: set REDIS_NODES (JSON list of [host, port] sentinel nodes) and
+    #    REDIS_SERVICE_NAME (the master name registered with Sentinel, e.g. "mymaster").
+    #    When both are set, REDIS_HOST and REDIS_PORT are ignored and the client
+    #    discovers the current master via Sentinel.
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: Optional[str] = None
     REDIS_DB: int = 0
+    REDIS_NODES: Optional[str] = None  # e.g. '[["host-0", 26379], ["host-1", 26379]]'
+    REDIS_SERVICE_NAME: Optional[str] = None  # e.g. "mymaster"
 
     TEXT2VEC_INFERENCE_URL: str = "http://localhost:9878"
 
@@ -195,6 +268,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
     MISTRAL_API_KEY: Optional[str] = None
+    MISTRAL_BASE_URL: Optional[str] = None
     FIRECRAWL_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
     COHERE_API_KEY: Optional[str] = None
@@ -297,6 +371,68 @@ class Settings(BaseSettings):
         v = float(v)
         if v <= 0:
             raise ValueError("HEALTH_CHECK_TIMEOUT must be positive")
+        return v
+
+    @field_validator("CHUNK_TARGET_TOKENS")
+    def validate_chunk_target_tokens(cls, v: int) -> int:
+        """Keep the chunk target within the embedding hard limit (8192 tokens)."""
+        if not 1 <= v <= 8192:
+            raise ValueError("CHUNK_TARGET_TOKENS must be between 1 and 8192")
+        return v
+
+    @field_validator("CHUNK_OVERLAP_TOKENS")
+    def validate_chunk_overlap_tokens(cls, v: int, info: ValidationInfo) -> int:
+        """Require an overlap smaller than the target, so every chunk adds new text."""
+        target = info.data.get("CHUNK_TARGET_TOKENS")
+        if v < 0 or (target is not None and v >= target):
+            raise ValueError("CHUNK_OVERLAP_TOKENS must be >= 0 and below CHUNK_TARGET_TOKENS")
+        return v
+
+    @field_validator("TAXONOMY_CLASSIFY_THREADS", "TAXONOMY_CLASSIFY_TIMEOUT_SECONDS")
+    def validate_taxonomy_positive(cls, v: int, info: ValidationInfo) -> int:
+        """Require at least one classifier thread and a positive timeout."""
+        if v < 1:
+            raise ValueError(f"{info.field_name} must be at least 1")
+        return v
+
+    @field_validator("DISCOVER_SPEND_CAP_USD", "EVOLUTION_SPEND_CAP_USD")
+    def validate_job_caps(cls, v: float, info: ValidationInfo) -> float:
+        """Spend caps cannot be negative."""
+        if v < 0:
+            raise ValueError(f"{info.field_name} must be 0 or more")
+        return v
+
+    @field_validator(
+        "TAXONOMY_JOBS_LEASE_SECONDS",
+        "TAXONOMY_JOBS_MAX_CHUNKS",
+        "DISCOVER_SAMPLE_DOCUMENTS",
+        "DISCOVER_MIN_DOCUMENTS",
+        "DISCOVER_MIN_CHUNKS",
+    )
+    def validate_job_counts(cls, v: int, info: ValidationInfo) -> int:
+        """Lease, chunk and document limits must be at least 1."""
+        if v < 1:
+            raise ValueError(f"{info.field_name} must be at least 1")
+        return v
+
+    @field_validator("RELABEL_SPEND_CAP_USD", "RELABEL_USD_PER_THOUSAND_CHUNKS")
+    def validate_relabel_money(cls, v: float, info: ValidationInfo) -> float:
+        """Spend figures cannot be negative."""
+        if v < 0:
+            raise ValueError(f"{info.field_name} must be 0 or more")
+        return v
+
+    @field_validator(
+        "RELABEL_BATCH_SIZE",
+        "RELABEL_PAGE_SIZE",
+        "RELABEL_WRITE_CONCURRENCY",
+        "RELABEL_LEASE_SECONDS",
+        "RELABEL_RESUME_INTERVAL_SECONDS",
+    )
+    def validate_relabel_positive(cls, v: int, info: ValidationInfo) -> int:
+        """Batch, page, concurrency and timing settings must be at least 1."""
+        if v < 1:
+            raise ValueError(f"{info.field_name} must be at least 1")
         return v
 
     @field_validator("AZURE_KEYVAULT_NAME", mode="before")

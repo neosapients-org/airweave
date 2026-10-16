@@ -57,6 +57,7 @@ from airweave.platform.entities.sharepoint_online import (
 from airweave.platform.http_client.airweave_client import AirweaveHttpClient
 from airweave.platform.sources._base import BaseSource
 from airweave.platform.sources.http_helpers import raise_for_status
+from airweave.platform.sources.microsoft_sensitivity_labels import SensitivityLabelFilter
 from airweave.platform.sources.retry_helpers import (
     retry_if_rate_limit_or_timeout,
     wait_rate_limit_with_backoff,
@@ -74,6 +75,14 @@ from airweave.schemas.source_connection import AuthenticationMethod, OAuthType
 
 MAX_CONCURRENT_FILE_DOWNLOADS = 10
 ITEM_BATCH_SIZE = 50
+
+# Synthetic principal representing the SharePoint "Everyone except external users"
+# claim. SP exposes this claim as a member of site groups but our membership
+# table only handles real users / Entra groups / SP groups. We translate the
+# claim into a synthetic group, populate it with the tenant's internal members
+# at sync time, and let the broker's recursive expansion do the rest.
+EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL = "claim:everyone_except_external"
+EVERYONE_EXCEPT_EXTERNAL_DISPLAY_NAME = "Everyone except external users (synthetic)"
 
 
 @dataclass
@@ -110,6 +119,10 @@ class SharePointOnlineBase(BaseSource):
     # Site-scoped SP group tracking: {site_url: {sp_group_name, ...}}
     # Keyed by normalized site URL so multi-site syncs can expand SP groups per site.
     _item_level_sp_groups: Dict[str, Set[str]]
+    # Set to True during membership extraction when an SP group contains the
+    # "Everyone except external users" claim, so we know to enumerate internal
+    # tenant users once at the end.
+    _needs_internal_user_enum: bool
 
     def _init_common(self, config: SharePointOnlineConfig) -> None:
         """Initialize fields shared by both OAuth and client-credentials sources."""
@@ -118,6 +131,11 @@ class SharePointOnlineBase(BaseSource):
         self._include_pages = config.include_pages
         self._item_level_entra_groups = set()
         self._item_level_sp_groups = {}
+        self._needs_internal_user_enum = False
+        self._excluded_sensitivity_label_ids = list(config.excluded_sensitivity_label_ids)
+        self._skip_encrypted_files = config.skip_encrypted_files
+        self._skip_unlabeled_files = config.skip_unlabeled_files
+        self._label_filter: Optional[SensitivityLabelFilter] = None
 
     # -- Auth hooks (subclasses override) --
 
@@ -234,6 +252,14 @@ class SharePointOnlineBase(BaseSource):
         r"(?P<guid>[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
         r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(_o)?$"
     )
+    # Match the "Everyone except external users" claim:
+    #   "c:0-.f|rolemanager|spo-grid-all-users/<tenantId>"
+    # PrincipalType=4 (SecurityGroup), but the claim provider is `rolemanager`
+    # rather than `federateddirectoryclaimprovider`. Represents all tenant
+    # users with userType=Member; excludes B2B guests by definition.
+    _EVERYONE_EXCEPT_EXTERNAL_LOGIN_RE = re.compile(
+        r"^c:0-\.f\|rolemanager\|spo-grid-all-users/[0-9a-fA-F-]+$"
+    )
 
     @classmethod
     def _email_from_membership_login(cls, login: str) -> Optional[str]:
@@ -255,16 +281,26 @@ class SharePointOnlineBase(BaseSource):
         """Parse one entry from /_api/web/sitegroups({id})/users into (member_id, member_type).
 
         Returns None for entries that should not become memberships:
-        - Role principals (PrincipalType=16, e.g. "Everyone except external users")
-        - Catch-all "All" principals (PrincipalType=15)
-        - DistList, SPGroup, unknown types (skipped; rare in practice)
+        - Catch-all "All" / "Everyone" principals (PrincipalType=15)
+        - DistList, SPGroup, RoleManager (other than the recognized claim below)
         - Unparseable entries (no email for users, no GUID for groups)
+
+        Recognized PrincipalType=4 shapes:
+        - Entra federated group: ``c:0o.c|federateddirectoryclaimprovider|<guid>[_o]``
+          → returns ``("entra:<guid>", "group")``.
+        - "Everyone except external users" claim:
+          ``c:0-.f|rolemanager|spo-grid-all-users/<tenantId>`` → returns the
+          synthetic ``(EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL, "group")`` sentinel.
+          The caller (``_expand_sp_site_groups``) then enumerates internal
+          tenant users once per sync to populate the synthetic group.
+        - Any other PT=4 LoginName: returns None. The caller logs the raw
+          shape at info-level so unknown claim shapes show up in operator
+          logs and can be wired up explicitly later.
 
         PrincipalType reference:
             1  = User
             2  = DistList
-            4  = SecurityGroup (Entra group when LoginName uses
-                 federateddirectoryclaimprovider)
+            4  = SecurityGroup (Entra group OR rolemanager claim)
             8  = SPGroup
             15 = All
             16 = RoleManager
@@ -285,14 +321,31 @@ class SharePointOnlineBase(BaseSource):
 
         if ptype == 4:
             m = cls._ENTRA_GROUP_LOGIN_RE.match(login)
-            if not m:
-                return None
-            guid = m.group("guid").lower()
-            return (f"entra:{guid}", "group")
+            if m:
+                return (f"entra:{m.group('guid').lower()}", "group")
+            if cls._EVERYONE_EXCEPT_EXTERNAL_LOGIN_RE.match(login):
+                return (EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL, "group")
+            return None
 
         # PrincipalType 2 (DistList), 8 (SPGroup), 15 (All), 16 (RoleManager),
         # and unknown types are intentionally skipped.
         return None
+
+    @classmethod
+    def _is_unrecognized_pt4_login(cls, user: Dict[str, Any]) -> bool:
+        """Return True for a PT=4 entry whose LoginName matches none of our patterns.
+
+        Used at the call site to emit a one-line diagnostic so that unknown
+        claim shapes (rare custom rolemanager roles, legacy Windows claims,
+        etc.) surface in operator logs without breaking sync.
+        """
+        if user.get("PrincipalType") != 4:
+            return False
+        login = user.get("LoginName", "") or ""
+        return not (
+            cls._ENTRA_GROUP_LOGIN_RE.match(login)
+            or cls._EVERYONE_EXCEPT_EXTERNAL_LOGIN_RE.match(login)
+        )
 
     # -- Browse Tree --
 
@@ -598,48 +651,45 @@ class SharePointOnlineBase(BaseSource):
                 new_viewers.append(v)
         entity.access.viewers = new_viewers
 
-    async def _fetch_sp_group_viewers(self, site_url: str) -> List[str]:
-        """Fetch all SP site groups for a site and return their viewer strings.
+    @staticmethod
+    def _has_link_permission(permissions: List[Dict[str, Any]]) -> bool:
+        """Return True if any permission carries a sharing-link block."""
+        return any(p.get("link") for p in (permissions or []))
 
-        Args:
-            site_url: Full site URL (e.g. https://tenant.sharepoint.com/sites/X).
-                Required — without it we can't hit the SP REST endpoint.
+    def _get_label_filter(self) -> Optional[SensitivityLabelFilter]:
+        """Lazily build a Purview sensitivity-label filter from config.
+
+        Returns None when no filtering is configured.
         """
-        norm_site = self._normalize_site_url(site_url)
-        if not norm_site:
-            return []
-        sp_token_provider = self._make_sp_token_provider_for_site(norm_site)
-        if not sp_token_provider:
-            return []
-        try:
-            token = await sp_token_provider()
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "Accept": "application/json;odata=verbose",
-            }
-            resp = await self.http_client.get(
-                f"{norm_site}/_api/web/sitegroups",
-                headers=headers,
-                timeout=30.0,
-            )
-            resp.raise_for_status()
-            groups = resp.json().get("d", {}).get("results", [])
+        if self._label_filter is not None:
+            return self._label_filter
+        if not self._excluded_sensitivity_label_ids and not self._skip_unlabeled_files:
+            return None
+        self._label_filter = SensitivityLabelFilter(
+            excluded_label_ids=self._excluded_sensitivity_label_ids,
+            skip_encrypted=self._skip_encrypted_files,
+            skip_unlabeled=self._skip_unlabeled_files,
+            http_client=self.http_client,
+            token_provider=self._get_access_token,
+            logger=self.logger,
+        )
+        return self._label_filter
 
-            viewers = []
-            site_bucket = self._item_level_sp_groups.setdefault(norm_site, set())
-            for g in groups:
-                title = g.get("Title", "")
-                if title:
-                    tag = f"group:sp:{title.lower().replace(' ', '_')}"
-                    viewers.append(tag)
-                    site_bucket.add(tag[len("group:") :])
-            self.logger.info(f"Fetched {len(viewers)} SP site groups as viewers for {norm_site}")
-            return viewers
-        except SourceAuthError:
-            raise
-        except Exception as e:
-            self.logger.warning(f"SP group fetch failed for {norm_site}: {e}")
-            return []
+    @staticmethod
+    def _extract_group_id_from_drives(drives: List[Dict[str, Any]]) -> Optional[str]:
+        """Pull the backing M365 Group ID off any drive in the site, if present.
+
+        Group-connected SharePoint sites surface their group as
+        ``drive.owner.group.id``. Non-group sites (classic comms sites, etc.)
+        won't have this; the site short-circuit is skipped in that case.
+        """
+        for drive in drives:
+            owner = drive.get("owner") or {}
+            group = owner.get("group") if isinstance(owner, dict) else None
+            raw_id = group.get("id") if isinstance(group, dict) else None
+            if isinstance(raw_id, str) and raw_id:
+                return raw_id
+        return None
 
     async def _full_sync(  # noqa: C901
         self,
@@ -648,6 +698,7 @@ class SharePointOnlineBase(BaseSource):
     ) -> AsyncGenerator[BaseEntity, None]:
         entity_count = 0
         graph_client = self._create_graph_client()
+        label_filter = self._get_label_filter()
 
         sites = await self._discover_sites(graph_client)
 
@@ -659,6 +710,14 @@ class SharePointOnlineBase(BaseSource):
             all_drives = []
             async for drive_data in graph_client.get_drives(site_id):
                 all_drives.append(drive_data)
+
+            # Container-label short-circuit: if the site's backing M365 Group
+            # carries a blocked Purview label, skip the whole site before we
+            # walk any drives.
+            if label_filter is not None:
+                group_id = self._extract_group_id_from_drives(all_drives)
+                if await label_filter.should_skip_site(site_id=site_id, group_id=group_id):
+                    continue
 
             # Fetch site-level permissions from the first drive's root.
             site_access = None
@@ -686,8 +745,6 @@ class SharePointOnlineBase(BaseSource):
             except EntityProcessingError as e:
                 self.logger.warning(f"Skipping site {site_id}: {e}")
                 continue
-
-            sp_group_viewers = await self._fetch_sp_group_viewers(site_url)
 
             for drive_data in all_drives:
                 drive_id = drive_data.get("id", "")
@@ -724,11 +781,26 @@ class SharePointOnlineBase(BaseSource):
                             continue
 
                         if item_data.get("file"):
+                            if label_filter is not None and await label_filter.should_skip_item(
+                                drive_id=drive_id,
+                                item_id=item_data["id"],
+                                item_name=item_data.get("name", ""),
+                            ):
+                                continue
                             try:
                                 permissions = await graph_client.get_item_permissions(
                                     drive_id,
                                     item_data["id"],
                                 )
+
+                                # Sharing-link permissions need the file's SP UniqueId
+                                # to translate into the SharingLinks.* SP site group.
+                                # Skip the extra fetch when the file has no sharing links.
+                                sp_unique_id = None
+                                if self._has_link_permission(permissions):
+                                    sp_unique_id = await graph_client.get_item_sp_unique_id(
+                                        drive_id, item_data["id"]
+                                    )
 
                                 file_entity = await build_file_entity(
                                     item_data,
@@ -736,14 +808,10 @@ class SharePointOnlineBase(BaseSource):
                                     site_id,
                                     drive_breadcrumbs,
                                     permissions,
+                                    sp_unique_id=sp_unique_id,
                                 )
 
                                 await self._resolve_unresolved_viewers(file_entity, graph_client)
-                                if sp_group_viewers and file_entity.access:
-                                    existing = set(file_entity.access.viewers or [])
-                                    for spv in sp_group_viewers:
-                                        if spv not in existing:
-                                            file_entity.access.viewers.append(spv)
                                 self._track_entity_groups(file_entity, site_url)
 
                                 if files:
@@ -855,6 +923,7 @@ class SharePointOnlineBase(BaseSource):
 
         changes_processed = 0
         graph_client = self._create_graph_client()
+        label_filter = self._get_label_filter()
 
         for drive_id, token in delta_tokens.items():
             try:
@@ -891,14 +960,26 @@ class SharePointOnlineBase(BaseSource):
                     continue
 
                 if item_data.get("file"):
+                    if label_filter is not None and await label_filter.should_skip_item(
+                        drive_id=drive_id,
+                        item_id=item_id,
+                        item_name=item_data.get("name", ""),
+                    ):
+                        continue
                     try:
                         permissions = await graph_client.get_item_permissions(drive_id, item_id)
+                        sp_unique_id = None
+                        if self._has_link_permission(permissions):
+                            sp_unique_id = await graph_client.get_item_sp_unique_id(
+                                drive_id, item_id
+                            )
                         file_entity = await build_file_entity(
                             item_data,
                             drive_id,
                             "",
                             [],
                             permissions,
+                            sp_unique_id=sp_unique_id,
                         )
                         await self._resolve_unresolved_viewers(file_entity, graph_client)
                         self._track_entity_groups(file_entity)
@@ -1036,8 +1117,18 @@ class SharePointOnlineBase(BaseSource):
                     item_data = await graph_client.get(url)
                     if item_data.get("file"):
                         permissions = await graph_client.get_item_permissions(drive_id, item_id)
+                        sp_unique_id = None
+                        if self._has_link_permission(permissions):
+                            sp_unique_id = await graph_client.get_item_sp_unique_id(
+                                drive_id, item_id
+                            )
                         file_entity = await build_file_entity(
-                            item_data, drive_id, "", [], permissions
+                            item_data,
+                            drive_id,
+                            "",
+                            [],
+                            permissions,
+                            sp_unique_id=sp_unique_id,
                         )
                         await self._resolve_unresolved_viewers(file_entity, graph_client)
                         self._track_entity_groups(file_entity)
@@ -1117,7 +1208,7 @@ class SharePointOnlineBase(BaseSource):
         ):
             yield entity
 
-    async def _process_file_items(
+    async def _process_file_items(  # noqa: C901
         self,
         graph_client: GraphClient,
         item_stream: AsyncGenerator[Dict[str, Any], None],
@@ -1130,14 +1221,31 @@ class SharePointOnlineBase(BaseSource):
     ) -> AsyncGenerator[BaseEntity, None]:
         """Iterate drive items, build file entities, and yield with batched downloads."""
         pending_files: List[PendingFileDownload] = []
+        label_filter = self._get_label_filter()
 
         async for item_data in item_stream:
             if item_data.get("folder") or not item_data.get("file"):
                 continue
+            if label_filter is not None and await label_filter.should_skip_item(
+                drive_id=drive_id,
+                item_id=item_data["id"],
+                item_name=item_data.get("name", ""),
+            ):
+                continue
             try:
                 permissions = await graph_client.get_item_permissions(drive_id, item_data["id"])
+                sp_unique_id = None
+                if self._has_link_permission(permissions):
+                    sp_unique_id = await graph_client.get_item_sp_unique_id(
+                        drive_id, item_data["id"]
+                    )
                 file_entity = await build_file_entity(
-                    item_data, drive_id, site_id, breadcrumbs, permissions
+                    item_data,
+                    drive_id,
+                    site_id,
+                    breadcrumbs,
+                    permissions,
+                    sp_unique_id=sp_unique_id,
                 )
                 if resolve_viewers:
                     await self._resolve_unresolved_viewers(file_entity, graph_client)
@@ -1257,6 +1365,12 @@ class SharePointOnlineBase(BaseSource):
                 for user in users:
                     parsed = self._parse_sp_group_member(user)
                     if parsed is None:
+                        if self._is_unrecognized_pt4_login(user):
+                            self.logger.info(
+                                "Unrecognized PrincipalType=4 SP group member; skipped. "
+                                f"LoginName={user.get('LoginName', '')!r} "
+                                f"Title={user.get('Title', '')!r}"
+                            )
                         continue
                     member_id, member_type = parsed
                     yield MembershipTuple(
@@ -1265,6 +1379,42 @@ class SharePointOnlineBase(BaseSource):
                         group_id=sp_name,
                         group_name=user.get("Title") or sp_name,
                     )
+                    if member_id == EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL:
+                        self._needs_internal_user_enum = True
+
+    async def _expand_everyone_except_external(
+        self,
+    ) -> AsyncGenerator[MembershipTuple, None]:
+        """Populate the synthetic ``EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL`` group.
+
+        Called once per sync, only when the SP group expansion observed at
+        least one occurrence of the claim. Enumerates internal tenant users
+        via Graph (``userType eq 'Member'`` filter excludes B2B guests) and
+        yields one user → claim membership per user. The broker's recursive
+        group expansion then chains user → claim → SP group at search time.
+        """
+        graph_client = self._create_graph_client()
+        count = 0
+        try:
+            async for u in graph_client.list_internal_tenant_users():
+                count += 1
+                yield MembershipTuple(
+                    member_id=u["email"],
+                    member_type="user",
+                    group_id=EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL,
+                    group_name=EVERYONE_EXCEPT_EXTERNAL_DISPLAY_NAME,
+                )
+        except SourceAuthError:
+            raise
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to enumerate internal tenant users for "
+                f"'{EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL}': {e}"
+            )
+        self.logger.info(
+            f"Populated synthetic '{EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL}' group "
+            f"with {count} internal tenant users"
+        )
 
     async def generate_access_control_memberships(
         self,
@@ -1272,6 +1422,7 @@ class SharePointOnlineBase(BaseSource):
         """Expand Entra ID groups and SP site groups into user memberships."""
         self.logger.info("Starting access control membership extraction")
         membership_count = 0
+        self._needs_internal_user_enum = False
         group_expander = self._create_group_expander()
 
         async for m in self._expand_entra_groups(group_expander):
@@ -1286,6 +1437,14 @@ class SharePointOnlineBase(BaseSource):
             raise
         except Exception as e:
             self.logger.warning(f"SP site group expansion failed: {e}")
+
+        # If any SP site group contained the "Everyone except external users"
+        # claim, populate the synthetic claim group with internal tenant users
+        # exactly once. Skipped entirely when no group used the claim.
+        if self._needs_internal_user_enum:
+            async for m in self._expand_everyone_except_external():
+                yield m
+                membership_count += 1
 
         group_expander.log_stats()
         self.logger.info(f"Access control extraction complete: {membership_count} memberships")

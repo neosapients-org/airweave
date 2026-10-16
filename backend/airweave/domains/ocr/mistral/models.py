@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import List, Optional
 
 # Image extensions that Mistral treats as ``image_url`` (vs ``document_url``).
 IMAGE_EXTENSIONS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png"})
@@ -128,8 +128,11 @@ class OcrResult:
         chunk: The chunk this result belongs to.
         markdown: Extracted markdown, or ``None`` if OCR failed.
         error: Error message if OCR failed.
+        pages: For PDF chunks, the markdown of every page in page order (``""`` for a page
+            without text), so reassembly can number pages across split chunks.
     """
 
     chunk: FileChunk
     markdown: Optional[str]
     error: Optional[str] = None
+    pages: Optional[List[str]] = None

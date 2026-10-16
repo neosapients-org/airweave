@@ -30,6 +30,17 @@ env:
   API_FULL_URL: https://dev-dp.neosapientai.com/v1/meridian
   HF_HOME: /tmp/hf_cache
   XDG_CACHE_HOME: /tmp/cache
+  # Neo chunking, labels and search (contract airweave-neo/1, section 9). Off until rollout
+  # step 3 (plan section 6): size Vespa, publish every collection's taxonomy, give the
+  # worker's IAM role read access to the taxonomy bucket, then uncomment.
+  # CHUNK_TARGET_TOKENS: '300'
+  # CHUNK_OVERLAP_TOKENS: '45'
+  # CHUNK_HEADER_ENABLED: 'true'
+  # CHUNKER_MODE: sentence_pack
+  # CHUNKER_VERSION: '2'
+  # SEARCH_FILTER_GROUPS_OR: 'true'
+  # TAXONOMY_ENABLED: 'true'
+  # TAXONOMY_S3_BUCKET: <taxonomy bucket for dev-use1-shared1>
 
 ingress:
   enabled: false

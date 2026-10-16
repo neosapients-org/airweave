@@ -27,6 +27,7 @@ from airweave.domains.search.types import (
     RetrievalStrategy,
     SearchPlan,
     SearchResults,
+    TopicBoost,
 )
 from airweave.domains.search.types.filters import FilterableField, FilterCondition, FilterOperator
 from airweave.domains.search.types.results import (
@@ -88,6 +89,7 @@ class SearchPlanExecutor(SearchPlanExecutorProtocol):
         ctx: ApiContext,
         collection_readable_id: str,
         user_principal: Optional[str] = None,
+        boost: Optional[TopicBoost] = None,
     ) -> SearchResults:
         """Execute the full search pipeline including federated sources."""
         # 0. Resolve access control principals
@@ -116,7 +118,7 @@ class SearchPlanExecutor(SearchPlanExecutorProtocol):
         fetch_limit = original_offset + original_limit
 
         vector_task = asyncio.create_task(
-            self._execute_vector_search(complete_plan, collection_id, acl_principals)
+            self._execute_vector_search(complete_plan, collection_id, acl_principals, boost)
         )
 
         fed_task = None
@@ -159,6 +161,7 @@ class SearchPlanExecutor(SearchPlanExecutorProtocol):
         plan: SearchPlan,
         collection_id: str,
         acl_principals: Optional[list[str]] = None,
+        boost: Optional[TopicBoost] = None,
     ) -> list[SearchResult]:
         """Embed, compile, and execute vector DB search.
 
@@ -191,6 +194,7 @@ class SearchPlanExecutor(SearchPlanExecutorProtocol):
             embeddings=embeddings,
             collection_id=collection_id,
             acl_principals=acl_principals,
+            boost=boost,
         )
         return (await self._vector_db.execute_query(compiled_query)).results
 

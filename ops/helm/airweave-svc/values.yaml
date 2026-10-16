@@ -183,6 +183,48 @@ env:
   CLASSIFICATION_MODEL: gpt-4o-mini
   CLASSIFICATION_BATCH_SIZE: '25'
 
+  # Chunking, topic labels and search (contract airweave-neo/1, section 9).
+  # Every value here is the upstream default, so deploying the chart changes nothing.
+  # Switch on per environment in its own values file, in rollout order (plan section 6):
+  # size Vespa, publish each collection's taxonomy, then the chunk settings and labels.
+  # Neo values in comments.
+  CHUNK_TARGET_TOKENS: '4096'            # Neo: '300'
+  CHUNK_OVERLAP_TOKENS: '0'              # Neo: '45'
+  CHUNK_HEADER_ENABLED: 'false'          # Neo: 'true'
+  CHUNKER_MODE: semantic                 # Neo: sentence_pack
+  CHUNKER_VERSION: '1'                   # Neo: '2'
+  SEARCH_FILTER_GROUPS_OR: 'false'       # Neo: 'true'
+  TAXONOMY_ENABLED: 'false'              # Neo: 'true' (needs TAXONOMY_S3_BUCKET)
+  # TAXONOMY_S3_BUCKET: per environment  (read access via the service account's IAM role)
+  TAXONOMY_S3_PREFIX: taxonomy/
+  TAXONOMY_ACTIVE_CACHE_SECONDS: '300'
+  TAXONOMY_LOCAL_DIR: /data/airweave-taxonomy/versions        # worker volume "taxonomy"
+  TAXONOMY_EMBED_CACHE_DIR: /data/airweave-taxonomy/embed-cache
+  TAXONOMY_EMBED_CACHE_MAX_MB: '512'                           # each thread's cache file starts over past this
+  TAXONOMY_CLASSIFY_THREADS: '2'
+  TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: '60'
+  # Re-label jobs. The cap is the approved spend ceiling per job in USD; '0' approves nothing,
+  # so no job can start until the owner sets a value for the environment.
+  RELABEL_SPEND_CAP_USD: '0'
+  RELABEL_USD_PER_THOUSAND_CHUNKS: '0.006'
+  RELABEL_BATCH_SIZE: '64'
+  RELABEL_PAGE_SIZE: '100'
+  RELABEL_WRITE_CONCURRENCY: '8'
+  RELABEL_LEASE_SECONDS: '120'
+  RELABEL_RESUME_INTERVAL_SECONDS: '60'
+  # Taxonomy discover (A13) and propose (A12) jobs. The API and the jobs worker both need
+  # TAXONOMY_JOBS_ENABLED=true (the jobs worker pod sets it itself); spend caps default to 0,
+  # which approves nothing. A paid run also needs the owner's approval.
+  TAXONOMY_JOBS_ENABLED: 'false'
+  TAXONOMY_JOBS_TASK_QUEUE: airweave-taxonomy-jobs-queue
+  TAXONOMY_JOBS_LEASE_SECONDS: '300'
+  TAXONOMY_JOBS_MAX_CHUNKS: '20000'
+  DISCOVER_SPEND_CAP_USD: '0'
+  DISCOVER_SAMPLE_DOCUMENTS: '200'
+  DISCOVER_MIN_DOCUMENTS: '1'
+  DISCOVER_MIN_CHUNKS: '100'
+  EVOLUTION_SPEND_CAP_USD: '0'
+
   # Storage backend
   STORAGE_BACKEND: aws
   STORAGE_AWS_REGION: us-east-1
@@ -244,6 +286,58 @@ worker:
     requests:
       cpu: 100m
       memory: 256Mi
+  # Writable volume for TAXONOMY_LOCAL_DIR and TAXONOMY_EMBED_CACHE_DIR (verified taxonomy
+  # versions and one SQLite embedding cache per classifier thread, each capped near
+  # TAXONOMY_EMBED_CACHE_MAX_MB, so size the volume above threads x that plus the versions). Unused while
+  # TAXONOMY_ENABLED is off.
+  taxonomyVolume:
+    sizeLimit: 5Gi
+
+# =============================================================================
+# Taxonomy jobs worker (discover A13, propose A12): off by default
+# =============================================================================
+# A SEPARATE Deployment of the same image on its own Temporal task queue
+# (TAXONOMY_JOBS_TASK_QUEUE); the sync workers never register these activities.
+#
+# IMAGE: clustering needs the full classifier install, which the runtime install leaves out:
+# the classifier package (pinned once the developer releases it), umap-learn, pynndescent,
+# numba, hdbscan, scikit-learn, scipy, pandas, pyyaml. Build the image that runs this
+# Deployment with them (`pip install "taxonomy-classifier[build]"` or the package's equivalent
+# extra); the sync workers' image can stay without them.
+#
+# S3 (IAM): the role of THIS Deployment's service account needs s3:PutObject on
+# taxonomy/tenants/*/candidates/* and nothing more for writing (no delete, no overwrite: the
+# jobs use conditional puts), plus the read access the sync worker has (s3:GetObject on
+# taxonomy/active/*, taxonomy/tenants/* and taxonomy/models/*, s3:ListBucket). The SYNC worker
+# role stays read-only on versions, active and models and gets no write on candidates.
+# Meridian reads a candidate from candidates/ and registers it by copying it into versions/.
+taxonomyJobsWorker:
+  enabled: false
+  replicaCount: 0
+  terminationGracePeriodSeconds: 120
+  resources:
+    limits:
+      cpu: '4'
+      memory: 8Gi
+    requests:
+      cpu: '1'
+      memory: 4Gi
+  # Scratch space for a job's sample of stored chunk text and the package's audit files; it is
+  # deleted when the job ends. Customer text lives here for the length of a job.
+  workVolume:
+    sizeLimit: 10Gi
+  nodeSelector: {}
+  # A separate service account so its role can hold the candidates/ write grant
+  serviceAccount:
+    create: false
+    annotations: {}
+      # eks.amazonaws.com/role-arn: <role with write on taxonomy/tenants/*/candidates/*>
+  # The classifier package's YAML for discover (taxonomy.example.yaml with the embedding model,
+  # the content-form patterns for the corpus and the reviewer model). Empty: the Deployment
+  # does not start a discover job without it.
+  buildConfig: ''
+  # Extra environment for the pod only
+  extraEnv: {}
 
 # =============================================================================
 # PostgreSQL

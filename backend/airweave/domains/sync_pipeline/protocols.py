@@ -31,6 +31,18 @@ class ChunkEmbedProcessorProtocol(Protocol):
         ...
 
 
+class TaxonomyProcessorProtocol(Protocol):
+    """Writes topic labels on chunk entities after embedding, before the write (plan A7)."""
+
+    async def process(
+        self,
+        chunks: List[BaseEntity],
+        sync_context: SyncContext,
+    ) -> List[BaseEntity]:
+        """Label the chunks in place; never raises (fail-open, contract C11)."""
+        ...
+
+
 class EntityActionResolverProtocol(Protocol):
     """Resolves entities to INSERT/UPDATE/DELETE/KEEP actions."""
 

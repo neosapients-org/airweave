@@ -1,0 +1,31 @@
+{
+  "about": "Contract airweave-neo/1 section 4.4: a chunk record as returned by search (copied from the contract; access, web_url and url are left out there too).",
+  "record": {
+    "entity_id": "f3a1…__chunk_37",
+    "name": "Q3 credit risk report.pdf",
+    "relevance_score": 0.82,
+    "breadcrumbs": [{"entity_id": "d41…", "name": "Risk", "entity_type": "GoogleDriveFolderEntity"}],
+    "created_at": "2026-07-02T10:15:00Z",
+    "updated_at": "2026-10-01T08:00:00Z",
+    "textual_representation": "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026 · pages 12–13\n…late payments rose 12%…",
+    "airweave_system_metadata": {
+      "source_name": "google_drive",
+      "entity_type": "GoogleDriveFileEntity",
+      "sync_id": "5c0…",
+      "sync_job_id": "9e7…",
+      "original_entity_id": "f3a1…",
+      "chunk_index": 37
+    },
+    "chunk_char_start": 48210,
+    "chunk_char_end": 49402,
+    "chunk_own_start": 48391,
+    "chunk_body_offset": 79,
+    "page_from": 12,
+    "page_to": 13,
+    "topic_ids": {"acme:credit.loan_credit_quality": 1},
+    "broad_family_ids": ["acme:credit"],
+    "taxonomy_spans": "[{\"c\":\"acme:credit.loan_credit_quality\",\"s\":48391,\"e\":49402,\"p\":[0,0]}]",
+    "taxonomy_status": "ASSIGNED",
+    "taxonomy_version": "acme-2026.10"
+  }
+}
