@@ -49,6 +49,7 @@ def build_runner(container: Any) -> Any:
         max_chunks=settings.TAXONOMY_JOBS_MAX_CHUNKS,
         default_sample_documents=settings.DISCOVER_SAMPLE_DOCUMENTS,
         min_documents=settings.DISCOVER_MIN_DOCUMENTS,
+        min_chunks=settings.DISCOVER_MIN_CHUNKS,
     )
 
 

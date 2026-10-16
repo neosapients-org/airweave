@@ -24,7 +24,7 @@ PAGE = 500
 
 
 class TooFewDocuments(Exception):
-    """The collection has fewer substantive documents than a job needs."""
+    """The collection has less text than a job needs (too few documents, or too few chunks)."""
 
 
 def _order_key(candidate_version: str, document_id: str) -> str:
@@ -51,6 +51,7 @@ async def sample_documents(
     documents: int,
     max_chunks: int,
     min_documents: int,
+    min_chunks: int = 0,
 ) -> List[Dict[str, Any]]:
     """Chunks of a deterministic sample of the collection's documents (text chunks only).
 
@@ -74,6 +75,13 @@ async def sample_documents(
         sample.extend(chunks)
     if len({c["document_id"] for c in sample}) < min_documents:
         raise TooFewDocuments(f"the sample holds fewer than {min_documents} documents")
+    if len(sample) < min_chunks:
+        # Checked before anything is paid for: the classifier's clustering needs hundreds of pieces
+        # of text, and on a handful it fails late with an unhelpful error.
+        raise TooFewDocuments(
+            f"not enough text yet: {len(sample)} chunks, a discovery needs at least {min_chunks}. "
+            "Add more documents and try again"
+        )
     return sample
 
 

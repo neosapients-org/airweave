@@ -219,3 +219,37 @@ class TestReturningReadsBeforeCommit:
         record = await repo._returning(object())  # the statement is not inspected by the fake
 
         assert record is not None and record.id == values["id"]
+
+
+class TestWorkflowWaitsForAHeldLease:
+    """The first attempt of a crashed worker holds the lease; the second sees "busy". The workflow
+    waits for the lease to expire and asks again, instead of ending with the job still RUNNING."""
+
+    async def test_it_asks_again_after_busy_and_stops_at_the_first_real_state(self):
+        from airweave.domains.taxonomy.jobs import temporal as t
+
+        answers, slept = iter(["busy", "busy", "COMPLETED"]), []
+
+        async def run():
+            return next(answers)
+
+        async def sleep(duration):
+            slept.append(duration)
+
+        assert await t.run_until_not_busy(run, sleep) == "COMPLETED"
+        assert slept == [t.BUSY_WAIT, t.BUSY_WAIT]
+
+    async def test_it_gives_up_with_busy_when_a_live_worker_keeps_the_lease(self):
+        from airweave.domains.taxonomy.jobs import temporal as t
+
+        calls = []
+
+        async def run():
+            calls.append(1)
+            return "busy"
+
+        async def sleep(_):
+            return None
+
+        assert await t.run_until_not_busy(run, sleep, attempts=3) == "busy"
+        assert len(calls) == 3

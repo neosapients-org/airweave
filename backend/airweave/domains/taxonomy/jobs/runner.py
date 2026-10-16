@@ -81,6 +81,7 @@ class TaxonomyJobRunner:
         max_chunks: int = 20000,
         default_sample_documents: int = 200,
         min_documents: int = 1,
+        min_chunks: int = 0,
         owner: Optional[str] = None,
     ) -> None:
         """Wire the runner; ``owner`` names this process's leases."""
@@ -94,6 +95,7 @@ class TaxonomyJobRunner:
         self._max_chunks = max_chunks
         self._default_docs = default_sample_documents
         self._min_docs = min_documents
+        self._min_chunks = min_chunks
         self._owner = owner or f"taxonomy-job-{uuid.uuid4()}"
 
     async def run_job(self, job_id: uuid.UUID) -> str:
@@ -108,11 +110,11 @@ class TaxonomyJobRunner:
         except _Ended:
             pass
         except _Abort as e:
-            await self._end(job, FAILED, str(e))
+            await self._end(job, FAILED, str(e), spend_used_usd=self._spent(job))
         except (TooFewDocuments, CandidateTaken, CandidateConflict, SpendCapReached) as e:
-            await self._end(job, FAILED, str(e))
+            await self._end(job, FAILED, str(e), spend_used_usd=self._spent(job))
         except TaxonomyResolutionError as e:
-            await self._end(job, FAILED, f"taxonomy unusable: {e}")
+            await self._end(job, FAILED, f"taxonomy unusable: {e}", spend_used_usd=self._spent(job))
         except TransientUploadError:
             keep_work = True  # the build is paid for: the retry reuses it
             raise
@@ -121,13 +123,29 @@ class TaxonomyJobRunner:
             raise
         except Exception as e:
             logger.exception("[TaxonomyJob] job %s failed", job.id)
-            await self._end(job, FAILED, f"{type(e).__name__}: {e}"[:500])
+            await self._end(
+                job, FAILED, f"{type(e).__name__}: {e}"[:500], spend_used_usd=self._spent(job)
+            )
         finally:
             final = await self._repo.get(job.id)
             if not keep_work and final is not None and not final.active:
                 shutil.rmtree(self._work / str(job.id), ignore_errors=True)
         final = await self._repo.get(job.id)
         return final.state if final is not None else FAILED
+
+    def _spent(self, job: TaxonomyJobRecord) -> float:
+        """What the package spent before the job failed: the cost ledgers under its work directory.
+
+        A failed build loses its result but not its bill; without this the cost of a failed run is
+        only an estimate. Costs the ledgers never saw (a call that died mid-way) are not counted.
+        """
+        total = 0.0
+        for ledger in (self._work / str(job.id)).rglob("cost_ledger.json"):
+            try:
+                total += float(json.loads(ledger.read_text()).get("total_usd", 0.0))
+            except (OSError, ValueError):
+                continue
+        return round(total, 6)
 
     # ------------------------------------------------------------------- run
 
@@ -184,6 +202,7 @@ class TaxonomyJobRunner:
                     size,
                     self._max_chunks,
                     self._min_docs,
+                    self._min_chunks,
                 )
             chunks: List[Dict[str, Any]] = []
             cursor: Optional[str] = None

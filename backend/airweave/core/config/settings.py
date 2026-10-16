@@ -177,6 +177,10 @@ class Settings(BaseSettings):
     DISCOVER_SPEND_CAP_USD: float = 0.0
     DISCOVER_SAMPLE_DOCUMENTS: int = 200  # documents sampled when the request gives no size
     DISCOVER_MIN_DOCUMENTS: int = 1  # fewer substantive documents: the job fails, nothing is spent
+    # Fewer chunks of text than this: the job fails before it spends anything. The classifier's
+    # clustering needs hundreds of pieces; a small collection needs its small-corpus settings and a
+    # lower value here (see the T1 test plan, run D).
+    DISCOVER_MIN_CHUNKS: int = 100
     EVOLUTION_SPEND_CAP_USD: float = 0.0
 
     # Search: honour OR between a request's filter groups (contract C8). False keeps the
@@ -399,6 +403,7 @@ class Settings(BaseSettings):
         "TAXONOMY_JOBS_MAX_CHUNKS",
         "DISCOVER_SAMPLE_DOCUMENTS",
         "DISCOVER_MIN_DOCUMENTS",
+        "DISCOVER_MIN_CHUNKS",
     )
     def validate_job_counts(cls, v: int, info: ValidationInfo) -> int:
         """Lease, chunk and document limits must be at least 1."""

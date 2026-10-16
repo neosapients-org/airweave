@@ -375,3 +375,29 @@ class TestCap:
         done = await run(runner, repo)
         assert done.state == FAILED and "clustering blew up" in done.error
         assert not (tmp_path / "jobs" / str(done.id)).exists()
+
+
+class TestSmallCollections:
+    async def test_too_little_text_fails_before_anything_is_paid_for(self, tmp_path):
+        runner, repo, _, s3, gw = make(tmp_path, min_chunks=500)
+        done = await run(runner, repo)
+        assert done.state == FAILED
+        assert "not enough text yet" in done.error and "at least 500" in done.error
+        assert gw.calls == [] and s3.objects == {} and done.spend_used_usd == 0.0
+
+
+class TestFailedRunsKeepTheirBill:
+    async def test_a_failed_build_records_what_its_ledger_says(self, tmp_path):
+        from airweave.domains.taxonomy.jobs.tests.helpers import FakeGateway
+
+        class Dying(FakeGateway):
+            def discover(self, chunks, *, work_dir, **kw):
+                ledger = work_dir / "store" / "t" / "cost_ledger.json"
+                ledger.parent.mkdir(parents=True)
+                ledger.write_text(json.dumps({"total_usd": 0.0283}))
+                raise IndexError("index -1 is out of bounds for axis 0 with size 0")
+
+        runner, repo, *_ = make(tmp_path, gateway=Dying())
+        done = await run(runner, repo)
+        assert done.state == FAILED and "IndexError" in done.error
+        assert done.spend_used_usd == pytest.approx(0.0283)
