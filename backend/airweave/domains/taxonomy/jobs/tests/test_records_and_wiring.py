@@ -158,7 +158,7 @@ class TestSettings:
         assert s.TAXONOMY_JOBS_ENABLED is False
         assert (s.DISCOVER_SPEND_CAP_USD, s.EVOLUTION_SPEND_CAP_USD) == (0.0, 0.0)
         assert s.TAXONOMY_JOBS_TASK_QUEUE == "airweave-taxonomy-jobs-queue"
-        assert (s.DISCOVER_SAMPLE_DOCUMENTS, s.DISCOVER_MIN_DOCUMENTS) == (200, 12)
+        assert (s.DISCOVER_SAMPLE_DOCUMENTS, s.DISCOVER_MIN_DOCUMENTS) == (200, 1)
 
     @pytest.mark.parametrize("name", ["DISCOVER_SPEND_CAP_USD", "EVOLUTION_SPEND_CAP_USD"])
     def test_negative_caps_refused(self, monkeypatch, name):

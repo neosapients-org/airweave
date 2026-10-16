@@ -55,6 +55,8 @@ class TestCounts:
             "documentsAtVersion": 1,
             "notLabelledChunks": 2,
             "notLabelledDocuments": 1,
+            "documents": 5,  # a to e; the other collection's doc-z is not ours
+            "documentsBySource": [{"source": "unknown", "documents": 5}],
             "labellableChunks": 8,
             "stampableChunks": 1,
         }
@@ -71,6 +73,39 @@ class TestCounts:
         a = await collect_stats(world(), COLLECTION, NEW, page_size=1)
         b = await collect_stats(world(), COLLECTION, NEW, page_size=100)
         assert a.to_port() == b.to_port()
+
+
+class TestDocumentsBySource:
+    async def test_distinct_documents_per_source_not_chunks_or_entities(self):
+        store = FakeChunkStore(
+            [
+                chunk(0, doc="a", source="sharepoint"),
+                chunk(1, doc="a", source="sharepoint"),
+                chunk(0, doc="b", source="sharepoint"),
+                chunk(0, doc="c", source="google_drive"),
+                chunk(0, doc="d"),
+                chunk(0, doc="z", source="sharepoint", collection=OTHER_COLLECTION),
+            ]
+        )
+        s = await stats(store=store)
+        assert s.documents == 4
+        assert s.to_port()["documentsBySource"] == [
+            {"source": "sharepoint", "documents": 2},
+            {"source": "google_drive", "documents": 1},
+            {"source": "unknown", "documents": 1},
+        ]
+
+    async def test_a_document_in_two_sources_counts_in_each_but_once_in_total(self):
+        store = FakeChunkStore(
+            [chunk(0, doc="a", source="sharepoint"), chunk(1, doc="a", source="google_drive")]
+        )
+        s = await stats(store=store)
+        assert s.documents == 1
+        assert s.documents_by_source == {"sharepoint": 1, "google_drive": 1}
+
+    async def test_an_empty_collection_has_none(self):
+        s = await stats(store=FakeChunkStore([]))
+        assert (s.documents, s.documents_by_source) == (0, {})
 
 
 class TestEmptyTarget:

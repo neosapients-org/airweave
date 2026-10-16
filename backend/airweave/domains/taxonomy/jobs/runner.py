@@ -80,7 +80,7 @@ class TaxonomyJobRunner:
         lease_seconds: int = 300,
         max_chunks: int = 20000,
         default_sample_documents: int = 200,
-        min_documents: int = 12,
+        min_documents: int = 1,
         owner: Optional[str] = None,
     ) -> None:
         """Wire the runner; ``owner`` names this process's leases."""

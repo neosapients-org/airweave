@@ -21,7 +21,7 @@ from airweave.domains.taxonomy.relabel.chunk_store import (
     decode_token,
     encode_token,
 )
-from airweave.domains.taxonomy.relabel.chunks import F_DOCUMENT, F_HASH, ChunkRow
+from airweave.domains.taxonomy.relabel.chunks import F_DOCUMENT, F_HASH, F_SOURCE, ChunkRow
 
 COLLECTION = UUID(int=11)
 OTHER_COLLECTION = UUID(int=12)
@@ -66,6 +66,7 @@ def chunk(
     pieces: int = 1,
     unresolved: int = 0,
     topic_ids: Optional[Dict[str, int]] = None,
+    source: Optional[str] = None,
 ) -> Tuple[str, str, Dict[str, Any]]:
     """(schema, doc id, fields) of one stored chunk."""
     fields: Dict[str, Any] = {
@@ -76,6 +77,8 @@ def chunk(
         "chunk_body_offset": len(HEADER) + 1,
         "topic_ids": topic_ids or {},
     }
+    if source:
+        fields[F_SOURCE] = source
     if positions:
         fields.update(chunk_char_start=0, chunk_own_start=0, chunk_char_end=len(body))
     if status:

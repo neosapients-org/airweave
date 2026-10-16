@@ -176,7 +176,7 @@ class Settings(BaseSettings):
     TAXONOMY_JOBS_MAX_CHUNKS: int = 20000  # chunks a job reads into memory at most
     DISCOVER_SPEND_CAP_USD: float = 0.0
     DISCOVER_SAMPLE_DOCUMENTS: int = 200  # documents sampled when the request gives no size
-    DISCOVER_MIN_DOCUMENTS: int = 12  # fewer substantive documents: the job fails, nothing is spent
+    DISCOVER_MIN_DOCUMENTS: int = 1  # fewer substantive documents: the job fails, nothing is spent
     EVOLUTION_SPEND_CAP_USD: float = 0.0
 
     # Search: honour OR between a request's filter groups (contract C8). False keeps the

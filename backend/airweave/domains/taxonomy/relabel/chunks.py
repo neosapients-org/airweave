@@ -39,7 +39,7 @@ LABEL_FIELDS = (
     "taxonomy_admin_pieces",
     "taxonomy_unresolved_pieces",
 )
-SCAN_FIELDS = (F_HASH, F_DOCUMENT, *POSITION_FIELDS, *LABEL_FIELDS)
+SCAN_FIELDS = (F_HASH, F_DOCUMENT, F_SOURCE, *POSITION_FIELDS, *LABEL_FIELDS)
 
 # Statuses an incremental job classifies again (the labels they hold may now be improvable)
 INCREMENTAL_STATUSES = frozenset({UNRESOLVED, PARTIALLY_ASSIGNED, ERROR, NOT_LABELLED})
