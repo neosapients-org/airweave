@@ -33,7 +33,6 @@ class TestDefaults:
         s = _build_settings(monkeypatch, {})
         assert s.TAXONOMY_ENABLED is False
         assert s.TAXONOMY_S3_BUCKET is None
-        assert s.TAXONOMY_S3_PREFIX == "taxonomy/"
         assert s.TAXONOMY_ACTIVE_CACHE_SECONDS == 300
         assert s.TAXONOMY_LOCAL_DIR == "/tmp/airweave/taxonomy"
         assert s.TAXONOMY_EMBED_CACHE_DIR == "/tmp/airweave/taxonomy-cache"

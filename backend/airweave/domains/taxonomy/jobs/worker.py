@@ -22,6 +22,7 @@ def build_runner(container: Any) -> Any:
     import yaml  # type: ignore[import-untyped]
 
     from airweave.adapters.storage.aws_s3 import S3Backend
+    from airweave.domains.taxonomy.artifacts import TAXONOMY_S3_PREFIX
     from airweave.domains.taxonomy.jobs.candidates import CandidateWriter
     from airweave.domains.taxonomy.jobs.gateway import PackageGateway
     from airweave.domains.taxonomy.jobs.records import SqlTaxonomyJobRepository
@@ -41,7 +42,7 @@ def build_runner(container: Any) -> Any:
     return TaxonomyJobRunner(
         SqlTaxonomyJobRepository(),
         VespaChunkStore,
-        CandidateWriter(storage, settings.TAXONOMY_S3_PREFIX),
+        CandidateWriter(storage, TAXONOMY_S3_PREFIX),
         PackageGateway(build_config, cache_dir=settings.TAXONOMY_JOBS_CACHE_DIR or None),
         container.taxonomy_processor.resolver,
         work_dir=settings.TAXONOMY_JOBS_WORK_DIR,

@@ -63,7 +63,7 @@ class CandidateWriter:
     """Writes one candidate folder for one job."""
 
     def __init__(self, storage: OnceStorage, prefix: str = "taxonomy/") -> None:
-        """``prefix`` is ``TAXONOMY_S3_PREFIX``."""
+        """``prefix`` is the bucket's taxonomy folder (``artifacts.TAXONOMY_S3_PREFIX``)."""
         self._storage = storage
         self._prefix = prefix if prefix.endswith("/") or not prefix else prefix + "/"
 

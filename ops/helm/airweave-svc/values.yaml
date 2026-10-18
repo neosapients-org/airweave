@@ -197,7 +197,6 @@ env:
   SEARCH_FILTER_GROUPS_OR: 'false'       # Neo: 'true'
   TAXONOMY_ENABLED: 'false'              # Neo: 'true' (needs TAXONOMY_S3_BUCKET)
   # TAXONOMY_S3_BUCKET: per environment  (read access via the service account's IAM role)
-  TAXONOMY_S3_PREFIX: taxonomy/
   TAXONOMY_ACTIVE_CACHE_SECONDS: '300'
   TAXONOMY_LOCAL_DIR: /data/airweave-taxonomy/versions        # worker volume "taxonomy"
   TAXONOMY_EMBED_CACHE_DIR: /data/airweave-taxonomy/embed-cache

@@ -38,6 +38,10 @@ from airweave.domains.taxonomy.mapping import RegistryMap, RegistryMapError
 
 CALIBRATED, LEARNED = "calibrated", "learned"
 
+# The folder every taxonomy file lives under in the bucket: the same one Meridian writes. A constant
+# in both repositories, so the two cannot disagree.
+TAXONOMY_S3_PREFIX = "taxonomy/"
+
 # Files a version folder must hold, each listed in manifest.json with its sha256 (contract 8)
 REQUIRED_FILES = (
     "final_taxonomy.json",

@@ -9,7 +9,6 @@ def _settings(enabled: bool, bucket: str = ""):
     return SimpleNamespace(
         TAXONOMY_ENABLED=enabled,
         TAXONOMY_S3_BUCKET=bucket,
-        TAXONOMY_S3_PREFIX="taxonomy/",
         TAXONOMY_LOCAL_DIR="/tmp/none",
         TAXONOMY_ACTIVE_CACHE_SECONDS=300,
         TAXONOMY_EMBED_CACHE_DIR="/tmp/none-cache",

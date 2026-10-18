@@ -151,7 +151,6 @@ class Settings(BaseSettings):
     # no taxonomy version setting: the version is resolved per sync from the collection.
     TAXONOMY_ENABLED: bool = False
     TAXONOMY_S3_BUCKET: Optional[str] = None
-    TAXONOMY_S3_PREFIX: str = "taxonomy/"
     TAXONOMY_ACTIVE_CACHE_SECONDS: int = 300
     TAXONOMY_LOCAL_DIR: str = "/tmp/airweave/taxonomy"
     TAXONOMY_EMBED_CACHE_DIR: str = "/tmp/airweave/taxonomy-cache"  # one SQLite file per thread

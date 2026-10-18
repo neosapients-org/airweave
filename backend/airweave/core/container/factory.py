@@ -136,7 +136,7 @@ from airweave.domains.syncs.jobs.state_machine import SyncJobStateMachine
 from airweave.domains.syncs.repository import SyncRepository
 from airweave.domains.syncs.service import SyncService
 from airweave.domains.syncs.state_machine import SyncStateMachine
-from airweave.domains.taxonomy.artifacts import TaxonomyResolver
+from airweave.domains.taxonomy.artifacts import TAXONOMY_S3_PREFIX, TaxonomyResolver
 from airweave.domains.taxonomy.classifier_pool import ClassifierPool
 from airweave.domains.temporal.client import get_cached_client as get_cached_temporal_client
 from airweave.domains.temporal.schedule_service import TemporalScheduleService
@@ -1406,7 +1406,7 @@ def _create_taxonomy_processor(
         )
     resolver = TaxonomyResolver(
         storage=storage,
-        prefix=settings.TAXONOMY_S3_PREFIX,
+        prefix=TAXONOMY_S3_PREFIX,
         local_dir=settings.TAXONOMY_LOCAL_DIR,
         active_cache_seconds=settings.TAXONOMY_ACTIVE_CACHE_SECONDS,
         max_file_bytes=settings.TAXONOMY_ARTIFACT_MAX_MB * 1024 * 1024,
