@@ -135,12 +135,15 @@ class TestTransport:
 
 
 class TestMatches:
-    @pytest.mark.parametrize("model, dims, expected", [
-        ("text-embedding-3-small", 1536, True),
-        ("text-embedding-3-small", 1024, False),
-        ("text-embedding-3-large", 1536, False),
-        (None, None, False),
-    ])
+    @pytest.mark.parametrize(
+        "model, dims, expected",
+        [
+            ("text-embedding-3-small", 1536, True),
+            ("text-embedding-3-small", 1024, False),
+            ("text-embedding-3-large", 1536, False),
+            (None, None, False),
+        ],
+    )
     def test_model_and_dimensions_must_both_agree(self, model, dims, expected):
         dense = FakeDense("text-embedding-3-small", 1536)
         config = {"embedding": {} if model is None else {"model": model, "dimensions": dims}}
@@ -175,17 +178,28 @@ def stand_in(monkeypatch):
     integ.TaxonomyClassifier = Recorder
     contract = types.ModuleType("taxonomy_classifier.contract")
     contract.to_contract = lambda e, h: dict(e)
-    for name, mod in (("taxonomy_classifier", types.ModuleType("taxonomy_classifier")),
-                      ("taxonomy_classifier.integration", types.ModuleType("x")),
-                      ("taxonomy_classifier.integration.airweave", integ),
-                      ("taxonomy_classifier.contract", contract)):
+    for name, mod in (
+        ("taxonomy_classifier", types.ModuleType("taxonomy_classifier")),
+        ("taxonomy_classifier.integration", types.ModuleType("x")),
+        ("taxonomy_classifier.integration.airweave", integ),
+        ("taxonomy_classifier.contract", contract),
+    ):
         monkeypatch.setitem(sys.modules, name, mod)
 
 
 def taxonomy(model, dims, sha="a" * 64, version="acme-1"):
-    return ResolvedTaxonomy("neo-acme", "t-acme", version, sha, 1, "calibrated", None,
-                            Path("/tmp/none"), {"embedding": {"model": model, "dimensions": dims}},
-                            RegistryMap("acme-1", {}, {}))
+    return ResolvedTaxonomy(
+        "neo-acme",
+        "t-acme",
+        version,
+        sha,
+        1,
+        "calibrated",
+        None,
+        Path("/tmp/none"),
+        {"embedding": {"model": model, "dimensions": dims}},
+        RegistryMap("acme-1", {}, {}),
+    )
 
 
 ROWS = [{"chunk_id": "c0", "document_id": "d", "text": "Acme"}]
@@ -293,3 +307,57 @@ class TestFallbackIsVisible:
         families = {f.name: f for f in TaxonomyChunksCollector(tally).collect()}
         sample = families["taxonomy_embed_fallback"].samples[0]
         assert sample.name == "taxonomy_embed_fallback_total" and sample.value == 1.0
+
+
+class TestBatchDeadline:
+    """A batch the caller gave up on makes no further embedding calls."""
+
+    async def test_a_second_call_after_the_batch_deadline_is_refused_without_calling_the_embedder(
+        self,
+    ):
+        dense = FakeDense(delay=0.0)
+        transport = AirweaveEmbedTransport(dense)
+        loop = asyncio.get_running_loop()
+
+        def work():
+            transport.bind(loop, 0.2)
+            transport(["first"])  # within the deadline
+            import time
+
+            time.sleep(0.3)  # the batch ran out of time (the caller has marked it ERROR)
+            transport(["second"])
+
+        with pytest.raises(TimeoutError, match="deadline"):
+            await loop.run_in_executor(None, work)
+
+        assert dense.calls == [["first"]]
+
+    async def test_one_call_is_cut_at_the_time_left_not_the_whole_timeout(self):
+        dense = FakeDense(delay=2.0)
+        transport = AirweaveEmbedTransport(dense)
+        loop = asyncio.get_running_loop()
+
+        def work():
+            transport.bind(loop, 0.2)
+            transport(["slow"])
+
+        started = loop.time()
+        with pytest.raises(TimeoutError):
+            await loop.run_in_executor(None, work)
+        assert loop.time() - started < 1.0
+
+    async def test_binding_again_gives_the_next_batch_a_fresh_deadline(self):
+        dense = FakeDense()
+        transport = AirweaveEmbedTransport(dense)
+        loop = asyncio.get_running_loop()
+
+        def work():
+            import time
+
+            transport.bind(loop, 0.1)
+            time.sleep(0.15)
+            transport.bind(loop, 5)  # the next batch on this thread
+            return transport(["again"])
+
+        vectors, _ = await loop.run_in_executor(None, work)
+        assert len(vectors) == 1

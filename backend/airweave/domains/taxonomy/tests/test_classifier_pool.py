@@ -46,7 +46,8 @@ class StandInClassifier:
         if self.delay:
             time.sleep(self.delay)
         return types.SimpleNamespace(
-            enriched=[{"chunk_id": r["chunk_id"], "thread": self.thread} for r in rows])
+            enriched=[{"chunk_id": r["chunk_id"], "thread": self.thread} for r in rows]
+        )
 
 
 @pytest.fixture
@@ -56,18 +57,29 @@ def stand_in(monkeypatch):
     integ.TaxonomyClassifier = StandInClassifier
     contract = types.ModuleType("taxonomy_classifier.contract")
     contract.to_contract = lambda e, h: dict(e)
-    for name, mod in (("taxonomy_classifier", types.ModuleType("taxonomy_classifier")),
-                      ("taxonomy_classifier.integration", types.ModuleType("x")),
-                      ("taxonomy_classifier.integration.airweave", integ),
-                      ("taxonomy_classifier.contract", contract)):
+    for name, mod in (
+        ("taxonomy_classifier", types.ModuleType("taxonomy_classifier")),
+        ("taxonomy_classifier.integration", types.ModuleType("x")),
+        ("taxonomy_classifier.integration.airweave", integ),
+        ("taxonomy_classifier.contract", contract),
+    ):
         monkeypatch.setitem(sys.modules, name, mod)
     return StandInClassifier
 
 
 def _taxonomy(version="acme-2026.10", sha="a" * 64, **config) -> ResolvedTaxonomy:
-    return ResolvedTaxonomy("neo-acme", "t-acme", version, sha, 1, "calibrated", None,
-                            Path("/tmp/none"), {"embedding": {}, **config},
-                            RegistryMap(version, {}, {}))
+    return ResolvedTaxonomy(
+        "neo-acme",
+        "t-acme",
+        version,
+        sha,
+        1,
+        "calibrated",
+        None,
+        Path("/tmp/none"),
+        {"embedding": {}, **config},
+        RegistryMap(version, {}, {}),
+    )
 
 
 def _rows(n, prefix="c"):
@@ -77,8 +89,9 @@ def _rows(n, prefix="c"):
 class TestThreads:
     async def test_each_classifier_only_used_on_its_thread(self, tmp_path, stand_in):
         pool = ClassifierPool(2, tmp_path)
-        results = await asyncio.gather(*[pool.classify(_taxonomy(), _rows(3, f"b{i}_"), 10)
-                                         for i in range(12)])
+        results = await asyncio.gather(
+            *[pool.classify(_taxonomy(), _rows(3, f"b{i}_"), 10) for i in range(12)]
+        )
         assert all("thread" in r for batch in results for r in batch)
         assert len(stand_in.created) == 2  # one classifier per thread for the version
         assert len({c.thread for c in stand_in.created}) == 2
@@ -86,8 +99,7 @@ class TestThreads:
 
     async def test_round_robin(self, tmp_path, stand_in):
         pool = ClassifierPool(3, tmp_path)
-        threads = [(await pool.classify(_taxonomy(), _rows(1), 10))[0]["thread"]
-                   for _ in range(6)]
+        threads = [(await pool.classify(_taxonomy(), _rows(1), 10))[0]["thread"] for _ in range(6)]
         assert threads[:3] == threads[3:] and len(set(threads)) == 3
         pool.close()
 
@@ -239,15 +251,21 @@ class TestStaleCacheFiles:
     """A killed worker leaves its files on the emptyDir; the next pool removes them."""
 
     def test_files_of_a_finished_process_are_deleted_at_start(self, tmp_path, dead_pid):
-        stale = _touch(tmp_path, f"{dead_pid}-0.sqlite", f"{dead_pid}-1-g3.sqlite",
-                       f"{dead_pid}-0.sqlite-wal", f"{dead_pid}-0.sqlite-shm",
-                       f"{dead_pid}-0.sqlite-journal")
+        stale = _touch(
+            tmp_path,
+            f"{dead_pid}-0.sqlite",
+            f"{dead_pid}-1-g3.sqlite",
+            f"{dead_pid}-0.sqlite-wal",
+            f"{dead_pid}-0.sqlite-shm",
+            f"{dead_pid}-0.sqlite-journal",
+        )
         ClassifierPool(2, tmp_path)
         assert not any(p.exists() for p in stale)
 
     def test_files_of_another_live_process_are_never_deleted(self, tmp_path, live_pid):
-        theirs = _touch(tmp_path, f"{live_pid}-0.sqlite", f"{live_pid}-0-g2.sqlite",
-                        f"{live_pid}-0.sqlite-wal")
+        theirs = _touch(
+            tmp_path, f"{live_pid}-0.sqlite", f"{live_pid}-0-g2.sqlite", f"{live_pid}-0.sqlite-wal"
+        )
         ClassifierPool(2, tmp_path)
         assert all(p.exists() for p in theirs)
 
@@ -270,6 +288,59 @@ class TestStaleCacheFiles:
         first.close()
         assert not mine.exists()
 
+    async def test_closing_the_first_pool_leaves_a_live_second_pools_files(
+        self, tmp_path, stand_in
+    ):
+        first = ClassifierPool(1, tmp_path)
+        second = ClassifierPool(1, tmp_path)  # same process, same directory, both live
+        await first.classify(_taxonomy(sha="a" * 64), _rows(1), 10)
+        await second.classify(_taxonomy(sha="b" * 64), _rows(1), 10)
+        mine, theirs = (Path(c.config["embedding"]["cache_path"]) for c in stand_in.created)
+        mine.write_bytes(b"x")
+        theirs.write_bytes(b"y")
+
+        # They do not share one file: the second pool has its own names.
+        assert mine != theirs and "-s1-" in theirs.name
+        first.close()
+
+        assert not mine.exists() and theirs.read_bytes() == b"y"
+        second.close()
+        assert not theirs.exists()
+
+    async def test_a_third_pool_after_the_first_closed_takes_its_free_slot(
+        self, tmp_path, stand_in
+    ):
+        first = ClassifierPool(1, tmp_path)
+        second = ClassifierPool(1, tmp_path)
+        first.close()
+        third = ClassifierPool(1, tmp_path)
+        await third.classify(_taxonomy(), _rows(1), 10)
+        assert "-s" not in Path(stand_in.created[-1].config["embedding"]["cache_path"]).name
+        second.close()
+        third.close()
+
+    async def test_files_stay_when_a_thread_is_still_busy_at_shutdown(
+        self, tmp_path, stand_in, monkeypatch
+    ):
+        from airweave.domains.taxonomy import classifier_pool
+
+        monkeypatch.setattr(classifier_pool, "_CLOSE_WAIT_SECONDS", 0.2)
+        pool = ClassifierPool(1, tmp_path)
+        task = asyncio.create_task(pool.classify(_taxonomy(_delay=1.5), _rows(1), 0.05))
+        with pytest.raises(asyncio.TimeoutError):
+            await task
+        path = Path(stand_in.created[0].config["embedding"]["cache_path"])
+        path.write_bytes(b"live")
+
+        pool.close()  # the timed-out batch is still running on its thread
+
+        assert path.exists(), "a live classifier's database must not be deleted under it"
+        await asyncio.sleep(1.6)
+
+    def test_a_negative_cache_limit_is_an_error_not_unlimited(self, tmp_path):
+        with pytest.raises(ValueError, match="max_cache_mb"):
+            ClassifierPool(1, tmp_path, max_cache_mb=-1)
+
     def test_a_pool_that_was_closed_releases_the_directory(self, tmp_path):
         ClassifierPool(1, tmp_path).close()
         later = _touch(tmp_path, f"{os.getpid()}-0.sqlite")
@@ -277,16 +348,24 @@ class TestStaleCacheFiles:
         assert not later[0].exists()
 
     def test_other_files_are_left_alone(self, tmp_path, dead_pid):
-        keep = _touch(tmp_path, "notes.txt", "abc-1.sqlite", f"{dead_pid}.sqlite",
-                      f"{dead_pid}-x.sqlite", f"x{dead_pid}-0.sqlite", f"{dead_pid}-0.db")
+        keep = _touch(
+            tmp_path,
+            "notes.txt",
+            "abc-1.sqlite",
+            f"{dead_pid}.sqlite",
+            f"{dead_pid}-x.sqlite",
+            f"x{dead_pid}-0.sqlite",
+            f"{dead_pid}-0.db",
+        )
         ClassifierPool(1, tmp_path)
         assert all(p.exists() for p in keep)
 
     def test_a_missing_directory_is_fine(self, tmp_path):
         ClassifierPool(1, tmp_path / "does-not-exist-yet")
 
-    def test_a_file_that_cannot_be_removed_does_not_stop_the_start(self, tmp_path, dead_pid,
-                                                                    monkeypatch):
+    def test_a_file_that_cannot_be_removed_does_not_stop_the_start(
+        self, tmp_path, dead_pid, monkeypatch
+    ):
         _touch(tmp_path, f"{dead_pid}-0.sqlite")
         monkeypatch.setattr(os, "remove", lambda p: (_ for _ in ()).throw(PermissionError(p)))
         ClassifierPool(1, tmp_path)

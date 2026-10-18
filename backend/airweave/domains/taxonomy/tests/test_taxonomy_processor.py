@@ -25,26 +25,55 @@ from airweave.domains.taxonomy.metrics import (
 from airweave.platform.entities._base import AirweaveSystemMetadata, Breadcrumb, CodeFileEntity
 from airweave.platform.entities.stub import PdfStubFileEntity
 
-DOC = ("Acme overview of the quarter. Late loan payments rose sharply this quarter. "
-       "Globex revenue grew in every region.")
+DOC = (
+    "Acme overview of the quarter. Late loan payments rose sharply this quarter. "
+    "Globex revenue grew in every region."
+)
 HEADER = "Acme Q3.pdf · google_drive · Finance"
-REGISTRY = RegistryMap("acme-2026.10", {"CAT001": "acme:credit.loan_quality",
-                                        "CAT002": "acme:revenue.growth"},
-                       {"BF01": "acme:credit"})
-TAXONOMY = ResolvedTaxonomy("neo-acme", "t-acme", "acme-2026.10", "a" * 64, 3, "calibrated",
-                            None, Path("/tmp/none"), {}, REGISTRY)
-LABEL_FIELDS = ("topic_ids", "broad_family_ids", "taxonomy_spans", "taxonomy_version",
-                "taxonomy_piece_count", "taxonomy_admin_pieces", "taxonomy_unresolved_pieces")
+REGISTRY = RegistryMap(
+    "acme-2026.10",
+    {"CAT001": "acme:credit.loan_quality", "CAT002": "acme:revenue.growth"},
+    {"BF01": "acme:credit"},
+)
+TAXONOMY = ResolvedTaxonomy(
+    "neo-acme",
+    "t-acme",
+    "acme-2026.10",
+    "a" * 64,
+    3,
+    "calibrated",
+    None,
+    Path("/tmp/none"),
+    {},
+    REGISTRY,
+)
+LABEL_FIELDS = (
+    "topic_ids",
+    "broad_family_ids",
+    "taxonomy_spans",
+    "taxonomy_version",
+    "taxonomy_piece_count",
+    "taxonomy_admin_pieces",
+    "taxonomy_unresolved_pieces",
+)
 
 
 def chunk(i: int, start: int, own: int, end: int, header: bool = True) -> PdfStubFileEntity:
     body = DOC[start:end]
-    e = PdfStubFileEntity(entity_id=f"acme-q3__chunk_{i}", name="Acme Q3.pdf", stub_id="acme-q3",
-                          file_name="Acme Q3.pdf", url="stub://x", size=1, file_type="pdf",
-                          breadcrumbs=[Breadcrumb(entity_id="f", name="Finance", entity_type="F")],
-                          textual_representation=f"{HEADER}\n{body}" if header else body,
-                          airweave_system_metadata=AirweaveSystemMetadata(
-                              original_entity_id="acme-q3", chunk_index=i))
+    e = PdfStubFileEntity(
+        entity_id=f"acme-q3__chunk_{i}",
+        name="Acme Q3.pdf",
+        stub_id="acme-q3",
+        file_name="Acme Q3.pdf",
+        url="stub://x",
+        size=1,
+        file_type="pdf",
+        breadcrumbs=[Breadcrumb(entity_id="f", name="Finance", entity_type="F")],
+        textual_representation=f"{HEADER}\n{body}" if header else body,
+        airweave_system_metadata=AirweaveSystemMetadata(
+            original_entity_id="acme-q3", chunk_index=i
+        ),
+    )
     e.chunk_char_start, e.chunk_own_start, e.chunk_char_end = start, own, end
     e.chunk_body_offset = len(HEADER) + 1 if header else 0
     return e
@@ -77,13 +106,26 @@ class FakePool:
         self.rows.extend(rows)
         if self.fail is not None:
             raise self.fail
-        return [{"chunk_id": r["chunk_id"], "status": "ASSIGNED",
-                 "topics": [{"category_id": "CAT001", "broad_family_id": "BF01",
-                             "supporting_children": 1}],
-                 "taxonomy_children": [{"taxonomy_chunk_id": "t", "status": "ASSIGNED",
-                                        "char_start": 0, "char_end": len(r["text"]),
-                                        "topic_ids": ["CAT001"]}]}
-                for r in rows if r["chunk_id"] not in self.drop]
+        return [
+            {
+                "chunk_id": r["chunk_id"],
+                "status": "ASSIGNED",
+                "topics": [
+                    {"category_id": "CAT001", "broad_family_id": "BF01", "supporting_children": 1}
+                ],
+                "taxonomy_children": [
+                    {
+                        "taxonomy_chunk_id": "t",
+                        "status": "ASSIGNED",
+                        "char_start": 0,
+                        "char_end": len(r["text"]),
+                        "topic_ids": ["CAT001"],
+                    }
+                ],
+            }
+            for r in rows
+            if r["chunk_id"] not in self.drop
+        ]
 
 
 def sync_context(job="9e7d1c2a-0000-4000-8000-000000000002", readable="neo-acme"):
@@ -99,8 +141,9 @@ def enabled(monkeypatch):
 
 
 def processor(resolver=None, pool=None, tally=None):
-    return TaxonomyProcessor(resolver or FakeResolver(), pool or FakePool(), 5.0,
-                             tally or TaxonomyTally())
+    return TaxonomyProcessor(
+        resolver or FakeResolver(), pool or FakePool(), 5.0, tally or TaxonomyTally()
+    )
 
 
 class TestLabelled:
@@ -109,15 +152,19 @@ class TestLabelled:
         cs = chunks()
         await processor(pool=pool).process(cs, sync_context())
         assert [r["text"] for r in pool.rows] == [DOC[0:30], DOC[30:76], DOC[76:]]
-        assert [r["document_id"] for r in pool.rows] == ["acme-q3"] * 3
+        # the document is identified by sync, schema and source id, not the bare source id
+        assert [r["document_id"] for r in pool.rows] == ["/PdfStubFileEntity/acme-q3"] * 3
         for c in cs:
             assert c.taxonomy_status == "ASSIGNED" and c.taxonomy_version == "acme-2026.10"
             assert c.topic_ids == {"acme:credit.loan_quality": 1}
             assert c.broad_family_ids == ["acme:credit"]
             (span,) = json.loads(c.taxonomy_spans)
             assert (span["s"], span["e"]) == (c.chunk_own_start, c.chunk_char_end)
-            assert (c.taxonomy_piece_count, c.taxonomy_admin_pieces,
-                    c.taxonomy_unresolved_pieces) == (1, 0, 0)
+            assert (
+                c.taxonomy_piece_count,
+                c.taxonomy_admin_pieces,
+                c.taxonomy_unresolved_pieces,
+            ) == (1, 0, 0)
 
     async def test_disabled_leaves_chunks_untouched(self):
         cs = chunks()
@@ -151,12 +198,16 @@ class TestLabelled:
 
 
 class TestFailOpen:
-    @pytest.mark.parametrize("resolver,pool", [
-        (FakeResolver(TaxonomyResolutionError("checksum mismatch")), FakePool()),
-        (FakeResolver(), FakePool(fail=RuntimeError("classifier blew up"))),
-        (FakeResolver(), FakePool(fail=asyncio.TimeoutError())),
-        (FakeResolver(RuntimeError("unexpected")), FakePool()),
-    ], ids=["resolution", "classifier", "timeout", "unexpected"])
+    @pytest.mark.parametrize(
+        "resolver,pool",
+        [
+            (FakeResolver(TaxonomyResolutionError("checksum mismatch")), FakePool()),
+            (FakeResolver(), FakePool(fail=RuntimeError("classifier blew up"))),
+            (FakeResolver(), FakePool(fail=asyncio.TimeoutError())),
+            (FakeResolver(RuntimeError("unexpected")), FakePool()),
+        ],
+        ids=["resolution", "classifier", "timeout", "unexpected"],
+    )
     async def test_error_written_counted_and_sync_continues(self, enabled, resolver, pool):
         tally = TaxonomyTally()
         cs = chunks()
@@ -175,8 +226,11 @@ class TestFailOpen:
         assert [c.taxonomy_status for c in cs] == ["ASSIGNED", "ERROR", "ASSIGNED"]
 
     async def test_untranslated_id_logged(self, enabled):
-        resolver = FakeResolver(TAXONOMY.__class__(**{**TAXONOMY.__dict__,
-                                                      "registry": RegistryMap("acme-2026.10", {}, {})}))
+        resolver = FakeResolver(
+            TAXONOMY.__class__(
+                **{**TAXONOMY.__dict__, "registry": RegistryMap("acme-2026.10", {}, {})}
+            )
+        )
         cs = chunks()
         ctx = sync_context()
         await processor(resolver=resolver).process(cs, ctx)
@@ -228,8 +282,9 @@ class TestDestinationHandler:
     async def test_labels_written_before_the_insert(self, enabled):
         written = []
         dest = MagicMock()
-        dest.bulk_insert = AsyncMock(side_effect=lambda ents: written.extend(
-            (e.entity_id, e.taxonomy_status) for e in ents))
+        dest.bulk_insert = AsyncMock(
+            side_effect=lambda ents: written.extend((e.entity_id, e.taxonomy_status) for e in ents)
+        )
         chunk_embed = MagicMock()
         chunk_embed.process = AsyncMock(side_effect=lambda ents, ctx, rt: chunks())
         handler = DestinationHandler([dest], chunk_embed, taxonomy=processor())
@@ -247,3 +302,23 @@ class TestDestinationHandler:
         handler._classifier = MagicMock(enabled=False)
         await handler._do_process_and_insert([chunk(0, 0, 0, 30)], sync_context(), MagicMock())
         assert written and all(e.taxonomy_status is None for e in written)
+
+
+class TestDocumentIdentityForTheClassifier:
+    def test_equal_source_ids_in_two_syncs_or_schemas_are_different_documents(self):
+        from airweave.domains.sync_pipeline.processors.taxonomy import _document_id
+
+        a, b, c = chunk(0, 0, 0, 30), chunk(0, 0, 0, 30), chunk(0, 0, 0, 30)
+        a.airweave_system_metadata.sync_id = UUID("5c0b9a6e-0000-4000-8000-000000000001")
+        b.airweave_system_metadata.sync_id = UUID("5c0b9a6e-0000-4000-8000-000000000002")
+        c.airweave_system_metadata.sync_id = a.airweave_system_metadata.sync_id
+        c.airweave_system_metadata.entity_type = "MailEntity"
+
+        assert len({_document_id(a), _document_id(b), _document_id(c)}) == 3
+        assert _document_id(a).startswith("5c0b9a6e-0000-4000-8000-000000000001/")
+
+    def test_chunks_of_one_document_share_one_id(self):
+        from airweave.domains.sync_pipeline.processors.taxonomy import _document_id
+
+        first, second = chunk(0, 0, 0, 30), chunk(1, 0, 30, 76)
+        assert _document_id(first) == _document_id(second)

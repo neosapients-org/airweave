@@ -38,9 +38,13 @@ class Clock:
 def _fake_build(tmp: Path) -> tuple[Path, dict]:
     built = tmp / "build"
     built.mkdir(parents=True, exist_ok=True)
-    final = {"categories": [{"category_id": "CAT001", "name": "Loan Quality", "broad_family_id": "BF01"},
-                            {"category_id": "CAT002", "name": "Revenue", "broad_family_id": "BF01"}],
-             "broad_families": [{"broad_family_id": "BF01", "name": "Credit"}]}
+    final = {
+        "categories": [
+            {"category_id": "CAT001", "name": "Loan Quality", "broad_family_id": "BF01"},
+            {"category_id": "CAT002", "name": "Revenue", "broad_family_id": "BF01"},
+        ],
+        "broad_families": [{"broad_family_id": "BF01", "name": "Credit"}],
+    }
     (built / "final_taxonomy.json").write_text(json.dumps(final))
     for n in ("dense_prototypes.npy", "sparse_profiles.npz", "bm25_vocabulary.json"):
         (built / n).write_bytes(f"stand-in {n}".encode())
@@ -80,13 +84,20 @@ class TestResolve:
         resolver, _ = _resolver(tmp_path, s3)
         t = await resolver.resolve(READABLE)
         assert (t.tenant_id, t.taxonomy_version, t.manifest_sha256) == (
-            TENANT, VERSION, published.manifest_sha256)
+            TENANT,
+            VERSION,
+            published.manifest_sha256,
+        )
         assert t.acceptance_policy == "calibrated" and t.acceptance_model_id is None
         assert t.cache_key == (VERSION, published.manifest_sha256)
-        assert t.local_path == tmp_path / "local" / TENANT / f"{VERSION}-{published.manifest_sha256}"
+        assert (
+            t.local_path == tmp_path / "local" / TENANT / f"{VERSION}-{published.manifest_sha256}"
+        )
         assert (t.local_path / "taxonomy.yaml").is_file()
-        assert t.registry.categories == {"CAT001": "t-acme:credit.loan_quality",
-                                         "CAT002": "t-acme:credit.revenue"}
+        assert t.registry.categories == {
+            "CAT001": "t-acme:credit.loan_quality",
+            "CAT002": "t-acme:credit.revenue",
+        }
         assert t.generation == 1
 
     async def test_cached_until_ttl(self, tmp_path, s3, published):
@@ -204,8 +215,17 @@ class TestLearnedPolicyWithoutPackage:
 
     def _learned(self, tmp_path, s3, model_dir=None):
         built, cfg = _fake_build(tmp_path)
-        return publish(s3, built, cfg, TENANT, VERSION, readable_ids=[READABLE], policy="learned",
-                       model_dir=model_dir, model_id="acme_hgb")
+        return publish(
+            s3,
+            built,
+            cfg,
+            TENANT,
+            VERSION,
+            readable_ids=[READABLE],
+            policy="learned",
+            model_dir=model_dir,
+            model_id="acme_hgb",
+        )
 
     async def test_manifest_without_model_sha256(self, tmp_path, s3):
         self._learned(tmp_path, s3)
@@ -248,8 +268,17 @@ class TestLearnedPolicyWithPackage:
 
         write_model(tmp_path / "model", 0.9, **model_kw)
         built, cfg = _fake_build(tmp_path)
-        publish(s3, built, cfg, TENANT, VERSION, readable_ids=[READABLE], policy="learned",
-                model_dir=tmp_path / "model", model_id="acme_hgb")
+        publish(
+            s3,
+            built,
+            cfg,
+            TENANT,
+            VERSION,
+            readable_ids=[READABLE],
+            policy="learned",
+            model_dir=tmp_path / "model",
+            model_id="acme_hgb",
+        )
 
     async def test_verified_model_wired_into_config(self, tmp_path, s3):
         self._learned(tmp_path, s3)
@@ -258,7 +287,10 @@ class TestLearnedPolicyWithPackage:
         acc = t.config["assignment"]["acceptance"]
         assert (t.acceptance_policy, t.acceptance_model_id) == ("learned", "acme_hgb")
         assert acc["policy"] == "learned"
-        assert Path(acc["model_path"]).read_bytes() == (tmp_path / "model/frozen_model.pkl").read_bytes()
+        assert (
+            Path(acc["model_path"]).read_bytes()
+            == (tmp_path / "model/frozen_model.pkl").read_bytes()
+        )
         assert Path(acc["model_manifest"]).is_file()
 
     async def test_model_file_missing(self, tmp_path, s3):
@@ -275,10 +307,104 @@ class TestLearnedPolicyWithPackage:
         with pytest.raises(TaxonomyResolutionError, match="does not match its sha256"):
             await resolver.resolve(READABLE)
         assert not (tmp_path / "local/models").exists() or not any(
-            (tmp_path / "local/models").rglob("*.pkl"))
+            (tmp_path / "local/models").rglob("*.pkl")
+        )
 
     async def test_other_feature_schema(self, tmp_path, s3):
         self._learned(tmp_path, s3, schema="learned-acceptance-features/0")
         resolver, _ = _resolver(tmp_path, s3)
         with pytest.raises(TaxonomyResolutionError, match="feature schema"):
             await resolver.resolve(READABLE)
+
+
+class TestPathComponents:
+    """A tenant or version is one plain path component: never ``.``, ``..`` or a path."""
+
+    @pytest.mark.parametrize(
+        "name", [".", "..", "../x", "a/b", "a\\b", "", ".hidden", "-lead", "a b", "x/.."]
+    )
+    def test_unsafe_names_are_refused(self, name):
+        from airweave.domains.taxonomy.artifacts import is_safe_name
+
+        assert is_safe_name(name) is False
+
+    @pytest.mark.parametrize("name", ["t-acme", "acme-2026.10", "v1", "a.b_c+d-e", "T9"])
+    def test_plain_names_are_accepted(self, name):
+        from airweave.domains.taxonomy.artifacts import is_safe_name
+
+        assert is_safe_name(name) is True
+
+    @pytest.mark.parametrize("tenant", [".", ".."])
+    async def test_a_dot_tenant_in_an_active_file_never_reaches_the_filesystem(
+        self, tmp_path, s3, published, tenant
+    ):
+        active = s3 / f"taxonomy/active/{READABLE}.json"
+        data = json.loads(active.read_text())
+        data["tenant_id"] = tenant
+        active.write_text(json.dumps(data))
+        resolver, backend = _resolver(tmp_path, s3)
+
+        with pytest.raises(TaxonomyResolutionError, match="unsafe"):
+            await resolver.resolve(READABLE)
+
+        assert not (tmp_path / "local").exists() or not any((tmp_path / "local").iterdir())
+        assert not any("manifest.json" in r for r in backend.reads)
+
+    async def test_a_local_dir_that_the_version_would_leave_is_refused(self, tmp_path, s3):
+        resolver, _ = _resolver(tmp_path, s3)
+        with pytest.raises(TaxonomyResolutionError, match="outside the taxonomy cache"):
+            resolver._beneath_local_dir(tmp_path / "local" / ".." / "elsewhere")
+
+
+class TestArtifactSizes:
+    def _resolver_with(self, tmp_path, s3, **limits):
+        return TaxonomyResolver(
+            CountingBackend(s3), "taxonomy/", tmp_path / "local", 300, Clock(), **limits
+        )
+
+    def _declare(self, s3, name, size):
+        mf = _version_file(s3, "manifest.json")
+        man = json.loads(mf.read_text())
+        for entry in man["files"]:
+            if entry["file"] == name:
+                entry["size"] = size
+        raw = json.dumps(man).encode()
+        mf.write_bytes(raw)
+        activate(s3, READABLE, TENANT, VERSION, hashlib.sha256(raw).hexdigest())
+
+    async def test_a_declared_size_over_the_file_limit_is_refused_before_any_download(
+        self, tmp_path, s3, published
+    ):
+        self._declare(s3, "dense_prototypes.npy", 10_000)
+        resolver = self._resolver_with(tmp_path, s3, max_file_bytes=1_000)
+
+        with pytest.raises(TaxonomyResolutionError, match="declares 10000 bytes"):
+            await resolver.resolve(READABLE)
+
+        assert not (tmp_path / "local").exists() or not any((tmp_path / "local").rglob("*.npy"))
+        assert not any(r.endswith("dense_prototypes.npy") for r in resolver._storage.reads)
+
+    async def test_a_file_that_declares_nothing_is_checked_when_it_is_read(
+        self, tmp_path, s3, published
+    ):
+        resolver = self._resolver_with(tmp_path, s3, max_file_bytes=10)
+
+        with pytest.raises(TaxonomyResolutionError, match="over the limits"):
+            await resolver.resolve(READABLE)
+
+    async def test_the_total_is_bounded_too(self, tmp_path, s3, published):
+        resolver = self._resolver_with(tmp_path, s3, max_file_bytes=10_000, max_total_bytes=50)
+
+        with pytest.raises(TaxonomyResolutionError, match="over the limits|in all"):
+            await resolver.resolve(READABLE)
+
+    async def test_a_malformed_declared_size_is_refused(self, tmp_path, s3, published):
+        self._declare(s3, "taxonomy.yaml", -5)
+        resolver = self._resolver_with(tmp_path, s3)
+
+        with pytest.raises(TaxonomyResolutionError, match="bad size"):
+            await resolver.resolve(READABLE)
+
+    async def test_the_defaults_leave_normal_artifacts_alone(self, tmp_path, s3, published):
+        resolver = self._resolver_with(tmp_path, s3)
+        assert (await resolver.resolve(READABLE)).taxonomy_version == VERSION

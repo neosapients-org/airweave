@@ -47,6 +47,8 @@ REQUIRED_FILES = (
     "taxonomy.yaml",
     "registry_map.json",
 )
+DEFAULT_MAX_FILE_BYTES = 256 * 1024 * 1024
+DEFAULT_MAX_TOTAL_BYTES = 1024 * 1024 * 1024
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
 
 
@@ -92,8 +94,23 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def is_safe_name(name: Any) -> bool:
+    """Whether ``name`` may be one path component: a plain name, never ``.``, ``..`` or a path.
+
+    The pattern needs a first character that is a letter or digit, which already refuses ``.`` and
+    ``..``; the explicit checks keep that true if the pattern is ever loosened.
+    """
+    return (
+        isinstance(name, str)
+        and name not in (".", "..")
+        and "/" not in name
+        and "\\" not in name
+        and bool(_SAFE_NAME.match(name))
+    )
+
+
 def _safe(name: Any, what: str) -> str:
-    if not isinstance(name, str) or not _SAFE_NAME.match(name):
+    if not is_safe_name(name):
         raise TaxonomyResolutionError(f"unsafe {what} {name!r}")
     return name
 
@@ -108,8 +125,16 @@ class TaxonomyResolver:
         local_dir: str | Path,
         active_cache_seconds: int,
         clock: Callable[[], float] = time.monotonic,
+        max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+        max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
     ) -> None:
-        """Initialize with the bucket's storage (None: no bucket configured) and local paths."""
+        """Initialize with the bucket's storage (None: no bucket configured) and local paths.
+
+        ``max_file_bytes`` and ``max_total_bytes`` bound one artifact file and one version's
+        files together (a manifest that declares more is refused before any download).
+        """
+        self._max_file = max_file_bytes
+        self._max_total = max_total_bytes
         self._storage = storage
         self._prefix = prefix if prefix.endswith("/") or not prefix else prefix + "/"
         self._local_dir = Path(local_dir)
@@ -233,8 +258,10 @@ class TaxonomyResolver:
         missing = [f for f in REQUIRED_FILES if f not in files]
         if missing:
             raise TaxonomyResolutionError(f"{prefix}manifest.json does not list {missing}")
+        self._check_declared_sizes(prefix, manifest.get("files") or [])
 
         local = self._local_dir / tenant / f"{version}-{manifest_sha}"
+        self._beneath_local_dir(local)
         await self._download(prefix, files, local)
 
         config = yaml.safe_load((local / "taxonomy.yaml").read_text()) or {}
@@ -265,6 +292,41 @@ class TaxonomyResolver:
             acc["model_manifest"], acc["model_path"] = str(model_manifest), str(model_file)
         return _Version(local, config, registry, policy, model_id)
 
+    def _beneath_local_dir(self, path: Path) -> None:
+        """Refuse a version folder that resolves outside the taxonomy cache root."""
+        root = self._local_dir.resolve()
+        try:
+            path.resolve().relative_to(root)
+        except ValueError:
+            raise TaxonomyResolutionError(f"{path} is outside the taxonomy cache {root}") from None
+
+    def _check_declared_sizes(self, prefix: str, entries: Any) -> None:
+        """Refuse a manifest whose declared sizes are over the limits, before downloading anything.
+
+        A file that declares no size is checked after it is read; the storage interface has no
+        way to ask for a size first.
+        """
+        total = 0
+        for entry in entries:
+            size = entry.get("size") if isinstance(entry, dict) else None
+            if size is None:
+                continue
+            if not isinstance(size, int) or isinstance(size, bool) or size < 0:
+                raise TaxonomyResolutionError(
+                    f"{prefix}manifest.json: bad size for {entry.get('file')!r}"
+                )
+            if size > self._max_file:
+                raise TaxonomyResolutionError(
+                    f"{prefix}{entry.get('file')} declares {size} bytes, "
+                    f"over the {self._max_file} limit"
+                )
+            total += size
+        if total > self._max_total:
+            raise TaxonomyResolutionError(
+                f"{prefix}manifest.json declares {total} bytes in all, "
+                f"over the {self._max_total} limit"
+            )
+
     async def _download(self, prefix: str, files: Dict[str, str], local: Path) -> None:
         """Download and verify every listed file; a verified folder on disk is reused."""
         if local.is_dir() and all(
@@ -275,8 +337,15 @@ class TaxonomyResolver:
         local.parent.mkdir(parents=True, exist_ok=True)
         tmp = Path(tempfile.mkdtemp(prefix=f".{local.name}-", dir=local.parent))
         try:
+            total = 0
             for name, expected in files.items():
                 data = await self._storage.read_file(f"{prefix}{name}")  # type: ignore[union-attr]
+                total += len(data)
+                if len(data) > self._max_file or total > self._max_total:
+                    raise TaxonomyResolutionError(
+                        f"{prefix}{name}: {len(data)} bytes ({total} in all) are over the limits "
+                        f"of {self._max_file} a file and {self._max_total} a version"
+                    )
                 if _sha256(data) != expected:
                     raise TaxonomyResolutionError(f"{prefix}{name} does not match manifest.json")
                 (tmp / name).write_bytes(data)
@@ -312,6 +381,10 @@ class TaxonomyResolver:
             data = await self._storage.read_file(f"{base}{model_name}")  # type: ignore[union-attr]
         except StorageNotFoundError:
             raise TaxonomyResolutionError(f"learned policy, but {base}{model_name} is missing")
+        if len(data) > self._max_file:
+            raise TaxonomyResolutionError(
+                f"{base}{model_name}: {len(data)} bytes are over the {self._max_file} limit"
+            )
         if _sha256(data) != expected_sha:
             raise TaxonomyResolutionError(f"{base}{model_name} does not match its sha256")
         local = self._local_dir / "models" / f"{model_id}-{expected_sha}"

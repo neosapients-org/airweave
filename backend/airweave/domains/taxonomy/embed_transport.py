@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,7 +38,9 @@ class AirweaveEmbedTransport:
     """Synchronous embeddings transport backed by an async ``DenseEmbedderProtocol``.
 
     ``bind`` sets the loop and the deadline for the calling thread; the pool binds before every
-    batch, so one transport serves every classifier on the thread.
+    batch, so one transport serves every classifier on the thread. The deadline is the batch's:
+    a batch that made one call and ran out of time makes no second one, so a batch the caller has
+    given up on (and marked ERROR) stops spending instead of running on to the end.
     """
 
     def __init__(self, embedder: DenseEmbedderProtocol) -> None:
@@ -49,15 +52,19 @@ class AirweaveEmbedTransport:
         """Set the loop that owns the embedder and the deadline, for this thread."""
         self._local.loop = loop
         self._local.timeout = timeout
+        self._local.deadline = time.monotonic() + timeout
 
     def __call__(self, batch: List[str]) -> Tuple[List[np.ndarray], int]:
         """Embed one batch; raises whatever the embedder raised, or ``TimeoutError``."""
         loop = getattr(self._local, "loop", None)
         if loop is None:
             raise RuntimeError("embed transport used before bind() on this thread")
+        remaining = getattr(self._local, "deadline", float("inf")) - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("the batch's deadline has passed: no more embedding calls")
         future = asyncio.run_coroutine_threadsafe(self._embedder.embed_many(list(batch)), loop)
         try:
-            embeddings = future.result(self._local.timeout)
+            embeddings = future.result(min(self._local.timeout, remaining))
         except FutureTimeout:
             future.cancel()
             raise TimeoutError("embedding batch exceeded its deadline") from None

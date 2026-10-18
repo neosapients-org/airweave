@@ -7,8 +7,10 @@ pool keeps ``TAXONOMY_CLASSIFY_THREADS`` single-thread executors. Each thread cr
 ever uses its own classifiers, cached by ``(taxonomy_version, manifest_sha256)`` in a small LRU,
 with its own cache file ``<cache dir>/<pid>-<thread n>.sqlite``. When that file passes
 ``max_cache_mb`` the thread closes its classifiers, deletes the file and starts a new one
-(``<pid>-<n>-g<generation>.sqlite``); ``close`` deletes the files too. A batch runs on one thread,
-chosen round-robin; a timed-out batch still finishes on its thread, and the next batch for that
+(``<pid>-<n>-g<generation>.sqlite``); ``close`` deletes the pool's own files too, but only
+once every thread has closed its connections. A batch runs on one thread, chosen round-robin. A
+timed-out batch cannot be stopped (Python cannot stop a thread), but its embedding transport
+refuses every call after the batch's deadline, so it stops spending; the next batch for that
 thread waits behind it.
 """
 
@@ -36,11 +38,14 @@ CLASSIFIERS_PER_THREAD = 4
 
 logger = logging.getLogger(__name__)
 
-# A cache file as the pool names it: <pid>-<thread>[-g<generation>].sqlite plus SQLite's sidecars
-_CACHE_FILE = re.compile(r"^(\d+)-\d+(?:-g\d+)?\.sqlite(?:-wal|-shm|-journal)?$")
+# A cache file as the pool names it: <pid>-<thread>[-g<generation>].sqlite plus SQLite's sidecars;
+# a second pool using the same directory at the same time names its files <pid>-s<slot>-<thread>...
+# so two live pools never share a file.
+_CACHE_FILE = re.compile(r"^(\d+)-(?:s\d+-)?\d+(?:-g\d+)?\.sqlite(?:-wal|-shm|-journal)?$")
 
-# Cache directories that a pool in this process currently owns (guards its files from a second pool)
-_OWNED_DIRS: set = set()
+# Cache directories pools in this process use now, with the slots they hold (a second pool must not
+# take the directory's same-pid files for stale ones, nor share a first pool's files)
+_OWNED_DIRS: Dict[str, set] = {}
 _OWNED_LOCK = threading.Lock()
 
 EmbedTransport = Callable[[List[str]], Any]
@@ -74,6 +79,9 @@ class ClassifierPool:
         """
         if threads < 1:
             raise ValueError("threads must be at least 1")
+        if max_cache_mb < 0:
+            raise ValueError("max_cache_mb must be 0 (never) or more")
+        self._slot = 0
         self._n = threads
         self._cache_dir = Path(cache_dir)
         self._transport = embed_transport
@@ -82,7 +90,7 @@ class ClassifierPool:
         self._lru_size = classifiers_per_thread
         self._max_cache_bytes = int(max_cache_mb * 1024 * 1024)
         self._tally = tally
-        self._owns_dir = False
+        self._dir_key = str(self._cache_dir.resolve())
         self._claim_dir_and_remove_stale_files()
         self._fallback_noted: set = set()
         self._note_lock = threading.Lock()
@@ -100,9 +108,11 @@ class ClassifierPool:
         """
         key = str(self._cache_dir.resolve())
         with _OWNED_LOCK:
-            first = key not in _OWNED_DIRS
-            _OWNED_DIRS.add(key)
-            self._owns_dir = first
+            slots = _OWNED_DIRS.setdefault(key, set())
+            first = not slots
+            self._slot = next(s for s in itertools.count() if s not in slots)
+            slots.add(self._slot)
+        self._dir_key = key
         removed = 0
         try:
             names = os.listdir(self._cache_dir)
@@ -200,7 +210,8 @@ class ClassifierPool:
         """This thread's current cache file; later generations carry a suffix."""
         generation = getattr(self._local, "generation", 0)
         suffix = f"-g{generation}" if generation else ""
-        return self._cache_dir / f"{os.getpid()}-{index}{suffix}.sqlite"
+        slot = f"s{self._slot}-" if self._slot else ""
+        return self._cache_dir / f"{os.getpid()}-{slot}{index}{suffix}.sqlite"
 
     def _rotate_cache(self, index: int) -> None:
         """Start a new cache file once the thread's file is over the limit (on its thread).
@@ -260,27 +271,41 @@ class ClassifierPool:
         self._tally.note_embed_fallback(version)
 
     def close(self) -> None:
-        """Stop the threads and delete this process's cache files (the worker is shutting down).
+        """Stop the threads and delete this pool's cache files (the worker is shutting down).
 
         Each thread first closes its own classifiers, because SQLite connections close on the
-        thread that opened them. Batches already queued finish first; a thread still busy
-        with a timed-out batch is given a few seconds, then its files are deleted anyway.
+        thread that opened them. Batches already queued finish first. A thread still busy with a
+        timed-out batch is given a few seconds; if it has not closed by then its files are left
+        in place (a live connection to a deleted database is worse than a file), and the next
+        start removes them as stale. Another pool's files are never touched.
         """
-        owned = self._owns_dir
-        if owned:
-            with _OWNED_LOCK:
-                _OWNED_DIRS.discard(str(self._cache_dir.resolve()))
-            self._owns_dir = False
+        with _OWNED_LOCK:
+            slots = _OWNED_DIRS.get(self._dir_key, set())
+            slots.discard(self._slot)
+            if not slots:
+                _OWNED_DIRS.pop(self._dir_key, None)
         executors, self._executors = self._executors, []
         closers = [executor.submit(self._release_thread_state) for executor in executors]
         for executor in executors:
             executor.shutdown(wait=False)  # queued closers still run
-        wait(closers, timeout=_CLOSE_WAIT_SECONDS)
-        if not owned:  # another pool in this process owns the directory's files
+        _, pending = wait(closers, timeout=_CLOSE_WAIT_SECONDS)
+        if pending:
+            logger.warning(
+                "%d classifier thread(s) still busy at shutdown: their cache files are left in %s",
+                len(pending),
+                self._cache_dir,
+            )
             return
-        for path in self._cache_dir.glob(f"{os.getpid()}-*.sqlite"):
-            for suffix in _SIDECARS:
-                _delete(Path(str(path) + suffix))
+        slot = f"s{self._slot}-" if self._slot else ""
+        own = re.compile(rf"^{os.getpid()}-{slot}\d+(?:-g\d+)?\.sqlite$")
+        try:
+            names = sorted(os.listdir(self._cache_dir))
+        except OSError:
+            return  # the directory was never created: nothing of this pool's to delete
+        for path in (self._cache_dir / n for n in names):
+            if own.match(path.name):
+                for suffix in _SIDECARS:
+                    _delete(Path(str(path) + suffix))
 
 
 def _pid_alive(pid: int) -> bool:
