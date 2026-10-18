@@ -172,7 +172,15 @@ class RelabelRunner:
         counts = job.counts()
         failing = 0
         fields = (*SCAN_FIELDS, F_TEXT)
+        first = True
         while True:
+            if not first:
+                # Fenced before each page's paid work and writes, against an uncached read: the
+                # resolver's cache would keep returning a version the platform has since replaced.
+                self._check_target(
+                    job, await self._resolver.resolve(job.collection_readable_id, fresh=True)
+                )
+            first = False
             try:
                 rows, nxt = await store.scroll(job.collection_id, fields, self._page, token)
             except (
@@ -180,13 +188,12 @@ class RelabelRunner:
             ):  # an unusable checkpoint: start over, chunks at the target are skipped
                 token = None
                 continue
-            page = await self._page_work(job, taxonomy, store, rows, counts)
+            page = await self._page_work(job, taxonomy, store, rows, counts, token)
             failing = failing + 1 if page.failed_step else 0
             if failing >= MAX_FAILING_STEPS:
                 await self._save(job, nxt, counts)
                 raise _Abort(f"{failing} pages in a row failed: {page.reason}")
             saved = await self._save(job, nxt, counts)
-            self._check_spend(job, counts)
             if saved.cancel_requested:
                 await self._end(job.id, CANCELLED, None)
                 raise _Ended
@@ -194,7 +201,6 @@ class RelabelRunner:
             if nxt is None:
                 await self._end(job.id, COMPLETED, None)
                 return
-            self._check_target(job, await self._resolver.resolve(job.collection_readable_id))
 
     async def _save(
         self, job: RelabelJob, token: Optional[str], counts: Dict[str, int]
@@ -206,11 +212,28 @@ class RelabelRunner:
             raise _Ended  # another worker holds the lease now
         return saved
 
-    def _check_spend(self, job: RelabelJob, counts: Dict[str, int]) -> None:
-        classified = counts["chunks_relabelled"] + counts["chunks_failed"]
-        spent = classified / 1000 * self._rate
-        if spent > job.spend_cap_usd + 1e-9:
-            raise _Abort(f"spend cap of USD {job.spend_cap_usd} reached ({spent:.4f} used)")
+    async def _reserve(
+        self,
+        job: RelabelJob,
+        counts: Dict[str, int],
+        chunks: int,
+        resume_at: Optional[str],
+    ) -> None:
+        """Count a batch against the cap, durably, before it is sent to the classifier.
+
+        The cost of a batch exists once it is sent, whatever becomes of its result, so it is saved
+        first: a worker that dies after the classifier answered but before the page was written
+        leaves the cost on the row, and the cap holds across retries. The checkpoint is saved as it
+        was (the page is not finished).
+        """
+        projected = (counts["chunks_charged"] + chunks) / 1000 * self._rate
+        if projected > job.spend_cap_usd + 1e-9:
+            raise _Abort(
+                f"spend cap of USD {job.spend_cap_usd} would be passed by this batch "
+                f"({projected:.4f} with it)"
+            )
+        counts["chunks_charged"] += chunks
+        await self._save(job, resume_at, counts)
 
     # ------------------------------------------------------------------ page
 
@@ -221,6 +244,7 @@ class RelabelRunner:
         store: ChunkStore,
         rows: List[ChunkRow],
         counts: Dict[str, int],
+        resume_at: Optional[str],
     ) -> "_Page":
         page = _Page()
         to_classify: List[ChunkRow] = []
@@ -240,6 +264,13 @@ class RelabelRunner:
         for start in range(0, len(to_classify), self._batch):
             batch = to_classify[start : start + self._batch]
             try:
+                await self._reserve(job, counts, len(batch), resume_at)
+            except _Abort:
+                # Over the cap: what was already classified on this page is still written.
+                await self._write(store, writes, counts)
+                await self._save(job, resume_at, counts)
+                raise
+            try:
                 writes.extend(await self._classify(job, taxonomy, batch, counts))
             except Exception as e:
                 logger.error(
@@ -248,7 +279,9 @@ class RelabelRunner:
                 counts["chunks_failed"] += len(batch)
                 page.failed_step, page.reason = True, f"{type(e).__name__}: {e}"
         outcomes = await self._write(store, writes, counts)
-        if outcomes.get("error") and not outcomes.get(APPLIED):
+        if outcomes.get("error"):
+            # Any write that failed makes the page failed, whatever else applied: a page that is
+            # partly written must not reset the run of failing pages.
             page.failed_step, page.reason = True, outcomes["error"]
         return page
 
@@ -260,7 +293,8 @@ class RelabelRunner:
         counts: Dict[str, int],
     ) -> List[Tuple[ChunkRow, Dict[str, Any], str]]:
         request = [
-            {"chunk_id": _cid(r), "document_id": r.document_id, "text": r.own_text()} for r in batch
+            {"chunk_id": _cid(r), "document_id": r.document_key, "text": r.own_text()}
+            for r in batch
         ]
         records = {
             r["chunk_id"]: r for r in await self._pool.classify(taxonomy, request, self._timeout)
@@ -288,6 +322,7 @@ class RelabelRunner:
         async def one(row: ChunkRow, fields: Dict[str, Any], counter: str) -> None:
             if not row.content_hash:  # never write without the condition
                 counts["chunks_failed"] += 1
+                outcomes["error"] = "a chunk has no content hash to condition its update on"
                 return
             async with gate:
                 try:

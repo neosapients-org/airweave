@@ -26,6 +26,7 @@ CODE_SCHEMA = "code_file_entity"
 # Fields every scan reads. The text is read only when a chunk is about to be classified.
 F_HASH = "airweave_system_metadata_hash"
 F_DOCUMENT = "airweave_system_metadata_original_entity_id"
+F_SYNC = "airweave_system_metadata_sync_id"
 F_CHUNK_INDEX = "airweave_system_metadata_chunk_index"
 F_TEXT = "textual_representation"
 F_SOURCE = "airweave_system_metadata_source_name"
@@ -39,7 +40,7 @@ LABEL_FIELDS = (
     "taxonomy_admin_pieces",
     "taxonomy_unresolved_pieces",
 )
-SCAN_FIELDS = (F_HASH, F_DOCUMENT, F_SOURCE, *POSITION_FIELDS, *LABEL_FIELDS)
+SCAN_FIELDS = (F_HASH, F_DOCUMENT, F_SYNC, F_SOURCE, *POSITION_FIELDS, *LABEL_FIELDS)
 
 # Statuses an incremental job classifies again (the labels they hold may now be improvable)
 INCREMENTAL_STATUSES = frozenset({UNRESOLVED, PARTIALLY_ASSIGNED, ERROR, NOT_LABELLED})
@@ -64,6 +65,15 @@ class ChunkRow:
     def document_id(self) -> str:
         """The source document's id, from the system metadata (never parsed from the Vespa id)."""
         return self.fields.get(F_DOCUMENT) or self.doc_id
+
+    @property
+    def document_key(self) -> str:
+        """A document's identity across the collection: its sync, its schema and its source id.
+
+        The source's own entity id is only unique inside one connector and schema, so two
+        sources can hold documents with the same id; grouping by the bare id would merge them.
+        """
+        return f"{self.fields.get(F_SYNC) or ''}/{self.schema}/{self.document_id}"
 
     @property
     def status(self) -> str:

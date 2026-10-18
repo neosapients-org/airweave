@@ -8,6 +8,7 @@ returns that job, and an identical start while the collection's job is running r
 from __future__ import annotations
 
 import base64
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -81,6 +82,7 @@ def _unresolved_item(row: ChunkRow) -> Dict[str, Any]:
         "chunk_id": row.doc_id,
         "schema": row.schema,
         "document_id": row.document_id,
+        "document_key": row.document_key,
         "chunk_index": f.get(F_CHUNK_INDEX),
         "source_name": f.get(F_SOURCE),
         "entity_type": f.get(F_ENTITY_TYPE),
@@ -173,7 +175,12 @@ class RelabelService:
         usd_per_thousand: float,
         scan_page: int = 500,
     ) -> None:
-        """``configured_cap_usd`` is ``RELABEL_SPEND_CAP_USD``, the approved ceiling per job."""
+        """``configured_cap_usd`` is ``RELABEL_SPEND_CAP_USD``, the approved ceiling per job.
+
+        Raises ``ValueError`` for a ceiling that is not a finite amount from 0 up.
+        """
+        if not math.isfinite(configured_cap_usd) or configured_cap_usd < 0:
+            raise ValueError(f"invalid re-label spend cap {configured_cap_usd!r}")
         self._repo = repo
         self._store_factory = store_factory
         self._cap = configured_cap_usd
@@ -287,8 +294,10 @@ class RelabelService:
             )
         if req.idempotency_key is not None and not _KEY.match(req.idempotency_key):
             raise RelabelRefused(422, "bad_key", "idempotency_key is malformed")
-        if req.spend_cap_usd is not None and req.spend_cap_usd < 0:
-            raise RelabelRefused(422, "bad_cap", "spend_cap_usd cannot be negative")
+        if req.spend_cap_usd is not None and (
+            not math.isfinite(req.spend_cap_usd) or req.spend_cap_usd < 0
+        ):
+            raise RelabelRefused(422, "bad_cap", "spend_cap_usd must be a finite amount, 0 or more")
 
     async def _replay(self, req: StartRequest) -> Optional[RelabelJob]:
         if req.idempotency_key:
@@ -318,10 +327,14 @@ class RelabelService:
             relabel_job_id=str(job.id),
         )
 
-    @staticmethod
-    def _same(job: RelabelJob, req: StartRequest) -> bool:
-        return (job.target_version, job.mode, job.scope) == (
+    def _same(self, job: RelabelJob, req: StartRequest) -> bool:
+        """Whether ``job`` is this request.
+
+        The cap is part of it: a changed cost constraint is a different request, not a replay.
+        """
+        return (job.target_version, job.mode, job.scope, job.spend_cap_usd) == (
             req.taxonomy_version,
             req.mode,
             req.scope,
+            effective_cap(req.spend_cap_usd, self._cap),
         )

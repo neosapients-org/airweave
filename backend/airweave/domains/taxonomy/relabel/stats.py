@@ -113,7 +113,7 @@ async def collect_stats(
         for row in rows:
             _count(row, target_version, stats, at_version, not_labelled_docs)
             source = str(row.fields.get(F_SOURCE) or "unknown")
-            by_source.setdefault(source, set()).add(row.document_id)
+            by_source.setdefault(source, set()).add(row.document_key)
         if token is None:
             break
     stats.documents_at_version = len(at_version)
@@ -136,7 +136,7 @@ def _count(
     stats.pieces += max(0, int(row.fields.get("taxonomy_piece_count") or 0) - admin)
     stats.unresolved_pieces += int(row.fields.get("taxonomy_unresolved_pieces") or 0)
     if target and version == target:
-        at_version.add(row.document_id)
+        at_version.add(row.document_key)
     if not row.labellable:
         return
     stats.labellable += 1
@@ -149,4 +149,4 @@ def _count(
             stats.stampable += 1
     if status == NOT_LABELLED and row.own_length > 0:
         stats.not_labelled_chunks += 1
-        nl_docs.add(row.document_id)
+        nl_docs.add(row.document_key)

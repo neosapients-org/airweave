@@ -144,6 +144,28 @@ class TestScroll:
         assert rows == [] and token is None
 
 
+@pytest.mark.parametrize("index", [999, 1_000_000])
+async def test_a_token_naming_no_schema_is_refused_not_read_as_the_end(index):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(200, json={"documents": []})
+
+    with pytest.raises(ValueError, match="no such schema"):
+        await store_with(handler).scroll(COLLECTION, ["a"], 2, encode_token(index, None))
+    assert calls == []
+
+
+async def test_a_token_for_the_last_schema_is_still_followed():
+    from airweave.platform.destinations.vespa.config import ALL_VESPA_SCHEMAS
+
+    rows, token = await store_with(lambda r: httpx.Response(200, json={"documents": []})).scroll(
+        COLLECTION, ["a"], 2, encode_token(len(ALL_VESPA_SCHEMAS) - 1, None)
+    )
+    assert rows == [] and token is None
+
+
 def test_tokens_round_trip_and_garbage_is_refused():
     assert decode_token(encode_token(3, "abc")) == (3, "abc")
     assert decode_token(None) == (0, None)

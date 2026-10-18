@@ -59,6 +59,10 @@ class TaxonomyRelabelJob(OrganizationBase):
     chunks_skipped_changed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chunks_unlabellable: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     chunks_failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Chunks sent to the classifier, saved BEFORE each batch is sent: what the spend cap counts
+    chunks_charged: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
     checkpoint: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

@@ -104,6 +104,10 @@ class VespaChunkStore:
         """Visit the collection's chunks, one schema after the other, page by page."""
         index, inner = decode_token(continuation)
         schemas = list(ALL_VESPA_SCHEMAS)
+        if continuation is not None and index >= len(schemas):
+            # A token this store never issued (it returns None after the last schema): reading it
+            # as "finished" would silently truncate a walk, so it is refused like any bad cursor.
+            raise ValueError("unusable scroll token: no such schema")
         while index < len(schemas):
             schema = schemas[index]
             url = (

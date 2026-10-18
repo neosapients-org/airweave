@@ -6,6 +6,7 @@ and only ``taxonomy_version`` becomes the target. ``skip``: nothing to do.
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from airweave.domains.taxonomy.mapping import NOT_LABELLED
@@ -55,7 +56,14 @@ def estimate_usd(chunks: int, usd_per_thousand: float) -> float:
 
 
 def effective_cap(requested: Optional[float], configured: float) -> float:
-    """The cap in force: the request can lower the deployment's ceiling, never raise it."""
+    """The cap in force: the request can lower the deployment's ceiling, never raise it.
+
+    A ceiling or a request that is not a finite amount from 0 up approves nothing (0): ``NaN``
+    compares false with everything, so a ``min`` or a ``spent >= cap`` check would never trip.
+    """
+    ceiling = configured if math.isfinite(configured) and configured >= 0 else 0.0
     if requested is None:
-        return configured
-    return min(requested, configured)
+        return ceiling
+    if not math.isfinite(requested) or requested < 0:
+        return 0.0
+    return min(requested, ceiling)

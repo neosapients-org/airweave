@@ -440,7 +440,8 @@ class TestStopsVisibly:
         runner, repo, *_ = make(store, page_size=5, usd_per_thousand=1000.0)  # 1 USD per chunk
         job = await run(runner, repo, spend_cap_usd=7.0)
         assert job.state == FAILED and "spend cap" in job.error
-        assert job.chunks_relabelled == 10
+        # Stopped BEFORE the batch that would pass the cap, never a page after it
+        assert job.chunks_charged <= 7 and job.chunks_relabelled == job.chunks_charged
 
     async def test_classifier_failing_leaves_chunks_unchanged_and_gives_up(self):
         store = FakeChunkStore(old_chunks(12))
@@ -575,3 +576,99 @@ class TestOnePerCollection:
         runner, repo, *_ = make(store)
         await run(runner, repo)
         await repo.create(new_job())
+
+
+class TestSpendIsCountedBeforeThePaidWork:
+    async def test_a_batch_is_saved_as_charged_before_the_classifier_is_called(self):
+        store = FakeChunkStore(old_chunks(4))
+        runner, repo, pool, *_ = make(store, page_size=4, batch_size=2)
+        seen = []
+        job = new_job()
+        await repo.create(job)
+        pool.on_call = lambda: seen.append(repo.jobs[job.id].chunks_charged)
+
+        await runner.run_job(job.id)
+
+        # Each call found its own batch already on the row, so a worker lost mid-call still pays.
+        assert seen == [2, 4]
+        assert (await repo.get(job.id)).chunks_charged == 4
+
+    async def test_a_batch_that_would_pass_the_cap_is_never_sent(self):
+        store = FakeChunkStore(old_chunks(6))
+        runner, repo, pool, *_ = make(store, page_size=6, batch_size=2, usd_per_thousand=1000.0)
+
+        job = await run(runner, repo, spend_cap_usd=3.0)  # 1 USD a chunk: one batch fits, not two
+
+        assert job.state == FAILED and "would be passed" in job.error
+        assert pool.calls == 1 and job.chunks_charged == 2
+        # The batch that was classified is written and counted
+        assert job.chunks_relabelled == 2
+
+    async def test_charged_chunks_survive_a_crash_after_the_classifier_answered(self):
+        store = FakeChunkStore(old_chunks(4))
+        runner, repo, pool, *_ = make(store, page_size=4, batch_size=2)
+        calls = {"n": 0}
+        classify = pool.classify
+
+        async def die_on_the_second_batch(tax, rows, timeout):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise asyncio.CancelledError  # stops after the charge, before any write
+            return await classify(tax, rows, timeout)
+
+        pool.classify = die_on_the_second_batch
+        job = new_job()
+        await repo.create(job)
+        with pytest.raises(asyncio.CancelledError):
+            await runner.run_job(job.id)
+
+        assert (await repo.get(job.id)).chunks_charged == 4
+
+
+class TestFencingAndFailures:
+    async def test_each_page_is_fenced_against_an_uncached_read_of_the_active_file(self):
+        store = FakeChunkStore(old_chunks(6))
+        runner, repo, _, resolver, _ = make(store, page_size=2)
+
+        await run(runner, repo)
+
+        assert len(resolver.calls) >= 3 and all(fresh for _, fresh in resolver.calls)
+
+    async def test_the_job_stops_when_the_active_file_moves_between_pages(self):
+        store = FakeChunkStore(old_chunks(6))
+        runner, repo, pool, resolver, _ = make(store, page_size=2)
+        pool.on_call = lambda: setattr(resolver, "result", taxonomy("acme-2027.02"))
+
+        job = await run(runner, repo)
+
+        assert job.state == FAILED and "not the job's target" in job.error
+        assert pool.calls == 1  # the next page was never classified or written
+
+    async def test_one_failed_write_among_applied_ones_still_counts_as_a_failed_page(self):
+        store = FakeChunkStore(old_chunks(6))
+        runner, repo, *_ = make(store, page_size=2)
+        real = store.update
+        state = {"n": 0}
+
+        async def flaky(chunk_row, fields, expected_hash):
+            state["n"] += 1
+            if state["n"] % 2 == 0:
+                raise RuntimeError("vespa timeout")
+            return await real(chunk_row, fields, expected_hash)
+
+        store.update = flaky
+
+        job = await run(runner, repo)
+
+        # Every page applied one write and failed one: no clean page ever reset the guard
+        assert job.state == FAILED and "in a row" in job.error
+
+    async def test_a_chunk_without_a_content_hash_makes_its_page_a_failed_one(self):
+        rows = old_chunks(6)
+        for _, _, fields in rows:
+            fields.pop("airweave_system_metadata_hash", None)
+        runner, repo, *_ = make(FakeChunkStore(rows), page_size=2)
+
+        job = await run(runner, repo)
+
+        assert job.state == FAILED and "content hash" in job.error

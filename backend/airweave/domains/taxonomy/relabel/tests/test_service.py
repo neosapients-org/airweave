@@ -204,3 +204,62 @@ class TestScope:
         assert await svc.get(job.id, UUID(int=777)) is None
         assert await svc.cancel(job.id, UUID(int=777)) is None
         assert (await svc.cancel(job.id, ORG)).state == "CANCELLED"
+
+
+class TestFiniteCaps:
+    @pytest.mark.parametrize("cap", [float("nan"), float("inf"), float("-inf")])
+    async def test_a_cap_that_is_not_a_finite_amount_is_refused(self, cap):
+        svc, repo = service()
+        with pytest.raises(RelabelRefused) as e:
+            await svc.start(req(spend_cap_usd=cap))
+        assert e.value.status == 422 and e.value.code == "bad_cap" and repo.jobs == {}
+
+    @pytest.mark.parametrize("ceiling", [float("nan"), float("inf"), -1.0])
+    def test_a_configured_ceiling_that_is_not_a_finite_amount_is_refused(self, ceiling):
+        with pytest.raises(ValueError, match="spend cap"):
+            RelabelService(
+                InMemoryJobRepository(Clock()),
+                lambda: None,
+                configured_cap_usd=ceiling,
+                usd_per_thousand=0.006,
+            )
+
+    @pytest.mark.parametrize(
+        "requested, configured, expected",
+        [
+            (None, 5.0, 5.0),
+            (2.0, 5.0, 2.0),
+            (9.0, 5.0, 5.0),
+            (None, float("nan"), 0.0),
+            (1.0, float("nan"), 0.0),
+            (float("nan"), 5.0, 0.0),
+            (-1.0, 5.0, 0.0),
+        ],
+    )
+    def test_effective_cap_never_returns_a_value_a_comparison_cannot_trip_on(
+        self, requested, configured, expected
+    ):
+        from airweave.domains.taxonomy.relabel.planning import effective_cap
+
+        assert effective_cap(requested, configured) == expected
+
+
+class TestReplayIncludesTheCap:
+    async def test_the_same_key_with_a_different_cap_is_a_conflict(self):
+        svc, _ = service(cap=10.0)
+        await svc.start(req(idempotency_key="k", spend_cap_usd=2.0))
+        with pytest.raises(RelabelRefused) as e:
+            await svc.start(req(idempotency_key="k", spend_cap_usd=5.0))
+        assert e.value.status == 409 and e.value.code == "idempotency_key_reused"
+
+    async def test_the_same_key_and_cap_is_a_replay(self):
+        svc, repo = service(cap=10.0)
+        first, _ = await svc.start(req(idempotency_key="k", spend_cap_usd=2.0))
+        again, created = await svc.start(req(idempotency_key="k", spend_cap_usd=2.0))
+        assert again.id == first.id and not created and len(repo.jobs) == 1
+
+    async def test_a_cap_above_the_ceiling_is_the_ceiling_so_it_matches_a_start_without_one(self):
+        svc, _ = service(cap=3.0)
+        first, _ = await svc.start(req(idempotency_key="k"))
+        again, created = await svc.start(req(idempotency_key="k", spend_cap_usd=99.0))
+        assert again.id == first.id and not created

@@ -30,6 +30,7 @@ COUNT_FIELDS = (
     "chunks_skipped_changed",
     "chunks_unlabellable",
     "chunks_failed",
+    "chunks_charged",
 )
 
 
@@ -60,6 +61,7 @@ class RelabelJob:
     chunks_skipped_changed: int = 0  # a sync replaced or deleted the chunk: its own labels win
     chunks_unlabellable: int = 0  # code files and chunks without positions
     chunks_failed: int = 0  # could not be classified or written; left unchanged
+    chunks_charged: int = 0  # sent to the classifier; saved before each batch, the cap counts it
     checkpoint: Optional[str] = None
     error: Optional[str] = None
     cancel_requested: bool = False

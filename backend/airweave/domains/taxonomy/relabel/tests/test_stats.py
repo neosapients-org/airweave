@@ -103,6 +103,18 @@ class TestDocumentsBySource:
         assert s.documents == 1
         assert s.documents_by_source == {"sharepoint": 1, "google_drive": 1}
 
+    async def test_equal_source_ids_in_two_syncs_are_two_documents(self):
+        from airweave.domains.taxonomy.relabel.chunks import F_SYNC
+
+        rows = []
+        for sync, doc_id in (("sync-a", "123@a"), ("sync-b", "123@b")):
+            schema, vid, fields = chunk(0, doc=doc_id, source="sharepoint")
+            fields[F_SYNC] = sync
+            fields["airweave_system_metadata_original_entity_id"] = "123"
+            rows.append((schema, vid, fields))
+        s = await stats(store=FakeChunkStore(rows))
+        assert s.documents == 2 and s.documents_by_source == {"sharepoint": 2}
+
     async def test_an_empty_collection_has_none(self):
         s = await stats(store=FakeChunkStore([]))
         assert (s.documents, s.documents_by_source) == (0, {})

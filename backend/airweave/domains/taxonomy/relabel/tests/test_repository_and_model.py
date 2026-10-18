@@ -110,9 +110,10 @@ class TestMigration:
         assert callable(m.upgrade) and callable(m.downgrade)
 
     def test_creates_every_model_column(self):
-        source = (
-            Path(__file__).resolve().parents[5]
-            / "alembic/versions/0002_add_taxonomy_relabel_job.py"
+        versions = Path(__file__).resolve().parents[5] / "alembic/versions"
+        # the table (0002) and the columns added to it later (0004)
+        source = (versions / "0002_add_taxonomy_relabel_job.py").read_text() + (
+            versions / "0004_add_relabel_chunks_charged.py"
         ).read_text()
         for column in TaxonomyRelabelJob.__table__.columns:
             assert f'"{column.name}"' in source, column.name
