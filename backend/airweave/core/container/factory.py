@@ -1409,6 +1409,8 @@ def _create_taxonomy_processor(
         prefix=settings.TAXONOMY_S3_PREFIX,
         local_dir=settings.TAXONOMY_LOCAL_DIR,
         active_cache_seconds=settings.TAXONOMY_ACTIVE_CACHE_SECONDS,
+        max_file_bytes=settings.TAXONOMY_ARTIFACT_MAX_MB * 1024 * 1024,
+        max_total_bytes=settings.TAXONOMY_ARTIFACT_TOTAL_MAX_MB * 1024 * 1024,
     )
     pool = ClassifierPool(
         threads=settings.TAXONOMY_CLASSIFY_THREADS,

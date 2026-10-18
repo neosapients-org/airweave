@@ -17,12 +17,14 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
 from airweave.core.logging import logger
-from airweave.domains.taxonomy.artifacts import ResolvedTaxonomy
+from airweave.domains.taxonomy.artifacts import ResolvedTaxonomy, is_safe_name
+from airweave.domains.taxonomy.jobs.housekeeping import tenant_cache_dir
 from airweave.domains.taxonomy.jobs.sampling import TooFewDocuments
 
 PASSAGE_CHARS = 400
@@ -212,16 +214,8 @@ class PackageGateway:
         counts: Dict[str, int] = {}
         for d in decisions:
             counts[d["decision"]] = counts.get(d["decision"], 0) + 1
-        if wave.new_taxonomy_path is None:
-            report = self._wave_report(candidate_version, serving, None, wave, counts, chunks, 0.0)
-            return BuildOutput({}, report, 0.0, 0, ["no category was added: nothing to propose"])
-        folder = Path(wave.new_taxonomy_path)
-        final = json.loads((folder / "final_taxonomy.json").read_text())
-        files = self._allowed_files(folder, final)
-        if place_new_topics_in_families(final, _load_centroids(folder)):
-            files["final_taxonomy.json"] = json.dumps(final, indent=2).encode()
-        # the candidate keeps the serving version's own taxonomy.yaml (same embedding, same policy)
-        files["taxonomy.yaml"] = (serving.local_path / "taxonomy.yaml").read_bytes()
+        # The wave embeds, clusters and calls reviewers whether or not it adds a category, so its
+        # bill is read from its ledger on both paths.
         cost = _ledger_total(
             work_dir
             / "store"
@@ -230,6 +224,16 @@ class PackageGateway:
             / candidate_version
             / "cost_ledger.json"
         )
+        if wave.new_taxonomy_path is None:
+            report = self._wave_report(candidate_version, serving, None, wave, counts, chunks, cost)
+            return BuildOutput({}, report, cost, 0, ["no category was added: nothing to propose"])
+        folder = Path(wave.new_taxonomy_path)
+        final = json.loads((folder / "final_taxonomy.json").read_text())
+        files = self._allowed_files(folder, final)
+        if place_new_topics_in_families(final, _load_centroids(folder)):
+            files["final_taxonomy.json"] = json.dumps(final, indent=2).encode()
+        # the candidate keeps the serving version's own taxonomy.yaml (same embedding, same policy)
+        files["taxonomy.yaml"] = (serving.local_path / "taxonomy.yaml").read_bytes()
         report = self._wave_report(candidate_version, serving, final, wave, counts, chunks, cost)
         return BuildOutput(files, report, cost, len(final["categories"]))
 
@@ -246,7 +250,7 @@ class PackageGateway:
         cfg = copy.deepcopy(dict(base if base is not None else self._config))
         root = work_dir
         if self._cache_dir is not None and tenant_id:
-            root = self._cache_dir / hashlib.sha256(tenant_id.encode()).hexdigest()[:32]
+            root = tenant_cache_dir(self._cache_dir, tenant_id)
             root.mkdir(parents=True, exist_ok=True)
         # No ``group`` key: the package then groups by document, so its leave-group-out calibration
         # and a new topic's "at least two groups" rule count documents, not sources. Without this a
@@ -262,7 +266,18 @@ class PackageGateway:
     def _allowed_files(folder: Path, final: Mapping[str, Any]) -> Dict[str, bytes]:
         """``final_taxonomy.json`` and the artifacts it lists; nothing else leaves the worker."""
         names = ["final_taxonomy.json", *sorted((final.get("artifacts") or {}).keys())]
-        return {name: (folder / name).read_bytes() for name in names}
+        root = folder.resolve()
+        files: Dict[str, bytes] = {}
+        for name in names:
+            # The names come from a file the package wrote; a name that is not a plain file name
+            # (a path, "..", an absolute path) would read outside the folder.
+            if not is_safe_name(name):
+                raise ValueError(f"artifact name {name!r} is not a plain file name")
+            path = (folder / name).resolve()
+            if path.parent != root or not path.is_file():
+                raise ValueError(f"artifact {name!r} is not a file of the build folder")
+            files[name] = path.read_bytes()
+        return files
 
     @staticmethod
     def _shipped_yaml(cfg: Mapping[str, Any]) -> bytes:
@@ -444,8 +459,20 @@ def translate_package_error(error: Exception) -> Exception:
     return error
 
 
+class CostUnknown(RuntimeError):
+    """A build finished but its cost ledger cannot be read: what it spent is not known."""
+
+
 def _ledger_total(path: Path) -> float:
+    """The ledger's total in USD.
+
+    A missing or malformed ledger is an error, never zero: the calls were paid for, and a result
+    that says USD 0 would hide that from the customer.
+    """
     try:
-        return float(json.loads(path.read_text()).get("total_usd", 0.0))
-    except (OSError, ValueError):
-        return 0.0
+        total = float(json.loads(path.read_text())["total_usd"])
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        raise CostUnknown(f"cost ledger {path.name} is missing or unreadable: {e}") from e
+    if not math.isfinite(total) or total < 0:
+        raise CostUnknown(f"cost ledger {path.name} holds an impossible total {total!r}")
+    return total

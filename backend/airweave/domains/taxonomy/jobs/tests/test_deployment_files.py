@@ -137,3 +137,56 @@ class TestTemplate:
 def test_the_sync_worker_template_is_unchanged_and_has_no_jobs_reference():
     text = (HELM / "templates/temporal-worker.yaml").read_text()
     assert "taxonomy.jobs" not in text and "taxonomyJobsWorker" not in text
+
+
+class TestBuildConfigRollsThePod:
+    def test_the_template_hashes_the_build_config_into_the_pod_annotations(self, template):
+        assert re.search(
+            r"checksum/build-config:\s*\{\{\s*\.Values\.taxonomyJobsWorker\.buildConfig\s*\|\s*sha256sum",
+            template,
+        )
+        # only while a build config exists, so the pod of a deployment without one is unchanged
+        block = template.split("checksum/build-config", 1)[0].rsplit("{{-", 1)[-1]
+        assert "if .Values.taxonomyJobsWorker.buildConfig" in block
+
+    def test_a_changed_config_changes_the_rendered_checksum(self):
+        import shutil
+        import subprocess
+
+        if shutil.which("helm") is None:
+            pytest.skip("helm is not installed")
+
+        def render(config):
+            out = subprocess.run(
+                [
+                    "helm",
+                    "template",
+                    "t",
+                    str(HELM),
+                    "--set",
+                    "taxonomyJobsWorker.enabled=true",
+                    "--set",
+                    f"taxonomyJobsWorker.buildConfig={config}",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            return re.search(r"checksum/build-config: (\w+)", out).group(1)
+
+        assert render("a: 1") != render("a: 2")
+        assert render("a: 1") == render("a: 1")
+
+    def test_new_settings_are_in_the_values_as_strings(self, values):
+        env = values["env"]
+        for key in (
+            "TAXONOMY_TENANT_BY_ORGANIZATION",
+            "TAXONOMY_JOBS_CACHE_RETENTION_DAYS",
+            "TAXONOMY_JOBS_RECONCILE_SECONDS",
+            "TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS",
+            "TAXONOMY_JOBS_MAX_AGE_HOURS",
+            "TAXONOMY_ARTIFACT_MAX_MB",
+            "TAXONOMY_ARTIFACT_TOTAL_MAX_MB",
+            "CHUNK_HEADER_MAX_TOKENS",
+        ):
+            assert isinstance(env[key], str), key

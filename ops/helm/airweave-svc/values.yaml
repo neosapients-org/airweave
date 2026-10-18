@@ -190,6 +190,7 @@ env:
   # Neo values in comments.
   CHUNK_TARGET_TOKENS: '4096'            # Neo: '300'
   CHUNK_OVERLAP_TOKENS: '0'              # Neo: '45'
+  CHUNK_HEADER_MAX_TOKENS: '256'         # a longer header is cut to this many tokens
   CHUNK_HEADER_ENABLED: 'false'          # Neo: 'true'
   CHUNKER_MODE: semantic                 # Neo: sentence_pack
   CHUNKER_VERSION: '1'                   # Neo: '2'
@@ -201,6 +202,8 @@ env:
   TAXONOMY_LOCAL_DIR: /data/airweave-taxonomy/versions        # worker volume "taxonomy"
   TAXONOMY_EMBED_CACHE_DIR: /data/airweave-taxonomy/embed-cache
   TAXONOMY_EMBED_CACHE_MAX_MB: '512'                           # each thread's cache file starts over past this
+  TAXONOMY_ARTIFACT_MAX_MB: '256'                              # one taxonomy file; a larger manifest entry is refused
+  TAXONOMY_ARTIFACT_TOTAL_MAX_MB: '1024'                       # one version's files together
   TAXONOMY_CLASSIFY_THREADS: '2'
   TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: '60'
   # Re-label jobs. The cap is the approved spend ceiling per job in USD; '0' approves nothing,
@@ -223,6 +226,16 @@ env:
   DISCOVER_SAMPLE_DOCUMENTS: '200'
   DISCOVER_MIN_DOCUMENTS: '1'
   DISCOVER_MIN_CHUNKS: '100'
+  # Which tenant's prefix a discovery writes to, per organization: JSON {"<organization uuid>":
+  # "<tenant id>"}. A caller never chooses it. Set it per environment before enabling discovery.
+  TAXONOMY_TENANT_BY_ORGANIZATION: '{}'
+  # Days an unused per-tenant job cache (TAXONOMY_JOBS_CACHE_DIR) is kept; 0 = for ever.
+  TAXONOMY_JOBS_CACHE_RETENTION_DAYS: '30'
+  # The jobs worker starts a workflow for a job nothing runs every ..._RECONCILE_SECONDS, once it
+  # is older than ..._DISPATCH_GRACE_SECONDS, and fails one unattended for ..._MAX_AGE_HOURS.
+  TAXONOMY_JOBS_RECONCILE_SECONDS: '60'
+  TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS: '120'
+  TAXONOMY_JOBS_MAX_AGE_HOURS: '24'
   EVOLUTION_SPEND_CAP_USD: '0'
 
   # Storage backend

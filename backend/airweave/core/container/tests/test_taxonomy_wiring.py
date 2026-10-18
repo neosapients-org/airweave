@@ -14,6 +14,8 @@ def _settings(enabled: bool, bucket: str = ""):
         TAXONOMY_ACTIVE_CACHE_SECONDS=300,
         TAXONOMY_EMBED_CACHE_DIR="/tmp/none-cache",
         TAXONOMY_EMBED_CACHE_MAX_MB=7,
+        TAXONOMY_ARTIFACT_MAX_MB=256,
+        TAXONOMY_ARTIFACT_TOTAL_MAX_MB=1024,
         TAXONOMY_CLASSIFY_THREADS=2,
         TAXONOMY_CLASSIFY_TIMEOUT_SECONDS=60,
     )

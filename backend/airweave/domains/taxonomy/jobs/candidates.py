@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any, Dict, Mapping, Optional, Protocol
+from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Protocol
 
 from airweave.domains.storage.exceptions import StorageNotFoundError
 
@@ -42,6 +42,10 @@ class OnceStorage(Protocol):
 
     async def read_file(self, path: str) -> bytes:
         """Read an object."""
+        ...
+
+    async def delete(self, path: str) -> bool:
+        """Delete an object (the claim of a job that ended before it wrote anything)."""
         ...
 
 
@@ -83,6 +87,25 @@ class CandidateWriter:
                 f"{existing.get('job_id')}"
             )
 
+    async def release(self, tenant_id: str, candidate_version: str, job_id: str) -> None:
+        """Give the folder up: delete this job's claim when nothing else was written to it.
+
+        A job that ended before it built anything (no input, a cancel, too little text) leaves no
+        candidate; its claim must not block the version name for ever. A claim of another job, or
+        a folder that already holds objects, is left alone.
+        """
+        folder = self.folder(tenant_id, candidate_version)
+        try:
+            claim = json.loads(await self._storage.read_file(folder + CLAIM))
+        except (StorageNotFoundError, ValueError):
+            return
+        if claim.get("job_id") != job_id:
+            return
+        try:
+            await self._storage.delete(folder + CLAIM)
+        except Exception:  # noqa: BLE001 - best effort; the claim only blocks a name
+            return
+
     async def existing_report(
         self, tenant_id: str, candidate_version: str
     ) -> Optional[Dict[str, Any]]:
@@ -101,14 +124,23 @@ class CandidateWriter:
         job_id: str,
         files: Mapping[str, bytes],
         report: Dict[str, Any],
+        checkpoint: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
-        """Write the files, then the report. Returns the report as written (with checksums)."""
+        """Write the files, then the report. Returns the report as written (with checksums).
+
+        ``checkpoint`` is awaited before every object, the report included; it raises to stop the
+        publish (a cancel, a lost lease), so nothing more is written once it has been seen.
+        """
         folder = self.folder(tenant_id, candidate_version)
         checksums = []
         for name in sorted(files):
+            if checkpoint is not None:
+                await checkpoint()
             await self._put(folder + _safe(name, "file name"), files[name])
             checksums.append({"file": name, "sha256": _sha(files[name])})
         final = {**report, "job_id": job_id, "files": checksums}
+        if checkpoint is not None:
+            await checkpoint()
         await self._put(folder + REPORT, json.dumps(final, indent=2, sort_keys=True).encode())
         return final
 

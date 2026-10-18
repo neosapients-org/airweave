@@ -122,3 +122,57 @@ async def test_s3_conditional_put_sends_if_none_match():
     client.put_object = AsyncMock(side_effect=Exception("AccessDenied"))
     with pytest.raises(Exception, match="Failed to write"):
         await backend.write_file_once("a/b", b"x")
+
+
+class TestReleaseAndCheckpoint:
+    async def test_release_deletes_only_the_callers_own_claim(self):
+        w, s3 = writer()
+        await w.claim(TENANT, CANDIDATE, "job-1", "discover")
+
+        await w.release(TENANT, CANDIDATE, "job-2")  # not the owner
+        assert any(p.endswith("_claim.json") for p in s3.objects)
+        await w.release(TENANT, CANDIDATE, "job-1")
+        assert s3.objects == {}
+
+    async def test_release_without_a_claim_or_without_delete_is_harmless(self):
+        w0, _ = writer()
+        await w0.release(TENANT, CANDIDATE, "job-1")
+
+        class NoDelete(FakeS3):
+            delete = None
+
+        w, _ = writer(NoDelete())
+        await w.claim(TENANT, CANDIDATE, "job-1", "discover")
+        await w.release(TENANT, CANDIDATE, "job-1")  # cannot delete: the claim only blocks a name
+
+    async def test_publish_asks_the_checkpoint_before_every_object_and_the_report(self):
+        w, s3 = writer()
+        calls = []
+
+        async def checkpoint():
+            calls.append(len(s3.objects))
+
+        await w.publish(TENANT, CANDIDATE, "job-1", {"a.json": b"1", "b.npy": b"2"}, {}, checkpoint)
+
+        assert calls == [0, 1, 2]  # before a.json, before b.npy, before the report
+
+    async def test_a_checkpoint_that_raises_stops_before_the_report(self):
+        w, s3 = writer()
+
+        class Cancelled(Exception):
+            pass
+
+        seen = []
+
+        async def checkpoint():
+            seen.append(1)
+            if len(seen) == 2:
+                raise Cancelled
+
+        with pytest.raises(Cancelled):
+            await w.publish(
+                TENANT, CANDIDATE, "job-1", {"a.json": b"1", "b.npy": b"2"}, {}, checkpoint
+            )
+
+        assert not any(p.endswith("report.json") for p in s3.objects)
+        assert not any(p.endswith("b.npy") for p in s3.objects)

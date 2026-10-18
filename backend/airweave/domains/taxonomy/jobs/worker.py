@@ -87,7 +87,39 @@ async def main(stop: Optional[asyncio.Event] = None) -> None:
     )
     logger.info(f"Taxonomy jobs worker on queue {settings.TAXONOMY_JOBS_TASK_QUEUE}")
     async with worker:
-        await stop.wait()
+        housekeeping = asyncio.create_task(_housekeeping(client, stop))
+        try:
+            await stop.wait()
+        finally:
+            housekeeping.cancel()
+            await asyncio.gather(housekeeping, return_exceptions=True)
+
+
+async def _housekeeping(client: Any, stop: asyncio.Event) -> None:
+    """Start workflows for jobs nothing runs, fail ones abandoned too long, expire old caches."""
+    import shutil
+
+    from airweave.domains.taxonomy.jobs.housekeeping import housekeeping_loop
+    from airweave.domains.taxonomy.jobs.records import SqlTaxonomyJobRepository
+    from airweave.domains.taxonomy.jobs.temporal import start_job_workflow
+
+    async def dispatch(job: Any) -> None:
+        await start_job_workflow(client, settings.TAXONOMY_JOBS_TASK_QUEUE, job.id)
+
+    def cleanup(job_id: Any) -> None:
+        shutil.rmtree(Path(settings.TAXONOMY_JOBS_WORK_DIR) / str(job_id), ignore_errors=True)
+
+    await housekeeping_loop(
+        stop,
+        SqlTaxonomyJobRepository(),
+        dispatch,
+        cleanup,
+        interval_seconds=settings.TAXONOMY_JOBS_RECONCILE_SECONDS,
+        grace_seconds=settings.TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS,
+        max_age_seconds=settings.TAXONOMY_JOBS_MAX_AGE_HOURS * 3600,
+        cache_dir=settings.TAXONOMY_JOBS_CACHE_DIR or None,
+        retention_days=settings.TAXONOMY_JOBS_CACHE_RETENTION_DAYS,
+    )
 
 
 if __name__ == "__main__":

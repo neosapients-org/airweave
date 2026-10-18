@@ -177,7 +177,9 @@ class TestPropose:
         assert done.state == COMPLETED
         call = gw.calls[0]
         assert call["kind"] == "propose" and call["serving"].taxonomy_version == NEW
-        assert sorted(c["document_id"] for c in call["chunks"]) == [f"d{i}" for i in range(6)]
+        assert sorted(c["document_id"] for c in call["chunks"]) == [
+            f"/file_entity/d{i}" for i in range(6)
+        ]
         assert s3.writes and all(p.startswith(FOLDER) for p in s3.writes)
 
     async def test_nothing_unresolved_completes_without_a_build_or_a_write(self, tmp_path):

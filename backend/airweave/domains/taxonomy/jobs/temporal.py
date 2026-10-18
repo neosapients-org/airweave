@@ -1,9 +1,12 @@
 """Temporal workflow and activity for discover and propose jobs, on their own task queue.
 
 Registered only by the jobs worker (``worker.py``), never by the sync worker's ``wiring.py``.
-The workflow is a thin shell: one activity that runs the job. Retries are off: the job row holds
-the state, a lease fences a second attempt, and the activity heartbeats so a hung build is
-noticed. A crashed attempt is retried by Temporal's activity timeout and resumes from the row.
+The workflow is a thin shell: one activity that runs the job. The job row holds the state, a
+lease fences a second attempt, and the activity heartbeats so a hung build is noticed. A crashed
+attempt is retried by Temporal's activity timeout and resumes from the row. The workflow may end
+while the row is still active (the retries ran out, or the lease stayed held for every wait); the
+jobs worker's reconciler (``housekeeping.py``) then starts it again, and fails a job that stays
+unattended for longer than ``TAXONOMY_JOBS_MAX_AGE_HOURS``.
 """
 
 from __future__ import annotations
@@ -97,17 +100,19 @@ class TaxonomyJobActivity:
 
 
 async def start_job_workflow(client: Any, task_queue: str, job_id: UUID) -> None:
-    """Start the job's workflow; an id that is already running is the same job (a replay)."""
-    from temporalio.common import WorkflowIDReusePolicy
-    from temporalio.exceptions import WorkflowAlreadyStartedError
+    """Start the job's workflow, or do nothing when one is already running for it.
 
-    try:
-        await client.start_workflow(
-            WORKFLOW_NAME,
-            str(job_id),
-            id=f"{WORKFLOW_ID_PREFIX}{job_id}",
-            task_queue=task_queue,
-            id_reuse_policy=WorkflowIDReusePolicy.REJECT_DUPLICATE,
-        )
-    except WorkflowAlreadyStartedError:
-        return
+    An id that is running is the same job (``USE_EXISTING``); one whose workflow has ended while
+    the row is still active (the retries ran out, or ``busy`` ended it) is started again, which is
+    how the reconciler recovers it.
+    """
+    from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
+
+    await client.start_workflow(
+        WORKFLOW_NAME,
+        str(job_id),
+        id=f"{WORKFLOW_ID_PREFIX}{job_id}",
+        task_queue=task_queue,
+        id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE,
+        id_conflict_policy=WorkflowIDConflictPolicy.USE_EXISTING,
+    )

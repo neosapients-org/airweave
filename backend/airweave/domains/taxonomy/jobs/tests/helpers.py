@@ -49,6 +49,9 @@ class FakeS3:
             raise StorageNotFoundError(path)
         return self.objects[path]
 
+    async def delete(self, path: str) -> bool:
+        return self.objects.pop(path, None) is not None
+
     def under(self, prefix: str) -> List[str]:
         return sorted(p for p in self.objects if p.startswith(prefix))
 

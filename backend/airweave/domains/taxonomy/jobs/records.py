@@ -117,6 +117,22 @@ class TaxonomyJobRepository(Protocol):
         """Flag a running job; cancel at once a job nobody holds."""
         ...
 
+    async def list_unattended(
+        self, older_than: datetime, limit: int = 50
+    ) -> List[TaxonomyJobRecord]:
+        """Active jobs created before ``older_than`` that no live lease holds, oldest first.
+
+        These are the jobs a worker died on, whose workflow ended, or whose dispatch never
+        reached Temporal; the worker's reconciler starts a workflow for each.
+        """
+        ...
+
+    async def abandon(
+        self, job_id: UUID, error: str, older_than: datetime
+    ) -> Optional[TaxonomyJobRecord]:
+        """Fail an active, unattended job created before ``older_than``; ``None`` if it is not."""
+        ...
+
 
 class InMemoryTaxonomyJobRepository:
     """The repository's rules in memory (tests)."""
@@ -198,6 +214,33 @@ class InMemoryTaxonomyJobRepository:
         for name, value in changes.items():
             setattr(job, name, value)
         job.state, job.error, job.finished_at = state, error, self._clock()
+        job.lease_owner = job.lease_expires_at = None
+        return replace(job)
+
+    def _unattended(self, job: TaxonomyJobRecord) -> bool:
+        return job.active and (
+            job.lease_expires_at is None or job.lease_expires_at <= self._clock()
+        )
+
+    async def list_unattended(
+        self, older_than: datetime, limit: int = 50
+    ) -> List[TaxonomyJobRecord]:
+        """Oldest first."""
+        found = [
+            replace(j)
+            for j in self.jobs.values()
+            if self._unattended(j) and j.created_at <= older_than
+        ]
+        return sorted(found, key=lambda j: j.created_at)[:limit]
+
+    async def abandon(
+        self, job_id: UUID, error: str, older_than: datetime
+    ) -> Optional[TaxonomyJobRecord]:
+        """Only an unattended job created before ``older_than``."""
+        job = self.jobs.get(job_id)
+        if job is None or not self._unattended(job) or job.created_at > older_than:
+            return None
+        job.state, job.error, job.finished_at = FAILED, error, self._clock()
         job.lease_owner = job.lease_expires_at = None
         return replace(job)
 
@@ -284,6 +327,16 @@ def finish_statement(
             **changes,
         )
         .returning(Row)
+    )
+
+
+def unattended_clause(now: datetime) -> Any:
+    """Active, and no live lease holds it."""
+    from sqlalchemy import and_
+
+    return and_(
+        Row.state.in_(ACTIVE),
+        or_(Row.lease_expires_at.is_(None), Row.lease_expires_at <= now),
     )
 
 
@@ -378,6 +431,33 @@ class SqlTaxonomyJobRepository:
             await db.execute(stop)
             await db.commit()
         return await self.get(job_id)
+
+    async def list_unattended(
+        self, older_than: datetime, limit: int = 50
+    ) -> List[TaxonomyJobRecord]:
+        """See ``unattended_clause``."""
+        query = (
+            select(Row)
+            .where(unattended_clause(utcnow()), Row.created_at <= older_than)
+            .order_by(Row.created_at)
+            .limit(limit)
+        )
+        async with self._session() as db:
+            return [to_record(r) for r in (await db.execute(query)).scalars().all()]
+
+    async def abandon(
+        self, job_id: UUID, error: str, older_than: datetime
+    ) -> Optional[TaxonomyJobRecord]:
+        """Fail an unattended job created before ``older_than``."""
+        now = utcnow()
+        return await self._returning(
+            update(Row)
+            .where(Row.id == job_id, unattended_clause(now), Row.created_at <= older_than)
+            .values(
+                state=FAILED, error=error, finished_at=now, lease_owner=None, lease_expires_at=None
+            )
+            .returning(Row)
+        )
 
     async def _one(self, query: Any) -> Optional[TaxonomyJobRecord]:
         async with self._session() as db:

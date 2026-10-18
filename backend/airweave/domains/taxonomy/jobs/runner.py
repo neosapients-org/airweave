@@ -1,13 +1,15 @@
 """Runs discover (A13) and propose (A12) jobs.
 
-Order of a run: take the lease; if the candidate folder already holds this job's report the job
-is done (a replay); sample the chunk text from Vespa; claim the candidate folder (write once);
-run the classifier package on a thread while a heartbeat renews the lease; write the allow-listed
-files and then the report; delete the working directory (it holds customer text).
+Order of a run: take the lease and start a heartbeat that renews it until the job has ended; if
+the candidate folder already holds this job's report the job is done (a replay); claim the
+candidate folder (write once), so a duplicate fails before any scan; sample the chunk text from
+Vespa; run the classifier package on a thread; write the allow-listed files and then the report;
+delete the working directory (it holds customer text).
 
 A lease that is lost stops the job quietly: another attempt owns it now. A cancel request is
-honoured at each phase boundary and after the build, before anything is written to S3. The
-package's own cost ledger enforces the spend cap during the build.
+honoured at each phase boundary, after every page of the scan, after the build and before every
+object written to S3 (the report included). The package's own cost ledger enforces the spend cap
+during the build.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import logging
 import shutil
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from airweave.domains.taxonomy.artifacts import (
     ResolvedTaxonomy,
@@ -30,7 +32,12 @@ from airweave.domains.taxonomy.jobs.candidates import (
     CandidateTaken,
     CandidateWriter,
 )
-from airweave.domains.taxonomy.jobs.gateway import BuildOutput, EngineGateway, SpendCapReached
+from airweave.domains.taxonomy.jobs.gateway import (
+    BuildOutput,
+    CostUnknown,
+    EngineGateway,
+    SpendCapReached,
+)
 from airweave.domains.taxonomy.jobs.records import (
     CANCELLED,
     COMPLETED,
@@ -85,6 +92,9 @@ class TaxonomyJobRunner:
         owner: Optional[str] = None,
     ) -> None:
         """Wire the runner; ``owner`` names this process's leases."""
+        # Builds run on threads Python cannot stop. A cancelled attempt leaves its thread here, and
+        # the next attempt for the job waits for it instead of starting a second build beside it.
+        self._builds: Dict[uuid.UUID, "asyncio.Future[BuildOutput]"] = {}
         self._repo = repo
         self._store_factory = store_factory
         self._candidates = candidates
@@ -105,33 +115,44 @@ class TaxonomyJobRunner:
             current = await self._repo.get(job_id)
             return current.state if current is not None and not current.active else BUSY
         keep_work = False
+        beat = _Heartbeat(self._repo, job.id, self._owner, self._lease)
+        beat.start()
         try:
-            await self._run(job)
+            await self._run(job, beat)
         except _Ended:
             pass
-        except _Abort as e:
-            await self._end(job, FAILED, str(e), spend_used_usd=self._spent(job))
-        except (TooFewDocuments, CandidateTaken, CandidateConflict, SpendCapReached) as e:
-            await self._end(job, FAILED, str(e), spend_used_usd=self._spent(job))
-        except TaxonomyResolutionError as e:
-            await self._end(job, FAILED, f"taxonomy unusable: {e}", spend_used_usd=self._spent(job))
-        except TransientUploadError:
-            keep_work = True  # the build is paid for: the retry reuses it
-            raise
-        except asyncio.CancelledError:
-            keep_work = True  # shutting down: the next attempt resumes and may reuse the build
-            raise
+        except (TransientUploadError, asyncio.CancelledError) as e:
+            # The build is paid for (a retry reuses it), or the worker is shutting down and the
+            # next attempt resumes: the work directory stays.
+            keep_work = True
+            raise e
         except Exception as e:
-            logger.exception("[TaxonomyJob] job %s failed", job.id)
-            await self._end(
-                job, FAILED, f"{type(e).__name__}: {e}"[:500], spend_used_usd=self._spent(job)
-            )
+            await self._fail(job, e)
         finally:
+            # Stopped only once the row has been ended (or the attempt abandoned): a long scan or
+            # upload must not let the lease lapse under it.
+            await beat.stop()
             final = await self._repo.get(job.id)
             if not keep_work and final is not None and not final.active:
                 shutil.rmtree(self._work / str(job.id), ignore_errors=True)
         final = await self._repo.get(job.id)
         return final.state if final is not None else FAILED
+
+    async def _fail(self, job: TaxonomyJobRecord, error: Exception) -> None:
+        """End the job as failed with the reason a person can act on."""
+        if isinstance(error, (_Abort, TooFewDocuments, CandidateTaken, CandidateConflict)):
+            message = str(error)
+        elif isinstance(error, SpendCapReached):
+            message = str(error)
+        elif isinstance(error, TaxonomyResolutionError):
+            message = f"taxonomy unusable: {error}"
+        elif isinstance(error, CostUnknown):
+            # The build is done but what it cost is not known: never recorded as a zero.
+            message = f"cost unknown: {error}"
+        else:
+            logger.exception("[TaxonomyJob] job %s failed", job.id)
+            message = f"{type(error).__name__}: {error}"[:500]
+        await self._end(job, FAILED, message, spend_used_usd=self._spent(job))
 
     def _spent(self, job: TaxonomyJobRecord) -> float:
         """What the package spent before the job failed: the cost ledgers under its work directory.
@@ -149,7 +170,15 @@ class TaxonomyJobRunner:
 
     # ------------------------------------------------------------------- run
 
-    async def _run(self, job: TaxonomyJobRecord) -> None:
+    async def _run(self, job: TaxonomyJobRecord, beat: "_Heartbeat") -> None:
+        def guard(phase: str) -> Callable[[], Awaitable[None]]:
+            # A fresh renewal each time, not the heartbeat's last word: a cancel is seen at the
+            # next page or object, never up to a heartbeat later.
+            async def check() -> None:
+                await self._checkpoint(job, phase)
+
+            return check
+
         done = await self._candidates.existing_report(job.tenant_id, job.candidate_version)
         if done is not None:
             if done.get("job_id") != str(job.id):
@@ -157,22 +186,35 @@ class TaxonomyJobRunner:
             await self._complete(job, done, spend=float(done.get("cost_usd") or 0.0))
             return
         serving = await self._serving(job) if job.kind == KIND_PROPOSE else None
-        await self._checkpoint(job, "sample")
-        chunks = await self._sample(job)
-        if not chunks:
-            await self._complete(
-                job, {"note": "no unresolved chunks: nothing to propose"}, 0.0, None
-            )
-            return
+        # The write-once claim comes before the scan: a version another job owns is found out
+        # before Vespa is read and customer text is held in memory.
         await self._candidates.claim(job.tenant_id, job.candidate_version, str(job.id), job.kind)
-        await self._checkpoint(job, "build")
-        output = await self._build(job, chunks, serving)
+        try:
+            await self._checkpoint(job, "sample")
+            chunks = await self._sample(job, guard("sample"))
+            if not chunks:
+                await self._candidates.release(job.tenant_id, job.candidate_version, str(job.id))
+                await self._complete(
+                    job, {"note": "no unresolved chunks: nothing to propose"}, 0.0, None
+                )
+                return
+            await self._checkpoint(job, "build")
+        except BaseException:
+            # Nothing has been built or written: the claim must not keep the version name.
+            await self._candidates.release(job.tenant_id, job.candidate_version, str(job.id))
+            raise
+        output = await self._build(job, chunks, serving, beat)
         await self._checkpoint(job, "upload")
         try:
             report = await self._candidates.publish(
-                job.tenant_id, job.candidate_version, str(job.id), output.files, output.report
+                job.tenant_id,
+                job.candidate_version,
+                str(job.id),
+                output.files,
+                output.report,
+                checkpoint=guard("upload"),
             )
-        except CandidateConflict:
+        except (CandidateConflict, _Ended):
             raise
         except Exception as e:
             raise TransientUploadError(f"upload failed: {type(e).__name__}: {e}") from e
@@ -190,7 +232,9 @@ class TaxonomyJobRunner:
             raise _Abort("a migration is in progress: propose after it has ended")
         return taxonomy
 
-    async def _sample(self, job: TaxonomyJobRecord) -> List[Dict[str, Any]]:
+    async def _sample(
+        self, job: TaxonomyJobRecord, guard: Callable[[], Awaitable[None]]
+    ) -> List[Dict[str, Any]]:
         store = self._store_factory()
         try:
             if job.kind == KIND_DISCOVER:
@@ -202,12 +246,14 @@ class TaxonomyJobRunner:
                     self._max_chunks,
                     self._min_docs,
                     self._min_chunks,
+                    on_page=guard,
                 )
             chunks: List[Dict[str, Any]] = []
             cursor: Optional[str] = None
             while len(chunks) < self._max_chunks:
                 items, cursor = await unresolved_page(store, job.collection_id, 500, cursor)
                 chunks += [_unresolved_chunk(i) for i in items]
+                await guard()
                 if cursor is None:
                     break
             return chunks[: self._max_chunks]
@@ -219,18 +265,26 @@ class TaxonomyJobRunner:
         job: TaxonomyJobRecord,
         chunks: List[Dict[str, Any]],
         serving: Optional[ResolvedTaxonomy],
+        beat: "_Heartbeat",
     ) -> BuildOutput:
         work = self._work / str(job.id)
-        built = _load_build(work)
-        if built is not None:
-            return built  # an earlier attempt finished the build: the same bytes, no second spend
-        work.mkdir(parents=True, exist_ok=True)
-        beat = _Heartbeat(self._repo, job.id, self._owner, self._lease)
-        beat.start()
+        running = self._builds.get(job.id)
+        if running is None:
+            built = _load_build(work)
+            if built is not None:
+                return built  # an earlier attempt finished the build: the same bytes, no spend
+            work.mkdir(parents=True, exist_ok=True)
+            running = asyncio.ensure_future(
+                asyncio.to_thread(self._call_gateway, job, chunks, serving, work)
+            )
+            self._builds[job.id] = running
+        # Shielded: cancelling this attempt cannot stop the thread. It stays in ``_builds`` and the
+        # next attempt for the job waits on the same build, so two never mutate the work directory.
         try:
-            output = await asyncio.to_thread(self._call_gateway, job, chunks, serving, work)
+            output = await asyncio.shield(running)
         finally:
-            await beat.stop()
+            if running.done():
+                self._builds.pop(job.id, None)
         if beat.lost:
             raise _Ended
         _save_build(work, output)
@@ -324,7 +378,7 @@ class _Heartbeat:
     async def _loop(self) -> None:
         while True:
             await asyncio.sleep(max(1.0, self._lease / 3))
-            saved = await self._repo.renew(self._job, self._owner, self._lease, phase="build")
+            saved = await self._repo.renew(self._job, self._owner, self._lease)
             if saved is None:
                 self.lost = True
                 return
@@ -334,8 +388,10 @@ class _Heartbeat:
 
 def _unresolved_chunk(item: Dict[str, Any]) -> Dict[str, Any]:
     return {
-        "chunk_id": item["chunk_id"],
-        "document_id": item["document_id"],
+        # Document ids repeat across Vespa schemas: the schema is part of the chunk's identity,
+        # as in the re-label path, and the document is identified across sync, schema and id.
+        "chunk_id": f"{item['schema']}/{item['chunk_id']}",
+        "document_id": item["document_key"],
         "text": item["text"],
         "metadata": {
             "source": item.get("source_name") or "n/a",

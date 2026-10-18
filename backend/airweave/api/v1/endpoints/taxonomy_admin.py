@@ -18,6 +18,7 @@ from airweave.api.deps import Inject
 from airweave.api.router import TrailingSlashRouter
 from airweave.api.v1.endpoints.admin import _require_admin_permission
 from airweave.core import container as container_mod
+from airweave.core.config import settings
 from airweave.core.shared_models import FeatureFlag as FeatureFlagEnum
 from airweave.domains.collections.protocols import CollectionRepositoryProtocol
 from airweave.domains.taxonomy.relabel.jobs import (
@@ -54,7 +55,10 @@ class RelabelRequest(BaseModel):
     )
     idempotency_key: Optional[str] = Field(None, description="A replay returns the same job")
     spend_cap_usd: Optional[float] = Field(
-        None, description="Lowers the approved ceiling for this job; never raises it"
+        None,
+        ge=0,
+        allow_inf_nan=False,
+        description="Lowers the approved ceiling for this job; never raises it",
     )
 
 
@@ -237,12 +241,14 @@ class DiscoveryRequest(BaseModel):
 
     candidate_version: str = Field(..., description="Name of the candidate folder and version")
     idempotency_key: str = Field(..., description="A replay returns the same job")
-    tenant_id: str = Field(
-        ...,
-        description="The tenant whose prefix receives the candidate (a first version has no "
-        "active file to read it from)",
+    tenant_id: Optional[str] = Field(
+        None,
+        description="Optional. The tenant is the organization's configured one "
+        "(TAXONOMY_TENANT_BY_ORGANIZATION) or the active file's; a value given here must match it",
     )
-    spend_cap_usd: Optional[float] = Field(None, description="Lowers the approved ceiling")
+    spend_cap_usd: Optional[float] = Field(
+        None, ge=0, allow_inf_nan=False, description="Lowers the approved ceiling"
+    )
     sample_size: Optional[int] = Field(None, description="Documents to sample")
     corpus_description: Optional[str] = Field(
         None, max_length=500, description="Inserted into the reviewer's prompts"
@@ -256,7 +262,7 @@ class ProposalRequest(BaseModel):
 
     candidate_version: str
     idempotency_key: str
-    spend_cap_usd: Optional[float] = None
+    spend_cap_usd: Optional[float] = Field(None, ge=0, allow_inf_nan=False)
 
 
 def get_job_service() -> Any:
@@ -286,30 +292,40 @@ async def _start_job(
     service: Any,
 ) -> Dict[str, Any]:
     from airweave.domains.taxonomy.artifacts import TaxonomyResolutionError
-    from airweave.domains.taxonomy.jobs.service import JobRequest
+    from airweave.domains.taxonomy.jobs.records import KIND_PROPOSE
+    from airweave.domains.taxonomy.jobs.service import JobRequest, resolve_tenant
     from airweave.domains.taxonomy.jobs.service import job_view as view
 
     _require_admin_permission(ctx, FeatureFlagEnum.API_KEY_ADMIN_SYNC)
     collection = await _collection(db, collection_repo, readable_id, ctx)
-    if tenant_id is None:  # propose: the serving version's tenant, from the active file
-        resolver = _serving_tenant(container_mod.container)
-        try:
-            taxonomy = (
-                await resolver.resolve(collection.readable_id, fresh=True) if resolver else None
-            )
-        except TaxonomyResolutionError as e:
+    resolver = _serving_tenant(container_mod.container)
+    try:
+        taxonomy = await resolver.resolve(collection.readable_id, fresh=True) if resolver else None
+    except TaxonomyResolutionError as e:
+        if kind == KIND_PROPOSE:
             raise HTTPException(
                 status_code=409, detail={"code": "taxonomy_unusable", "message": str(e)}
             ) from e
-        if taxonomy is None:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "code": "no_active_taxonomy",
-                    "message": "the collection has no taxonomy to evolve",
-                },
-            )
-        tenant_id = taxonomy.tenant_id
+        taxonomy = None  # a first version has no usable active file yet
+    if kind == KIND_PROPOSE and taxonomy is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "no_active_taxonomy",
+                "message": "the collection has no taxonomy to evolve",
+            },
+        )
+    try:
+        # Never the caller's choice: the tenant comes from the organization's binding or from the
+        # collection's active file, and a name in the body is only checked against it.
+        tenant_id = resolve_tenant(
+            ctx.organization.id,
+            settings.TAXONOMY_TENANT_BY_ORGANIZATION,
+            taxonomy.tenant_id if taxonomy is not None else None,
+            tenant_id,
+        )
+    except RelabelRefused as e:
+        raise HTTPException(status_code=e.status, detail=e.detail()) from e
     request = JobRequest(
         kind=kind,
         organization_id=ctx.organization.id,

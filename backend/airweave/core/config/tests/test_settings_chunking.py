@@ -122,3 +122,60 @@ class TestValidation:
     def test_taxonomy_counts_must_be_positive(self, monkeypatch, name):
         with pytest.raises(ValidationError, match=name):
             _build_settings(monkeypatch, {name: "0"})
+
+
+class TestMoneyAndLimits:
+    """Caps must be finite; limits that mean 'off' at 0 must not be negative."""
+
+    @pytest.mark.parametrize(
+        "name",
+        ["DISCOVER_SPEND_CAP_USD", "EVOLUTION_SPEND_CAP_USD", "RELABEL_SPEND_CAP_USD"],
+    )
+    @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "-1"])
+    def test_a_cap_that_is_not_a_finite_amount_is_refused(self, monkeypatch, name, value):
+        with pytest.raises(ValidationError):
+            _build_settings(monkeypatch, {name: value})
+
+    @pytest.mark.parametrize(
+        "name", ["TAXONOMY_EMBED_CACHE_MAX_MB", "TAXONOMY_JOBS_CACHE_RETENTION_DAYS"]
+    )
+    def test_a_negative_limit_is_a_configuration_error_not_unlimited(self, monkeypatch, name):
+        with pytest.raises(ValidationError):
+            _build_settings(monkeypatch, {name: "-1"})
+        assert getattr(_build_settings(monkeypatch, {name: "0"}), name) == 0
+
+    @pytest.mark.parametrize("name", ["TAXONOMY_ARTIFACT_MAX_MB", "TAXONOMY_ARTIFACT_TOTAL_MAX_MB"])
+    def test_artifact_limits_need_at_least_one_megabyte(self, monkeypatch, name):
+        with pytest.raises(ValidationError):
+            _build_settings(monkeypatch, {name: "0"})
+
+    def test_tenant_bindings_are_read_from_json(self, monkeypatch):
+        s = _build_settings(monkeypatch, {"TAXONOMY_TENANT_BY_ORGANIZATION": '{"org-1": "t-acme"}'})
+        assert s.TAXONOMY_TENANT_BY_ORGANIZATION == {"org-1": "t-acme"}
+
+    def test_no_organization_has_a_tenant_by_default(self, monkeypatch):
+        assert _build_settings(monkeypatch, {}).TAXONOMY_TENANT_BY_ORGANIZATION == {}
+
+
+class TestHeaderBudget:
+    def test_a_target_plus_the_header_budget_must_fit_the_embedder(self, monkeypatch):
+        with pytest.raises(ValidationError, match="8192"):
+            _build_settings(
+                monkeypatch,
+                {
+                    "CHUNK_TARGET_TOKENS": "8000",
+                    "CHUNK_HEADER_MAX_TOKENS": "256",
+                    "CHUNK_HEADER_ENABLED": "true",
+                },
+            )
+
+    def test_the_same_target_is_fine_without_headers(self, monkeypatch):
+        s = _build_settings(
+            monkeypatch, {"CHUNK_TARGET_TOKENS": "8000", "CHUNK_HEADER_ENABLED": "false"}
+        )
+        assert s.CHUNK_TARGET_TOKENS == 8000
+
+    @pytest.mark.parametrize("value", ["0", "-5", "5000"])
+    def test_the_budget_is_bounded(self, monkeypatch, value):
+        with pytest.raises(ValidationError):
+            _build_settings(monkeypatch, {"CHUNK_HEADER_MAX_TOKENS": value})

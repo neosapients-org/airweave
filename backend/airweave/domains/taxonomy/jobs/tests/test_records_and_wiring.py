@@ -111,7 +111,7 @@ class TestRegistrations:
         runner.run_job.assert_awaited_once_with(UUID(int=5))
 
     async def test_start_workflow_uses_the_job_id_so_a_replay_is_a_no_op(self):
-        from temporalio.exceptions import WorkflowAlreadyStartedError
+        from temporalio.common import WorkflowIDConflictPolicy, WorkflowIDReusePolicy
 
         from airweave.domains.taxonomy.jobs.temporal import start_job_workflow
 
@@ -121,10 +121,10 @@ class TestRegistrations:
         await start_job_workflow(client, "q-jobs", jid)
         args, kwargs = client.start_workflow.await_args
         assert kwargs["id"] == f"taxonomy-job-{jid}" and kwargs["task_queue"] == "q-jobs"
-        client.start_workflow = AsyncMock(
-            side_effect=WorkflowAlreadyStartedError("id", "TaxonomyJobWorkflow")
-        )
-        await start_job_workflow(client, "q-jobs", jid)  # swallowed
+        # A running workflow is the same job (no second one); an ended one is started again, which
+        # is how the reconciler recovers a job whose row is still active.
+        assert kwargs["id_conflict_policy"] == WorkflowIDConflictPolicy.USE_EXISTING
+        assert kwargs["id_reuse_policy"] == WorkflowIDReusePolicy.ALLOW_DUPLICATE
 
 
 class TestContainer:
@@ -260,10 +260,14 @@ class TestPackageErrorsAreTranslated:
         from airweave.domains.taxonomy.jobs.gateway import translate_package_error
         from airweave.domains.taxonomy.jobs.sampling import TooFewDocuments
 
-        class CorpusTooSmall(ValueError):  # the package's class, by name: the package is not imported here
+        class CorpusTooSmall(
+            ValueError
+        ):  # the package's class, by name: the package is not imported here
             pass
 
-        mapped = translate_package_error(CorpusTooSmall("no category has the 4 members needed to calibrate"))
+        mapped = translate_package_error(
+            CorpusTooSmall("no category has the 4 members needed to calibrate")
+        )
         assert isinstance(mapped, TooFewDocuments)
         assert "not enough text yet" in str(mapped) and "Add more documents" in str(mapped)
 

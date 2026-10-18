@@ -55,6 +55,10 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print .Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.taxonomyJobsWorker.buildConfig }}
+        # the classifier's YAML is read once at start: a change must roll the pod
+        checksum/build-config: {{ .Values.taxonomyJobsWorker.buildConfig | sha256sum }}
+        {{- end }}
         {{- if .Values.externalSecrets.enabled }}
         checksum/external-secret: {{ include (print $.Template.BasePath "/external-secrets.yaml") . | sha256sum }}
         {{- end }}

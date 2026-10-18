@@ -3,7 +3,8 @@
 Wraps environment variables and provides defaults.
 """
 
-from typing import Literal, Optional
+import math
+from typing import Dict, Literal, Optional
 
 from pydantic import PostgresDsn, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings
@@ -139,6 +140,9 @@ class Settings(BaseSettings):
     # The target counts the chunk body including its overlap; the header line is not counted.
     CHUNK_TARGET_TOKENS: int = 4096
     CHUNK_OVERLAP_TOKENS: int = 0  # sentence_pack only; the semantic chunker has no overlap
+    CHUNK_HEADER_MAX_TOKENS: int = (
+        256  # a longer header is cut to this (it is embedded with the body)
+    )
     CHUNK_HEADER_ENABLED: bool = False
     CHUNKER_MODE: Literal["semantic", "sentence_pack"] = "semantic"
     CHUNKER_VERSION: str = "1"  # bumped only when the chunker's code changes
@@ -152,6 +156,10 @@ class Settings(BaseSettings):
     TAXONOMY_LOCAL_DIR: str = "/tmp/airweave/taxonomy"
     TAXONOMY_EMBED_CACHE_DIR: str = "/tmp/airweave/taxonomy-cache"  # one SQLite file per thread
     TAXONOMY_EMBED_CACHE_MAX_MB: int = 512  # a thread starts a new cache file past this; 0 = never
+    # The most one taxonomy artifact file, and one version's files together, may weigh. A manifest
+    # that declares more is refused before anything is downloaded; the bytes read are checked too.
+    TAXONOMY_ARTIFACT_MAX_MB: int = 256
+    TAXONOMY_ARTIFACT_TOTAL_MAX_MB: int = 1024
     TAXONOMY_CLASSIFY_THREADS: int = 2
     TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: int = 60
 
@@ -186,6 +194,18 @@ class Settings(BaseSettings):
     # starts empty). The folders hold customer text and the model's answers about it: put them on
     # an encrypted volume and delete them with the tenant's data.
     TAXONOMY_JOBS_CACHE_DIR: str = ""
+    # Days a tenant's retained cache folder may sit unused before the jobs worker removes it (0 =
+    # never expire; deleting a tenant's data is then the deployment's job).
+    TAXONOMY_JOBS_CACHE_RETENTION_DAYS: int = 30
+    # Which tenant's prefix a discovery writes to, per organization: a JSON object
+    # {"<organization uuid>": "<tenant id>"}. A caller never chooses the tenant; an organization
+    # without an entry can only start discoveries for a collection that already has an active file.
+    TAXONOMY_TENANT_BY_ORGANIZATION: Dict[str, str] = {}
+    # The jobs worker looks for active jobs nothing runs every RECONCILE seconds, starts a workflow
+    # for those older than the grace period, and fails those unattended for MAX_AGE hours.
+    TAXONOMY_JOBS_RECONCILE_SECONDS: int = 60
+    TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS: int = 120
+    TAXONOMY_JOBS_MAX_AGE_HOURS: int = 24
 
     # Search: honour OR between a request's filter groups (contract C8). False keeps the
     # upstream behaviour, where every user filter group is merged into one AND group.
@@ -388,6 +408,25 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_OVERLAP_TOKENS must be >= 0 and below CHUNK_TARGET_TOKENS")
         return v
 
+    @field_validator("CHUNK_HEADER_MAX_TOKENS")
+    def validate_chunk_header_max_tokens(cls, v: int) -> int:
+        """The header budget is a positive number of tokens well below the embedder's limit."""
+        if not 1 <= v <= 1024:
+            raise ValueError("CHUNK_HEADER_MAX_TOKENS must be between 1 and 1024")
+        return v
+
+    @field_validator("CHUNK_HEADER_ENABLED")
+    def validate_header_fits_the_embedder(cls, v: bool, info: ValidationInfo) -> bool:
+        """With headers on, a body at the target plus the longest header must fit the embedder."""
+        target = info.data.get("CHUNK_TARGET_TOKENS")
+        budget = info.data.get("CHUNK_HEADER_MAX_TOKENS")
+        if v and target is not None and budget is not None and target + budget > 8192:
+            raise ValueError(
+                f"CHUNK_TARGET_TOKENS ({target}) plus CHUNK_HEADER_MAX_TOKENS ({budget}) "
+                "exceeds the embedder's 8192 tokens"
+            )
+        return v
+
     @field_validator("TAXONOMY_CLASSIFY_THREADS", "TAXONOMY_CLASSIFY_TIMEOUT_SECONDS")
     def validate_taxonomy_positive(cls, v: int, info: ValidationInfo) -> int:
         """Require at least one classifier thread and a positive timeout."""
@@ -397,13 +436,33 @@ class Settings(BaseSettings):
 
     @field_validator("DISCOVER_SPEND_CAP_USD", "EVOLUTION_SPEND_CAP_USD")
     def validate_job_caps(cls, v: float, info: ValidationInfo) -> float:
-        """Spend caps cannot be negative."""
+        """Spend caps are finite and not negative (NaN compares false with everything)."""
+        if not math.isfinite(v) or v < 0:
+            raise ValueError(f"{info.field_name} must be a finite number, 0 or more")
+        return v
+
+    @field_validator(
+        "TAXONOMY_EMBED_CACHE_MAX_MB",
+        "TAXONOMY_JOBS_CACHE_RETENTION_DAYS",
+    )
+    def validate_non_negative_limits(cls, v: int, info: ValidationInfo) -> int:
+        """0 switches the limit off; a negative value is a mistake, not "unlimited"."""
         if v < 0:
-            raise ValueError(f"{info.field_name} must be 0 or more")
+            raise ValueError(f"{info.field_name} must be 0 or more (0 switches it off)")
+        return v
+
+    @field_validator("TAXONOMY_ARTIFACT_MAX_MB", "TAXONOMY_ARTIFACT_TOTAL_MAX_MB")
+    def validate_artifact_limits(cls, v: int, info: ValidationInfo) -> int:
+        """Artifact limits must be at least 1 MB."""
+        if v < 1:
+            raise ValueError(f"{info.field_name} must be at least 1")
         return v
 
     @field_validator(
         "TAXONOMY_JOBS_LEASE_SECONDS",
+        "TAXONOMY_JOBS_RECONCILE_SECONDS",
+        "TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS",
+        "TAXONOMY_JOBS_MAX_AGE_HOURS",
         "TAXONOMY_JOBS_MAX_CHUNKS",
         "DISCOVER_SAMPLE_DOCUMENTS",
         "DISCOVER_MIN_DOCUMENTS",
@@ -417,9 +476,9 @@ class Settings(BaseSettings):
 
     @field_validator("RELABEL_SPEND_CAP_USD", "RELABEL_USD_PER_THOUSAND_CHUNKS")
     def validate_relabel_money(cls, v: float, info: ValidationInfo) -> float:
-        """Spend figures cannot be negative."""
-        if v < 0:
-            raise ValueError(f"{info.field_name} must be 0 or more")
+        """Spend figures are finite and not negative."""
+        if not math.isfinite(v) or v < 0:
+            raise ValueError(f"{info.field_name} must be a finite number, 0 or more")
         return v
 
     @field_validator(
