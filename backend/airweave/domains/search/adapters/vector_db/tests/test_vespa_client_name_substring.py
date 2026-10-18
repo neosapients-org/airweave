@@ -128,3 +128,45 @@ class TestFilterSearchWithNameSubstring:
         await client.filter_search(filter_groups=[], collection_id="col-123")
         yql = app.query.call_args.kwargs["body"]["yql"]
         assert "name matches" not in yql
+
+
+class TestFilterSearchOrder:
+    """Offset pagination needs a total order, or adjacent pages repeat and skip rows."""
+
+    @pytest.mark.asyncio
+    async def test_the_query_orders_by_a_unique_chunk_key(self) -> None:
+        client, app = _make_client()
+
+        await client.filter_search([], "col-1", limit=50, offset=100)
+
+        body = app.query.call_args.kwargs["body"]
+        assert body["offset"] == 100 and body["hits"] == 50
+        assert body["yql"].endswith(
+            " order by airweave_system_metadata_sync_id, "
+            "airweave_system_metadata_original_entity_id, "
+            "airweave_system_metadata_chunk_index, entity_id"
+        )
+
+    @pytest.mark.asyncio
+    async def test_adjacent_pages_use_the_same_order_and_only_the_window_differs(self) -> None:
+        client, app = _make_client()
+
+        await client.filter_search([], "col-1", limit=50, offset=0)
+        await client.filter_search([], "col-1", limit=50, offset=50)
+
+        first, second = (c.kwargs["body"] for c in app.query.call_args_list)
+        assert first["yql"] == second["yql"]
+        assert (first["offset"], second["offset"]) == (0, 50)
+
+    def test_every_sort_key_is_an_attribute_of_the_schema(self) -> None:
+        from pathlib import Path
+
+        from airweave.domains.search.adapters.vector_db.vespa_client import _FILTER_SEARCH_ORDER
+
+        path = Path(__file__).resolve().parents[7] / "vespa/app/schemas/base_entity.sd"
+        if not path.exists():  # the backend image holds no copy of the Vespa app
+            pytest.skip("vespa/app/schemas/base_entity.sd is not in this checkout")
+        schema = path.read_text()
+        for name in _FILTER_SEARCH_ORDER:
+            block = schema.split(f"field {name} type", 1)[1].split("}", 1)[0]
+            assert "attribute" in block, name

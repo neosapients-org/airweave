@@ -195,3 +195,85 @@ class TestEmbeddingInputs:
         )
         assert out[0].textual_representation == "def f():\n    return 1\n"
         assert out[0].chunk_body_offset is None
+
+
+class TestHeaderTokenBudget:
+    """The header is embedded with the body: it has a token budget of its own."""
+
+    @staticmethod
+    def count(text: str) -> int:
+        # one token per character is the worst case a tokenizer can reach (CJK, symbols)
+        return len(text)
+
+    def test_a_header_within_the_budget_is_unchanged(self):
+        from airweave.domains.sync_pipeline.processors.chunk_layout import fit_header
+
+        assert fit_header("report.pdf · drive", 50, self.count) == "report.pdf · drive"
+
+    def test_a_longer_header_is_cut_to_the_budget_and_ends_in_an_ellipsis(self):
+        from airweave.domains.sync_pipeline.processors.chunk_layout import fit_header
+
+        header = "x" * 500 + " · google_drive"
+
+        fitted = fit_header(header, 40, self.count)
+
+        assert self.count(fitted) <= 40 and fitted.endswith("…") and fitted.startswith("xxx")
+        assert "\n" not in fitted
+
+    def test_the_real_tokenizer_bounds_dense_text_that_a_character_limit_would_not(self):
+        from airweave.domains.sync_pipeline.processors.chunk_layout import (
+            _header_tokenizer,
+            fit_header,
+        )
+
+        header = "契約書の名前" * 200  # CJK: more than one token per character
+        count = _header_tokenizer().count_tokens
+
+        fitted = fit_header(header, 64)
+
+        assert count(header) > 64 and count(fitted) <= 64
+
+    async def test_a_chunk_never_carries_a_header_over_the_budget(
+        self, processor, sync_context, neo, monkeypatch
+    ):
+        from airweave.domains.sync_pipeline.processors.chunk_layout import _header_tokenizer
+
+        neo(header=True)
+        monkeypatch.setattr(settings, "CHUNK_HEADER_MAX_TOKENS", 32)
+        entity = _entity(TEXT, name="n" * 400)
+
+        chunks = await processor._chunk_textual_entities([entity], sync_context)
+
+        assert chunks
+        count = _header_tokenizer().count_tokens
+        for chunk in chunks:
+            header = chunk.textual_representation[: chunk.chunk_body_offset - 1]
+            assert count(header) <= 32 and header.endswith("…") is False or count(header) <= 32
+            assert len(header) < 400
+
+
+class TestHeaderBudgetInTheFingerprint:
+    def test_a_custom_budget_reprocesses_entities_and_the_default_does_not(self, monkeypatch):
+        import json
+
+        from airweave.domains.sync_pipeline.pipeline.hash_computer import chunk_fingerprint
+
+        monkeypatch.setattr(settings, "CHUNK_HEADER_ENABLED", True)
+        monkeypatch.setattr(settings, "CHUNK_HEADER_MAX_TOKENS", 256)
+        default = json.loads(chunk_fingerprint(_entity(TEXT)))
+        monkeypatch.setattr(settings, "CHUNK_HEADER_MAX_TOKENS", 128)
+        custom = json.loads(chunk_fingerprint(_entity(TEXT)))
+
+        assert "CHUNK_HEADER_MAX_TOKENS" not in default
+        assert custom["CHUNK_HEADER_MAX_TOKENS"] == 128
+
+    def test_with_headers_off_the_budget_is_not_part_of_it(self, monkeypatch):
+        import json
+
+        from airweave.domains.sync_pipeline.pipeline.hash_computer import chunk_fingerprint
+
+        monkeypatch.setattr(settings, "CHUNK_HEADER_ENABLED", False)
+        monkeypatch.setattr(settings, "CHUNK_HEADER_MAX_TOKENS", 128)
+        monkeypatch.setattr(settings, "CHUNK_TARGET_TOKENS", 300)
+
+        assert "CHUNK_HEADER_MAX_TOKENS" not in json.loads(chunk_fingerprint(_entity(TEXT)))

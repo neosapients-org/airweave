@@ -16,7 +16,7 @@ import os
 from dataclasses import dataclass, field
 
 from airweave.core.logging import logger
-from airweave.domains.converters.page_markers import page_marker
+from airweave.domains.converters.page_markers import escape_page_text, page_marker
 from airweave.domains.sync_pipeline.exceptions import SyncFailureError
 
 MIN_CHARS_PER_PAGE = 50
@@ -51,7 +51,9 @@ class PdfExtractionResult:
         Removing the markers (``strip_page_markers``) gives ``full_text`` back exactly.
         """
         texts = [
-            page_marker(p.page_num + 1) + p.text for p in self.pages if p.text and not p.needs_ocr
+            page_marker(p.page_num + 1) + escape_page_text(p.text)
+            for p in self.pages
+            if p.text and not p.needs_ocr
         ]
         return "\n\n".join(texts)
 

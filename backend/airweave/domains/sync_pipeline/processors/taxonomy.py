@@ -266,8 +266,16 @@ def _own_text(chunk: BaseEntity) -> str:
 
 
 def _document_id(chunk: BaseEntity) -> str:
+    """The document's identity for the classifier's per-document grouping: sync, schema, id.
+
+    The source's own entity id is unique only inside one connector and schema, so equal ids from
+    two sources must not be read as one document.
+    """
     meta = chunk.airweave_system_metadata
-    return (meta.original_entity_id if meta else None) or chunk.entity_id or ""
+    original = (meta.original_entity_id if meta else None) or chunk.entity_id or ""
+    sync_id = str(meta.sync_id) if meta and meta.sync_id else ""
+    schema = (meta.entity_type if meta and meta.entity_type else None) or type(chunk).__name__
+    return f"{sync_id}/{schema}/{original}"
 
 
 def _set_status(chunk: BaseEntity, status: str) -> None:

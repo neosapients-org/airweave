@@ -58,6 +58,45 @@ def build_header(
     return replace_refused_characters(header)
 
 
+_tokenizer: Any = None
+
+
+def _header_tokenizer() -> Any:
+    """The tokenizer the header is measured with (the embedder's family), loaded once."""
+    global _tokenizer
+    if _tokenizer is None:
+        from airweave.platform.tokenizers import get_tokenizer
+
+        _tokenizer = get_tokenizer("cl100k_base")
+    return _tokenizer
+
+
+def fit_header(header: str, max_tokens: int, count: Any = None) -> str:
+    """Cut a header to ``max_tokens`` tokens, ending in an ellipsis; a short one is unchanged.
+
+    The header is embedded with the body, and the body is chunked to its own token target before
+    the header is known, so the header must have a budget of its own: a long file name or path
+    would otherwise push a full chunk past the embedder's limit and fail the whole entity. A
+    character limit cannot bound tokens (CJK text costs a token or more per character).
+
+    Args:
+        header: The one-line header.
+        max_tokens: The most tokens it may take.
+        count: Counts tokens in a text; the embedder-family tokenizer by default.
+    """
+    count = count or _header_tokenizer().count_tokens
+    if count(header) <= max_tokens:
+        return header
+    low, high = 0, len(header)
+    while low < high:  # the longest prefix that still fits with the ellipsis
+        mid = (low + high + 1) // 2
+        if count(header[:mid] + "…") <= max_tokens:
+            low = mid
+        else:
+            high = mid - 1
+    return header[:low].rstrip() + "…"
+
+
 @dataclass(frozen=True)
 class ChunkLayout:
     """What the chunk processor adds to each text chunk, decided once per batch from settings.
@@ -105,6 +144,7 @@ class ChunkLayout:
                 chunk_entity.page_from,
                 chunk_entity.page_to,
             )
+            header = fit_header(header, settings.CHUNK_HEADER_MAX_TOKENS)
             chunk_entity.textual_representation = f"{header}\n{chunk_entity.textual_representation}"
             chunk_entity.chunk_body_offset = len(header) + 1
         else:

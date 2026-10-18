@@ -6,6 +6,7 @@ import pytest
 
 from airweave.domains.converters.page_markers import (
     PAGE_SENTINEL,
+    escape_page_text,
     page_at,
     page_marker,
     strip_page_markers,
@@ -37,6 +38,29 @@ class TestMarkers:
         """Only a full marker is removed; a private-use character on its own stays."""
         text = "Symbol \ue000 font glyph"
         assert strip_page_markers(text) == (text, [])
+
+    def test_a_forged_marker_in_the_document_is_text_not_a_page_boundary(self):
+        forged = "Invoice \ue000page 4\ue000 follows"
+        text = page_marker(1) + escape_page_text(forged) + "\n\n" + page_marker(2) + "end"
+
+        clean, starts = strip_page_markers(text)
+
+        assert clean == forged + "\n\nend"
+        assert starts == [(0, 1), (len(forged) + 2, 2)]
+
+    def test_literal_sentinels_survive_a_round_trip_and_do_not_move_positions(self):
+        page = "a\ue000b\ue000\ue000c\ue000"
+        text = (
+            page_marker(1) + escape_page_text(page) + page_marker(2) + escape_page_text("\ue000x")
+        )
+
+        clean, starts = strip_page_markers(text)
+
+        assert clean == page + "\ue000x"
+        assert starts == [(0, 1), (len(page), 2)]
+
+    def test_the_escape_is_the_identity_without_a_sentinel(self):
+        assert escape_page_text("plain text") == "plain text"
 
     def test_page_at(self):
         starts = [(5, 1), (9, 2), (20, 3)]

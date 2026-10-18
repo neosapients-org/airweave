@@ -206,3 +206,28 @@ class TestPassThrough:
             None,
             TopicBoost(topic_ids=["acme:credit.loan_credit_quality"], weight=0.15),
         ]
+
+
+class TestWeightIsBounded:
+    @pytest.mark.parametrize("weight", [float("inf"), float("nan"), -0.1, 2.5, 1e9])
+    def test_a_weight_that_could_swamp_the_hybrid_score_is_refused(self, weight):
+        from pydantic import ValidationError
+
+        from airweave.domains.search.types.boost import TopicBoost
+
+        with pytest.raises(ValidationError):
+            TopicBoost(topic_ids=["acme:x"], weight=weight)
+
+    @pytest.mark.parametrize("weight", [0.0, 0.15, 2.0])
+    def test_the_range_edges_are_allowed(self, weight):
+        from airweave.domains.search.types.boost import TopicBoost
+
+        assert TopicBoost(topic_ids=["acme:x"], weight=weight).weight == weight
+
+    def test_json_infinity_is_refused(self):
+        from pydantic import ValidationError
+
+        from airweave.domains.search.types.boost import TopicBoost
+
+        with pytest.raises(ValidationError):
+            TopicBoost.model_validate_json('{"topic_ids": [], "weight": Infinity}')

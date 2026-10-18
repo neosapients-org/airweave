@@ -67,8 +67,7 @@ class TestSharedFixture:
         """The fixture covers overlap and code points that are not single UTF-16 units."""
         assert any(c["own_start"] > c["start_index"] for c in chunks)
         assert any(
-            c["_test"]["utf16"]["chunk_char_end"] != c["chunk_char_end"]
-            for c in fixture["chunks"]
+            c["_test"]["utf16"]["chunk_char_end"] != c["chunk_char_end"] for c in fixture["chunks"]
         )
 
     def test_fixture_spans_lie_in_own_ranges(self, fixture, chunks):
@@ -195,9 +194,7 @@ class TestLongSentences:
         ref_text = "".join(sentence[s:e] for s, e in ref)
         port = SentencePackChunker(40, 0).chunk_text(sentence)
         assert "".join(c["text"] for c in port) == sentence
-        assert ref_text != sentence or ref != [
-            (c["start_index"], c["end_index"]) for c in port
-        ]
+        assert ref_text != sentence or ref != [(c["start_index"], c["end_index"]) for c in port]
 
     def test_units_cover_text_exactly(self):
         text = ("Acme 📈 Zürich 売上高 " * 300).strip() + ". Short tail sentence here."
@@ -240,3 +237,40 @@ class TestPacking:
         chunker = SentencePackChunker(40, 16)
         texts = [_ascii_document(random.Random(s), 10) for s in range(3)]
         assert await chunker.chunk_batch(texts) == [chunker.chunk_text(t) for t in texts]
+
+
+class TestClosingPunctuation:
+    """A closing quote or bracket after the full stop ends the sentence with it."""
+
+    def spans(self, text):
+        from airweave.platform.chunkers.sentence_pack import sentences
+
+        return [text[s:e] for s, e in sentences(text)]
+
+    def test_a_closing_quote_stays_with_its_sentence(self):
+        text = "She looked at the clerk and said “Stop.” Then she left the building."
+        assert self.spans(text) == [
+            "She looked at the clerk and said “Stop.” ",
+            "Then she left the building.",
+        ]
+
+    @pytest.mark.parametrize("closer", ['"', "'", ")", "]", "}", "’", "»"])
+    def test_each_closer_is_part_of_the_first_sentence(self, closer):
+        text = f"The totals were confirmed by the auditor.{closer} The next section follows."
+        first, second = self.spans(text)
+        assert first.rstrip().endswith(closer) and second == "The next section follows."
+
+    def test_text_without_closers_splits_exactly_as_before(self):
+        text = "The totals were confirmed by the auditor. The next section follows soon."
+        assert self.spans(text) == [
+            "The totals were confirmed by the auditor. ",
+            "The next section follows soon.",
+        ]
+
+    def test_the_spans_still_cover_the_text_exactly(self):
+        from airweave.platform.chunkers.sentence_pack import sentences
+
+        text = "He said (see below.) Then “left.”\n\nA new paragraph starts here, after a break."
+        spans = sentences(text)
+        assert spans[0][0] == 0 and spans[-1][1] == len(text)
+        assert all(a[1] == b[0] for a, b in zip(spans, spans[1:], strict=False))

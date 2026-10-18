@@ -25,7 +25,7 @@ from typing import Dict, List, Optional
 import aiofiles.os
 
 from airweave.core.logging import logger
-from airweave.domains.converters.page_markers import page_marker
+from airweave.domains.converters.page_markers import escape_page_text, page_marker
 from airweave.domains.converters.text_extractors.pptx import extract_pptx_text
 from airweave.domains.ocr.mistral.compressor import compress_image
 from airweave.domains.ocr.mistral.models import (
@@ -329,7 +329,11 @@ class MistralOCR:
         marked, first_page = [], 1
         for pages in pages_per_part:
             marked.append(
-                "\n\n".join(page_marker(first_page + i) + md for i, md in enumerate(pages) if md)
+                "\n\n".join(
+                    page_marker(first_page + i) + escape_page_text(md)
+                    for i, md in enumerate(pages)
+                    if md
+                )
             )
             first_page += len(pages)
         return marked

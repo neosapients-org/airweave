@@ -24,6 +24,10 @@ CHUNK_FINGERPRINT_SETTINGS = (
     "CHUNK_OVERLAP_TOKENS",
     "CHUNK_HEADER_ENABLED",
 )
+# Part of the fingerprint only when a header is on and its budget is not the default, so the
+# fingerprint of every deployment that never set it stays what it was.
+HEADER_BUDGET_SETTING = "CHUNK_HEADER_MAX_TOKENS"
+HEADER_BUDGET_DEFAULT = 256
 
 
 def chunk_fingerprint(entity: BaseEntity) -> Optional[str]:
@@ -38,6 +42,9 @@ def chunk_fingerprint(entity: BaseEntity) -> Optional[str]:
     if isinstance(entity, CodeFileEntity):
         return None
     values = {name: getattr(settings, name) for name in CHUNK_FINGERPRINT_SETTINGS}
+    budget = getattr(settings, HEADER_BUDGET_SETTING)
+    if settings.CHUNK_HEADER_ENABLED and budget != HEADER_BUDGET_DEFAULT:
+        values[HEADER_BUDGET_SETTING] = budget
     defaults = {name: Settings.model_fields[name].default for name in CHUNK_FINGERPRINT_SETTINGS}
     if values == defaults:
         return None

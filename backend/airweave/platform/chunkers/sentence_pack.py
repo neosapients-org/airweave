@@ -29,7 +29,10 @@ from airweave.domains.sync_pipeline.async_helpers import run_in_thread_pool
 from airweave.platform.chunkers._base import BaseChunker
 from airweave.platform.tokenizers import TikTokenTokenizer, get_tokenizer
 
-_BOUNDARY = re.compile(r"(?<=[.!?])\s+|\n+")
+# A sentence ends at . ! or ? followed by white space; closing quotes and brackets between the two
+# belong to the sentence it ends (She said "Stop." Then she left.), as do the white space and
+# any line breaks after them.
+_BOUNDARY = re.compile(r"(?<=[.!?])[\"'\u201d\u2019\u00bb)\]}]*\s+|\n+")
 MIN_SENTENCE_CHARS = 24
 
 # (start, end, tokens): a sentence, or one window of a sentence longer than the target

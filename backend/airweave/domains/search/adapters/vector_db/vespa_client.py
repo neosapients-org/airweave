@@ -44,6 +44,15 @@ if TYPE_CHECKING:
 TOPIC_BOOST_PROFILE = "hybrid_topic"
 
 
+# Sort keys of `filter_search` (see there).
+_FILTER_SEARCH_ORDER = (
+    "airweave_system_metadata_sync_id",
+    "airweave_system_metadata_original_entity_id",
+    "airweave_system_metadata_chunk_index",
+    "entity_id",
+)
+
+
 class VespaVectorDB:
     """Vespa vector database for search.
 
@@ -236,7 +245,12 @@ class VespaVectorDB:
             where_parts.append(self._build_name_substring_clause(name_substring))
 
         all_schemas = ", ".join(ALL_VESPA_SCHEMAS)
-        yql = f"select * from sources {all_schemas} where {' AND '.join(where_parts)}"
+        # A total order, so adjacent pages of an offset walk neither repeat nor skip a row: the
+        # sync, the source's entity id and the chunk index name one chunk, and the Vespa
+        # `entity_id` breaks any tie between schemas. All four are attributes.
+        order = ", ".join(_FILTER_SEARCH_ORDER)
+        where = " AND ".join(where_parts)
+        yql = f"select * from sources {all_schemas} where {where} order by {order}"
 
         try:
             response = await asyncio.to_thread(

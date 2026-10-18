@@ -7,7 +7,7 @@ import os
 from typing import Any, Optional
 
 from airweave.core.logging import logger
-from airweave.domains.converters.page_markers import page_marker
+from airweave.domains.converters.page_markers import escape_page_text, page_marker
 from airweave.domains.sync_pipeline.exceptions import SyncFailureError
 
 MIN_TOTAL_CHARS = 50
@@ -74,7 +74,8 @@ async def extract_pptx_text(path: str) -> Optional[str]:
         # A page marker before each slide gives chunks their slide numbers; the chunk
         # processor removes the markers, which leaves ``markdown`` exactly.
         return "\n\n---\n\n".join(
-            page_marker(idx) + slide_md for idx, slide_md in enumerate(slide_markdowns, start=1)
+            page_marker(idx) + escape_page_text(slide_md)
+            for idx, slide_md in enumerate(slide_markdowns, start=1)
         )
 
     return await asyncio.to_thread(_extract)
