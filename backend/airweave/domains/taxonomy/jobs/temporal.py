@@ -6,7 +6,7 @@ lease fences a second attempt, and the activity heartbeats so a hung build is no
 attempt is retried by Temporal's activity timeout and resumes from the row. The workflow may end
 while the row is still active (the retries ran out, or the lease stayed held for every wait); the
 jobs worker's reconciler (``housekeeping.py``) then starts it again, and fails a job that stays
-unattended for longer than ``TAXONOMY_JOBS_MAX_AGE_HOURS``.
+unattended for longer than ``limits.JOBS_MAX_AGE_HOURS``.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ with workflow.unsafe.imports_passed_through():
 
 
 BUSY = "busy"
-# A lease is held for TAXONOMY_JOBS_LEASE_SECONDS (300 by default). A dead worker's lease
+# A lease is held for ``limits.JOBS_LEASE_SECONDS`` (300). A dead worker's lease
 # expires after that, so the workflow waits a little longer and asks again, instead of ending
 # while the job row still says RUNNING (it did once: the first attempt died holding the lease and
 # the second saw "busy").

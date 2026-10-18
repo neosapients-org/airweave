@@ -28,7 +28,7 @@ def req(**kw):
     return JobRequest(**base)
 
 
-def make(discover=5.0, evolution=5.0):
+def make(cap=5.0):
     enqueued = []
 
     async def enqueue(job):
@@ -36,7 +36,7 @@ def make(discover=5.0, evolution=5.0):
 
     repo = InMemoryTaxonomyJobRepository()
     return (
-        TaxonomyJobService(repo, enqueue, discover_cap_usd=discover, evolution_cap_usd=evolution),
+        TaxonomyJobService(repo, enqueue, cap_usd=cap),
         repo,
         enqueued,
     )
@@ -45,36 +45,37 @@ def make(discover=5.0, evolution=5.0):
 class TestCap:
     @pytest.mark.parametrize("kind", [KIND_DISCOVER, KIND_PROPOSE])
     async def test_default_cap_of_zero_approves_nothing(self, kind):
-        svc, repo, enq = make(discover=0.0, evolution=0.0)
+        svc, repo, enq = make(cap=0.0)
         with pytest.raises(RelabelRefused) as e:
             await svc.start(req(kind=kind))
         assert (e.value.status, e.value.code) == (422, "spend_cap_not_approved")
         assert repo.jobs == {} and enq == []
 
-    async def test_each_kind_has_its_own_ceiling(self):
-        svc, _, _ = make(discover=0.0, evolution=3.0)
-        job, _ = await svc.start(req(kind=KIND_PROPOSE))
-        assert job.spend_cap_usd == 3.0
-        with pytest.raises(RelabelRefused):
-            await svc.start(
-                req(kind=KIND_DISCOVER, candidate_version="other", idempotency_key="k2")
-            )
+    async def test_one_ceiling_applies_to_both_kinds(self):
+        discover, _ = await make(cap=3.0)[0].start(req(kind=KIND_DISCOVER))
+        propose, _ = await make(cap=3.0)[0].start(req(kind=KIND_PROPOSE))
+        assert (discover.spend_cap_usd, propose.spend_cap_usd) == (3.0, 3.0)
+
+    async def test_the_refusal_names_the_setting_to_raise(self):
+        svc, _, _ = make(cap=0.0)
+        with pytest.raises(RelabelRefused, match="TAXONOMY_SPEND_CAP_USD"):
+            await svc.start(req())
 
     async def test_a_request_can_lower_the_cap_never_raise_it(self):
-        svc, _, _ = make(discover=5.0)
+        svc, _, _ = make(cap=5.0)
         low, _ = await svc.start(req(spend_cap_usd=1.5))
         assert low.spend_cap_usd == 1.5
-        svc2, _, _ = make(discover=5.0)
+        svc2, _, _ = make(cap=5.0)
         high, _ = await svc2.start(req(spend_cap_usd=500.0))
         assert high.spend_cap_usd == 5.0
 
     async def test_a_request_cannot_raise_a_zero_cap(self):
-        svc, _, _ = make(discover=0.0)
+        svc, _, _ = make(cap=0.0)
         with pytest.raises(RelabelRefused):
             await svc.start(req(spend_cap_usd=100.0))
 
     async def test_a_zero_request_cap_refuses(self):
-        svc, _, _ = make(discover=5.0)
+        svc, _, _ = make(cap=5.0)
         with pytest.raises(RelabelRefused):
             await svc.start(req(spend_cap_usd=0.0))
 
@@ -190,12 +191,10 @@ class TestFiniteCaps:
             return None
 
         with pytest.raises(ValueError, match="spend cap"):
-            TaxonomyJobService(repo, enqueue, discover_cap_usd=ceiling, evolution_cap_usd=1.0)
-        with pytest.raises(ValueError, match="spend cap"):
-            TaxonomyJobService(repo, enqueue, discover_cap_usd=1.0, evolution_cap_usd=ceiling)
+            TaxonomyJobService(repo, enqueue, cap_usd=ceiling)
 
     async def test_a_request_cap_below_the_ceiling_still_lowers_it(self):
-        svc, _, _ = make(discover=5.0)
+        svc, _, _ = make(cap=5.0)
         job, _ = await svc.start(req(spend_cap_usd=1.5))
         assert job.spend_cap_usd == 1.5
 
@@ -242,7 +241,7 @@ class TestDispatchIsRecoverable:
         async def down(job):
             raise ConnectionError("temporal is down")
 
-        svc = TaxonomyJobService(repo, down, discover_cap_usd=5.0, evolution_cap_usd=5.0)
+        svc = TaxonomyJobService(repo, down, cap_usd=5.0)
 
         job, created = await svc.start(req())
 
@@ -257,7 +256,7 @@ class TestDispatchIsRecoverable:
             if len(attempts) == 1:
                 raise ConnectionError("temporal is down")
 
-        svc = TaxonomyJobService(repo, flaky, discover_cap_usd=5.0, evolution_cap_usd=5.0)
+        svc = TaxonomyJobService(repo, flaky, cap_usd=5.0)
         first, _ = await svc.start(req())
         again, created = await svc.start(req())
 

@@ -95,19 +95,17 @@ class TaxonomyJobService:
         repo: TaxonomyJobRepository,
         enqueue: Enqueue,
         *,
-        discover_cap_usd: float,
-        evolution_cap_usd: float,
+        cap_usd: float,
     ) -> None:
-        """The caps are ``DISCOVER_SPEND_CAP_USD`` and ``EVOLUTION_SPEND_CAP_USD``.
+        """``cap_usd`` is ``TAXONOMY_SPEND_CAP_USD``, the ceiling of one job of either kind.
 
         Raises ``ValueError`` for a ceiling that is not a finite amount from 0 up.
         """
-        for ceiling in (discover_cap_usd, evolution_cap_usd):
-            if not math.isfinite(ceiling) or ceiling < 0:
-                raise ValueError(f"invalid taxonomy job spend cap {ceiling!r}")
+        if not math.isfinite(cap_usd) or cap_usd < 0:
+            raise ValueError(f"invalid taxonomy job spend cap {cap_usd!r}")
         self._repo = repo
         self._enqueue = enqueue
-        self._caps = {KIND_DISCOVER: discover_cap_usd, KIND_PROPOSE: evolution_cap_usd}
+        self._cap = cap_usd
 
     async def start(self, req: JobRequest) -> Tuple[TaxonomyJobRecord, bool]:
         """Accept a job; returns it and whether it was created now (False: a replay)."""
@@ -119,16 +117,13 @@ class TaxonomyJobService:
             ):  # accepted, but its dispatch may never have reached Temporal
                 await self._dispatch(known)
             return known, False
-        ceiling = self._caps[req.kind]
+        ceiling = self._cap
         cap = ceiling if req.spend_cap_usd is None else min(req.spend_cap_usd, ceiling)
         if cap <= 0:
-            name = (
-                "DISCOVER_SPEND_CAP_USD" if req.kind == KIND_DISCOVER else "EVOLUTION_SPEND_CAP_USD"
-            )
             raise RelabelRefused(
                 422,
                 "spend_cap_not_approved",
-                f"no spend cap is approved for {req.kind} jobs ({name} is 0)",
+                f"no spend cap is approved for {req.kind} jobs (TAXONOMY_SPEND_CAP_USD is 0)",
                 cap_usd=cap,
             )
         job = TaxonomyJobRecord(

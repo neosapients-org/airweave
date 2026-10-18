@@ -9,6 +9,7 @@ from typing import Dict, Literal, Optional
 from pydantic import PostgresDsn, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings
 
+from airweave.core.config.chunking import HEADER_MAX_TOKENS
 from airweave.core.config.enums import Environment, StorageBackendType
 
 _BANNED_PASSWORDS: frozenset[str] = frozenset(
@@ -138,73 +139,42 @@ class Settings(BaseSettings):
 
     # Chunking (contract airweave-neo/1, section 3). Every default keeps upstream behaviour.
     # The target counts the chunk body including its overlap; the header line is not counted.
+    # Only the mode and the target are settings; the overlap, the header and the version follow
+    # from the mode (see ``chunking.py``).
     CHUNK_TARGET_TOKENS: int = 4096
-    CHUNK_OVERLAP_TOKENS: int = 0  # sentence_pack only; the semantic chunker has no overlap
-    CHUNK_HEADER_MAX_TOKENS: int = (
-        256  # a longer header is cut to this (it is embedded with the body)
-    )
-    CHUNK_HEADER_ENABLED: bool = False
     CHUNKER_MODE: Literal["semantic", "sentence_pack"] = "semantic"
-    CHUNKER_VERSION: str = "1"  # bumped only when the chunker's code changes
 
     # Topic labels from the taxonomy classifier (contract section 8). There is deliberately
-    # no taxonomy version setting: the version is resolved per sync from the collection.
+    # no taxonomy version setting: the version is resolved per sync from the collection. The
+    # fixed numbers (cache lifetimes, size limits, batch sizes, timings) are constants in
+    # ``airweave.domains.taxonomy.limits``; only what a deployment decides is here.
     TAXONOMY_ENABLED: bool = False
     TAXONOMY_S3_BUCKET: Optional[str] = None
-    TAXONOMY_ACTIVE_CACHE_SECONDS: int = 300
-    TAXONOMY_LOCAL_DIR: str = "/tmp/airweave/taxonomy"
-    TAXONOMY_EMBED_CACHE_DIR: str = "/tmp/airweave/taxonomy-cache"  # one SQLite file per thread
-    TAXONOMY_EMBED_CACHE_MAX_MB: int = 512  # a thread starts a new cache file past this; 0 = never
-    # The most one taxonomy artifact file, and one version's files together, may weigh. A manifest
-    # that declares more is refused before anything is downloaded; the bytes read are checked too.
-    TAXONOMY_ARTIFACT_MAX_MB: int = 256
-    TAXONOMY_ARTIFACT_TOTAL_MAX_MB: int = 1024
-    TAXONOMY_CLASSIFY_THREADS: int = 2
-    TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: int = 60
+    # One folder for everything the taxonomy keeps on disk: ``versions/`` (verified versions),
+    # ``embed-cache/`` (one SQLite file per classifier thread) and ``jobs/`` (the jobs worker's
+    # scratch, which holds customer text). In Kubernetes it is the worker's taxonomy volume.
+    TAXONOMY_DATA_DIR: str = "/tmp/airweave/taxonomy"
+    TAXONOMY_CLASSIFY_THREADS: int = 2  # memory grows with this
 
-    # Re-label jobs (P7 design section 5). The cap is the deployment's approved spend ceiling per
-    # job in USD; 0 approves nothing, so no job can start until the owner sets it.
-    RELABEL_SPEND_CAP_USD: float = 0.0
-    RELABEL_USD_PER_THOUSAND_CHUNKS: float = 0.006  # embedding cost of classifying 1,000 chunks
-    RELABEL_BATCH_SIZE: int = 64  # chunks per classifier call
-    RELABEL_PAGE_SIZE: int = 100  # chunks per Vespa visit page (also the unresolved scroll's)
-    RELABEL_WRITE_CONCURRENCY: int = 8  # parallel conditional updates
-    RELABEL_LEASE_SECONDS: int = 120  # a running job renews its lease; an expired one is resumed
-    RELABEL_RESUME_INTERVAL_SECONDS: int = 60  # how often this process looks for jobs to resume
+    # The deployment's approved spend ceiling, in USD, for ONE re-label, discover or propose job;
+    # 0 approves nothing, so no job can start until the owner sets it. A request may ask for less.
+    TAXONOMY_SPEND_CAP_USD: float = 0.0
 
     # Discover and propose jobs (P7 design sections 6 and 12). They run on their own Temporal task
-    # queue in a separate Deployment, never in the sync workers. Spend caps default to 0, which
-    # approves nothing (a paid run also needs the owner's approval).
+    # queue in a separate Deployment, never in the sync workers.
     TAXONOMY_JOBS_ENABLED: bool = False  # the API enqueues, the jobs worker runs; both need this
-    TAXONOMY_JOBS_TASK_QUEUE: str = "airweave-taxonomy-jobs-queue"
-    TAXONOMY_JOBS_WORK_DIR: str = "/tmp/airweave/taxonomy-jobs"  # scratch; holds customer text
-    TAXONOMY_JOBS_BUILD_CONFIG: Optional[str] = None  # the classifier package's YAML (discover)
-    TAXONOMY_JOBS_LEASE_SECONDS: int = 300
-    TAXONOMY_JOBS_MAX_CHUNKS: int = 20000  # chunks a job reads into memory at most
-    DISCOVER_SPEND_CAP_USD: float = 0.0
-    DISCOVER_SAMPLE_DOCUMENTS: int = 200  # documents sampled when the request gives no size
-    DISCOVER_MIN_DOCUMENTS: int = 1  # fewer substantive documents: the job fails, nothing is spent
     # Fewer chunks of text than this: the job fails before it spends anything. The classifier's
     # clustering needs hundreds of pieces; a small collection needs its small-corpus settings and a
     # lower value here (see the T1 test plan, run D).
     DISCOVER_MIN_CHUNKS: int = 100
-    EVOLUTION_SPEND_CAP_USD: float = 0.0
     # Keeps the jobs' embedding and LLM caches between jobs, one folder per tenant (empty = each job
     # starts empty). The folders hold customer text and the model's answers about it: put them on
     # an encrypted volume and delete them with the tenant's data.
     TAXONOMY_JOBS_CACHE_DIR: str = ""
-    # Days a tenant's retained cache folder may sit unused before the jobs worker removes it (0 =
-    # never expire; deleting a tenant's data is then the deployment's job).
-    TAXONOMY_JOBS_CACHE_RETENTION_DAYS: int = 30
     # Which tenant's prefix a discovery writes to, per organization: a JSON object
     # {"<organization uuid>": "<tenant id>"}. A caller never chooses the tenant; an organization
     # without an entry can only start discoveries for a collection that already has an active file.
     TAXONOMY_TENANT_BY_ORGANIZATION: Dict[str, str] = {}
-    # The jobs worker looks for active jobs nothing runs every RECONCILE seconds, starts a workflow
-    # for those older than the grace period, and fails those unattended for MAX_AGE hours.
-    TAXONOMY_JOBS_RECONCILE_SECONDS: int = 60
-    TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS: int = 120
-    TAXONOMY_JOBS_MAX_AGE_HOURS: int = 24
 
     # Search: honour OR between a request's filter groups (contract C8). False keeps the
     # upstream behaviour, where every user filter group is merged into one AND group.
@@ -399,98 +369,29 @@ class Settings(BaseSettings):
             raise ValueError("CHUNK_TARGET_TOKENS must be between 1 and 8192")
         return v
 
-    @field_validator("CHUNK_OVERLAP_TOKENS")
-    def validate_chunk_overlap_tokens(cls, v: int, info: ValidationInfo) -> int:
-        """Require an overlap smaller than the target, so every chunk adds new text."""
+    @field_validator("CHUNKER_MODE")
+    def validate_sentence_pack_fits_the_embedder(cls, v: str, info: ValidationInfo) -> str:
+        """With sentence_pack, a body at the target plus its header must fit the embedder."""
         target = info.data.get("CHUNK_TARGET_TOKENS")
-        if v < 0 or (target is not None and v >= target):
-            raise ValueError("CHUNK_OVERLAP_TOKENS must be >= 0 and below CHUNK_TARGET_TOKENS")
-        return v
-
-    @field_validator("CHUNK_HEADER_MAX_TOKENS")
-    def validate_chunk_header_max_tokens(cls, v: int) -> int:
-        """The header budget is a positive number of tokens well below the embedder's limit."""
-        if not 1 <= v <= 1024:
-            raise ValueError("CHUNK_HEADER_MAX_TOKENS must be between 1 and 1024")
-        return v
-
-    @field_validator("CHUNK_HEADER_ENABLED")
-    def validate_header_fits_the_embedder(cls, v: bool, info: ValidationInfo) -> bool:
-        """With headers on, a body at the target plus the longest header must fit the embedder."""
-        target = info.data.get("CHUNK_TARGET_TOKENS")
-        budget = info.data.get("CHUNK_HEADER_MAX_TOKENS")
-        if v and target is not None and budget is not None and target + budget > 8192:
+        if v == "sentence_pack" and target is not None and target + HEADER_MAX_TOKENS > 8192:
             raise ValueError(
-                f"CHUNK_TARGET_TOKENS ({target}) plus CHUNK_HEADER_MAX_TOKENS ({budget}) "
+                f"CHUNK_TARGET_TOKENS ({target}) plus the {HEADER_MAX_TOKENS}-token header "
                 "exceeds the embedder's 8192 tokens"
             )
         return v
 
-    @field_validator("TAXONOMY_CLASSIFY_THREADS", "TAXONOMY_CLASSIFY_TIMEOUT_SECONDS")
+    @field_validator("TAXONOMY_CLASSIFY_THREADS", "DISCOVER_MIN_CHUNKS")
     def validate_taxonomy_positive(cls, v: int, info: ValidationInfo) -> int:
-        """Require at least one classifier thread and a positive timeout."""
+        """Require at least one classifier thread and at least one chunk of text."""
         if v < 1:
             raise ValueError(f"{info.field_name} must be at least 1")
         return v
 
-    @field_validator("DISCOVER_SPEND_CAP_USD", "EVOLUTION_SPEND_CAP_USD")
-    def validate_job_caps(cls, v: float, info: ValidationInfo) -> float:
-        """Spend caps are finite and not negative (NaN compares false with everything)."""
+    @field_validator("TAXONOMY_SPEND_CAP_USD")
+    def validate_taxonomy_spend_cap(cls, v: float, info: ValidationInfo) -> float:
+        """The cap is finite and not negative (NaN compares false with everything)."""
         if not math.isfinite(v) or v < 0:
             raise ValueError(f"{info.field_name} must be a finite number, 0 or more")
-        return v
-
-    @field_validator(
-        "TAXONOMY_EMBED_CACHE_MAX_MB",
-        "TAXONOMY_JOBS_CACHE_RETENTION_DAYS",
-    )
-    def validate_non_negative_limits(cls, v: int, info: ValidationInfo) -> int:
-        """0 switches the limit off; a negative value is a mistake, not "unlimited"."""
-        if v < 0:
-            raise ValueError(f"{info.field_name} must be 0 or more (0 switches it off)")
-        return v
-
-    @field_validator("TAXONOMY_ARTIFACT_MAX_MB", "TAXONOMY_ARTIFACT_TOTAL_MAX_MB")
-    def validate_artifact_limits(cls, v: int, info: ValidationInfo) -> int:
-        """Artifact limits must be at least 1 MB."""
-        if v < 1:
-            raise ValueError(f"{info.field_name} must be at least 1")
-        return v
-
-    @field_validator(
-        "TAXONOMY_JOBS_LEASE_SECONDS",
-        "TAXONOMY_JOBS_RECONCILE_SECONDS",
-        "TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS",
-        "TAXONOMY_JOBS_MAX_AGE_HOURS",
-        "TAXONOMY_JOBS_MAX_CHUNKS",
-        "DISCOVER_SAMPLE_DOCUMENTS",
-        "DISCOVER_MIN_DOCUMENTS",
-        "DISCOVER_MIN_CHUNKS",
-    )
-    def validate_job_counts(cls, v: int, info: ValidationInfo) -> int:
-        """Lease, chunk and document limits must be at least 1."""
-        if v < 1:
-            raise ValueError(f"{info.field_name} must be at least 1")
-        return v
-
-    @field_validator("RELABEL_SPEND_CAP_USD", "RELABEL_USD_PER_THOUSAND_CHUNKS")
-    def validate_relabel_money(cls, v: float, info: ValidationInfo) -> float:
-        """Spend figures are finite and not negative."""
-        if not math.isfinite(v) or v < 0:
-            raise ValueError(f"{info.field_name} must be a finite number, 0 or more")
-        return v
-
-    @field_validator(
-        "RELABEL_BATCH_SIZE",
-        "RELABEL_PAGE_SIZE",
-        "RELABEL_WRITE_CONCURRENCY",
-        "RELABEL_LEASE_SECONDS",
-        "RELABEL_RESUME_INTERVAL_SECONDS",
-    )
-    def validate_relabel_positive(cls, v: int, info: ValidationInfo) -> int:
-        """Batch, page, concurrency and timing settings must be at least 1."""
-        if v < 1:
-            raise ValueError(f"{info.field_name} must be at least 1")
         return v
 
     @field_validator("AZURE_KEYVAULT_NAME", mode="before")

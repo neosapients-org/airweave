@@ -3,20 +3,15 @@
 from types import SimpleNamespace
 
 from airweave.core.container.factory import _create_taxonomy_processor
+from airweave.domains.taxonomy import limits
 
 
 def _settings(enabled: bool, bucket: str = ""):
     return SimpleNamespace(
         TAXONOMY_ENABLED=enabled,
         TAXONOMY_S3_BUCKET=bucket,
-        TAXONOMY_LOCAL_DIR="/tmp/none",
-        TAXONOMY_ACTIVE_CACHE_SECONDS=300,
-        TAXONOMY_EMBED_CACHE_DIR="/tmp/none-cache",
-        TAXONOMY_EMBED_CACHE_MAX_MB=7,
-        TAXONOMY_ARTIFACT_MAX_MB=256,
-        TAXONOMY_ARTIFACT_TOTAL_MAX_MB=1024,
+        TAXONOMY_DATA_DIR="/tmp/none",
         TAXONOMY_CLASSIFY_THREADS=2,
-        TAXONOMY_CLASSIFY_TIMEOUT_SECONDS=60,
     )
 
 
@@ -36,9 +31,15 @@ def test_on_without_an_embedder_keeps_the_packages_client():
     assert processor._pool._bridge is None
 
 
-def test_cache_limit_comes_from_the_setting():
+def test_cache_limit_is_the_constant():
     processor = _create_taxonomy_processor(_settings(True))
-    assert processor._pool._max_cache_bytes == 7 * 1024 * 1024
+    assert processor._pool._max_cache_bytes == limits.EMBED_CACHE_MAX_MB * 1024 * 1024
+
+
+def test_the_data_folder_holds_the_versions_and_the_embed_caches():
+    processor = _create_taxonomy_processor(_settings(True))
+    assert str(processor.resolver._local_dir) == "/tmp/none/versions"
+    assert str(processor._pool._cache_dir) == "/tmp/none/embed-cache"
 
 
 def test_processor_close_closes_the_pool():

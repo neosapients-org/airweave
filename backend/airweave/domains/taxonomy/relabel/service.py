@@ -175,7 +175,7 @@ class RelabelService:
         usd_per_thousand: float,
         scan_page: int = 500,
     ) -> None:
-        """``configured_cap_usd`` is ``RELABEL_SPEND_CAP_USD``, the approved ceiling per job.
+        """``configured_cap_usd`` is ``TAXONOMY_SPEND_CAP_USD``, the approved ceiling per job.
 
         Raises ``ValueError`` for a ceiling that is not a finite amount from 0 up.
         """
@@ -207,7 +207,7 @@ class RelabelService:
             raise RelabelRefused(
                 422,
                 "spend_cap_not_approved",
-                "no spend cap is approved for re-label jobs (RELABEL_SPEND_CAP_USD is 0)",
+                "no spend cap is approved for re-label jobs (TAXONOMY_SPEND_CAP_USD is 0)",
                 estimate_usd=estimate,
                 cap_usd=cap,
             )

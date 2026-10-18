@@ -7,7 +7,7 @@ Two things are written outside a job's own lease and have no owner once a worker
   collection stays blocked until something starts it again, so the jobs worker's reconciler does
   that, and fails a job that has been unattended for longer than any build takes;
 * the persistent per-tenant caches (``TAXONOMY_JOBS_CACHE_DIR``), which hold customer text and the
-  model's answers about it. They are removed after ``TAXONOMY_JOBS_CACHE_RETENTION_DAYS`` without
+  model's answers about it. They are removed after ``limits.JOBS_CACHE_RETENTION_DAYS`` without
   use, and a tenant's can be deleted at once with ``delete_tenant_cache`` (or the command line:
   ``python -m airweave.domains.taxonomy.jobs.housekeeping delete-tenant <tenant id>``).
 """

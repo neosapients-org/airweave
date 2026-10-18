@@ -5,7 +5,7 @@ from uuid import UUID
 
 import pytest
 
-from airweave.core.config import settings
+from airweave.core.config import chunking, settings
 from airweave.domains.converters.fakes.registry import FakeConverterRegistry
 from airweave.domains.sync_pipeline.processors.chunk_embed import ChunkEmbedProcessor
 from airweave.domains.sync_pipeline.processors.chunk_layout import ChunkLayout
@@ -62,7 +62,7 @@ def sync_context():
 def sentence_pack(monkeypatch):
     monkeypatch.setattr(settings, "CHUNKER_MODE", "sentence_pack")
     monkeypatch.setattr(settings, "CHUNK_TARGET_TOKENS", 40)
-    monkeypatch.setattr(settings, "CHUNK_OVERLAP_TOKENS", 16)
+    monkeypatch.setattr(chunking, "OVERLAP_PERCENT", 40)  # 16 tokens of 40
 
 
 class TestDefaultMode:
@@ -99,9 +99,10 @@ class TestSentencePackMode:
         out = await processor._chunk_textual_entities([entity], sync_context)
         assert len(out) == 3
         for i, c in enumerate(out):
-            assert c.textual_representation == DOCUMENT[c.chunk_char_start : c.chunk_char_end]
+            body = c.textual_representation[c.chunk_body_offset :]
+            assert body == DOCUMENT[c.chunk_char_start : c.chunk_char_end]
             assert c.chunk_own_start == (out[i - 1].chunk_char_end if i else c.chunk_char_start)
-            assert c.chunk_body_offset == 0  # no header
+            assert c.chunk_body_offset > 0  # sentence_pack always writes the header line
             assert c.airweave_system_metadata.chunk_index == i
             assert c.entity_id == f"acme-q3__chunk_{i}"
             assert c.airweave_system_metadata.original_entity_id == "acme-q3"

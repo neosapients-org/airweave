@@ -1,101 +1,118 @@
-"""Tests for the chunking, taxonomy and search settings (contract airweave-neo/1, section 9)."""
+"""Tests for the chunking, taxonomy and search settings (contract airweave-neo/1, section 9).
+
+Only what a deployment decides is a setting. The numbers nobody sets per deployment are constants
+(``core/config/chunking.py`` and ``domains/taxonomy/limits.py``); their tests live beside them.
+"""
 
 import pytest
 from pydantic import ValidationError
 
+from airweave.core.config.chunking import ChunkPlan
+from airweave.core.config.settings import Settings
 from airweave.core.config.tests.test_settings_validators import _build_settings
 
 # Settings as Neo runs them (contract section 9).
 _NEO_ENV: dict[str, str] = {
-    "CHUNK_TARGET_TOKENS": "300",
-    "CHUNK_OVERLAP_TOKENS": "45",
-    "CHUNK_HEADER_ENABLED": "true",
     "CHUNKER_MODE": "sentence_pack",
-    "CHUNKER_VERSION": "2",
+    "CHUNK_TARGET_TOKENS": "300",
     "TAXONOMY_ENABLED": "true",
     "TAXONOMY_S3_BUCKET": "acme-taxonomy",
     "SEARCH_FILTER_GROUPS_OR": "true",
 }
 
+# Names that used to be settings. They must not come back as settings: each is a constant now.
+_RETIRED = (
+    "CHUNK_OVERLAP_TOKENS",
+    "CHUNK_HEADER_ENABLED",
+    "CHUNK_HEADER_MAX_TOKENS",
+    "CHUNKER_VERSION",
+    "TAXONOMY_ACTIVE_CACHE_SECONDS",
+    "TAXONOMY_LOCAL_DIR",
+    "TAXONOMY_EMBED_CACHE_DIR",
+    "TAXONOMY_EMBED_CACHE_MAX_MB",
+    "TAXONOMY_ARTIFACT_MAX_MB",
+    "TAXONOMY_ARTIFACT_TOTAL_MAX_MB",
+    "TAXONOMY_CLASSIFY_TIMEOUT_SECONDS",
+    "RELABEL_SPEND_CAP_USD",
+    "RELABEL_USD_PER_THOUSAND_CHUNKS",
+    "RELABEL_BATCH_SIZE",
+    "RELABEL_PAGE_SIZE",
+    "RELABEL_WRITE_CONCURRENCY",
+    "RELABEL_LEASE_SECONDS",
+    "RELABEL_RESUME_INTERVAL_SECONDS",
+    "DISCOVER_SPEND_CAP_USD",
+    "EVOLUTION_SPEND_CAP_USD",
+    "DISCOVER_SAMPLE_DOCUMENTS",
+    "DISCOVER_MIN_DOCUMENTS",
+    "TAXONOMY_JOBS_TASK_QUEUE",
+    "TAXONOMY_JOBS_WORK_DIR",
+    "TAXONOMY_JOBS_BUILD_CONFIG",
+    "TAXONOMY_JOBS_LEASE_SECONDS",
+    "TAXONOMY_JOBS_MAX_CHUNKS",
+    "TAXONOMY_JOBS_CACHE_RETENTION_DAYS",
+    "TAXONOMY_JOBS_RECONCILE_SECONDS",
+    "TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS",
+    "TAXONOMY_JOBS_MAX_AGE_HOURS",
+)
+
 
 class TestDefaults:
-    """Every default keeps upstream behaviour."""
+    """Every default keeps upstream behaviour, and nothing paid can start."""
 
     def test_chunking_defaults(self, monkeypatch):
         s = _build_settings(monkeypatch, {})
         assert s.CHUNK_TARGET_TOKENS == 4096
-        assert s.CHUNK_OVERLAP_TOKENS == 0
-        assert s.CHUNK_HEADER_ENABLED is False
         assert s.CHUNKER_MODE == "semantic"
-        assert s.CHUNKER_VERSION == "1"
 
     def test_taxonomy_defaults(self, monkeypatch):
         s = _build_settings(monkeypatch, {})
         assert s.TAXONOMY_ENABLED is False
         assert s.TAXONOMY_S3_BUCKET is None
-        assert s.TAXONOMY_ACTIVE_CACHE_SECONDS == 300
-        assert s.TAXONOMY_LOCAL_DIR == "/tmp/airweave/taxonomy"
-        assert s.TAXONOMY_EMBED_CACHE_DIR == "/tmp/airweave/taxonomy-cache"
+        assert s.TAXONOMY_DATA_DIR == "/tmp/airweave/taxonomy"
         assert s.TAXONOMY_CLASSIFY_THREADS == 2
-        assert s.TAXONOMY_CLASSIFY_TIMEOUT_SECONDS == 60
+        assert s.TAXONOMY_JOBS_ENABLED is False
+        assert s.DISCOVER_MIN_CHUNKS == 100
+        assert s.TAXONOMY_JOBS_CACHE_DIR == ""
 
-    def test_relabel_defaults_approve_nothing(self, monkeypatch):
-        s = _build_settings(monkeypatch, {})
-        assert s.RELABEL_SPEND_CAP_USD == 0.0  # no job can start until the owner approves a cap
-        assert s.RELABEL_USD_PER_THOUSAND_CHUNKS == 0.006
-        assert (s.RELABEL_BATCH_SIZE, s.RELABEL_PAGE_SIZE, s.RELABEL_WRITE_CONCURRENCY) == (
-            64,
-            100,
-            8,
-        )
-        assert (s.RELABEL_LEASE_SECONDS, s.RELABEL_RESUME_INTERVAL_SECONDS) == (120, 60)
+    def test_the_spend_ceiling_approves_nothing_until_the_owner_sets_it(self, monkeypatch):
+        assert _build_settings(monkeypatch, {}).TAXONOMY_SPEND_CAP_USD == 0.0
 
-    def test_relabel_cap_is_read(self, monkeypatch):
-        assert (
-            _build_settings(monkeypatch, {"RELABEL_SPEND_CAP_USD": "12.5"}).RELABEL_SPEND_CAP_USD
-            == 12.5
-        )
-
-    @pytest.mark.parametrize("name", ["RELABEL_SPEND_CAP_USD", "RELABEL_USD_PER_THOUSAND_CHUNKS"])
-    def test_relabel_money_cannot_be_negative(self, monkeypatch, name):
-        with pytest.raises(ValidationError, match=name):
-            _build_settings(monkeypatch, {name: "-1"})
-
-    @pytest.mark.parametrize(
-        "name",
-        [
-            "RELABEL_BATCH_SIZE",
-            "RELABEL_PAGE_SIZE",
-            "RELABEL_WRITE_CONCURRENCY",
-            "RELABEL_LEASE_SECONDS",
-            "RELABEL_RESUME_INTERVAL_SECONDS",
-        ],
-    )
-    def test_relabel_counts_must_be_positive(self, monkeypatch, name):
-        with pytest.raises(ValidationError, match=name):
-            _build_settings(monkeypatch, {name: "0"})
+    def test_the_spend_ceiling_is_read(self, monkeypatch):
+        s = _build_settings(monkeypatch, {"TAXONOMY_SPEND_CAP_USD": "12.5"})
+        assert s.TAXONOMY_SPEND_CAP_USD == 12.5
 
     def test_search_default(self, monkeypatch):
-        s = _build_settings(monkeypatch, {})
-        assert s.SEARCH_FILTER_GROUPS_OR is False
+        assert _build_settings(monkeypatch, {}).SEARCH_FILTER_GROUPS_OR is False
 
     def test_no_taxonomy_version_setting(self, monkeypatch):
         """The version is resolved per sync from the collection (contract C1), never globally."""
         s = _build_settings(monkeypatch, {})
         assert not [name for name in type(s).model_fields if name.startswith("TAXONOMY_VERSION")]
 
+    def test_the_new_settings_are_the_short_list_a_deployment_decides(self):
+        assert not [name for name in _RETIRED if name in Settings.model_fields]
+
 
 class TestNeoValues:
     def test_neo_values_load(self, monkeypatch):
         s = _build_settings(monkeypatch, _NEO_ENV)
         assert s.CHUNK_TARGET_TOKENS == 300
-        assert s.CHUNK_OVERLAP_TOKENS == 45
-        assert s.CHUNK_HEADER_ENABLED is True
         assert s.CHUNKER_MODE == "sentence_pack"
-        assert s.CHUNKER_VERSION == "2"
         assert s.TAXONOMY_ENABLED is True
         assert s.TAXONOMY_S3_BUCKET == "acme-taxonomy"
         assert s.SEARCH_FILTER_GROUPS_OR is True
+
+    def test_the_neo_plan_follows_from_the_mode(self, monkeypatch):
+        s = _build_settings(monkeypatch, _NEO_ENV)
+        plan = ChunkPlan.from_settings(s)
+        assert (plan.target_tokens, plan.overlap_tokens, plan.header) == (300, 45, True)
+        assert plan.positions is True
+        assert plan.is_upstream is False
+
+    def test_the_default_plan_is_upstreams(self, monkeypatch):
+        plan = ChunkPlan.from_settings(_build_settings(monkeypatch, {}))
+        assert (plan.overlap_tokens, plan.header, plan.positions) == (0, False, False)
+        assert plan.is_upstream is True
 
 
 class TestValidation:
@@ -108,73 +125,40 @@ class TestValidation:
         with pytest.raises(ValidationError, match="CHUNK_TARGET_TOKENS"):
             _build_settings(monkeypatch, {"CHUNK_TARGET_TOKENS": target})
 
-    @pytest.mark.parametrize("overlap", ["-1", "300", "301"])
-    def test_overlap_must_be_below_target(self, monkeypatch, overlap):
-        with pytest.raises(ValidationError, match="CHUNK_OVERLAP_TOKENS"):
+    def test_a_sentence_pack_target_plus_the_header_must_fit_the_embedder(self, monkeypatch):
+        with pytest.raises(ValidationError, match="8192"):
             _build_settings(
-                monkeypatch, {"CHUNK_TARGET_TOKENS": "300", "CHUNK_OVERLAP_TOKENS": overlap}
+                monkeypatch, {"CHUNKER_MODE": "sentence_pack", "CHUNK_TARGET_TOKENS": "8000"}
             )
 
-    @pytest.mark.parametrize(
-        "name", ["TAXONOMY_CLASSIFY_THREADS", "TAXONOMY_CLASSIFY_TIMEOUT_SECONDS"]
-    )
-    def test_taxonomy_counts_must_be_positive(self, monkeypatch, name):
+    def test_the_same_target_is_fine_without_headers(self, monkeypatch):
+        s = _build_settings(monkeypatch, {"CHUNK_TARGET_TOKENS": "8000"})
+        assert s.CHUNK_TARGET_TOKENS == 8000
+
+    def test_any_valid_target_gives_an_overlap_below_it(self):
+        for target in (1, 2, 40, 300, 8000):
+            plan = ChunkPlan.for_mode("sentence_pack", target)
+            assert 0 <= plan.overlap_tokens < target
+
+    @pytest.mark.parametrize("name", ["TAXONOMY_CLASSIFY_THREADS", "DISCOVER_MIN_CHUNKS"])
+    def test_counts_must_be_positive(self, monkeypatch, name):
         with pytest.raises(ValidationError, match=name):
             _build_settings(monkeypatch, {name: "0"})
 
 
-class TestMoneyAndLimits:
-    """Caps must be finite; limits that mean 'off' at 0 must not be negative."""
+class TestMoney:
+    """The ceiling must be a finite amount from 0 up: NaN compares false with everything."""
 
-    @pytest.mark.parametrize(
-        "name",
-        ["DISCOVER_SPEND_CAP_USD", "EVOLUTION_SPEND_CAP_USD", "RELABEL_SPEND_CAP_USD"],
-    )
     @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "-1"])
-    def test_a_cap_that_is_not_a_finite_amount_is_refused(self, monkeypatch, name, value):
-        with pytest.raises(ValidationError):
-            _build_settings(monkeypatch, {name: value})
+    def test_a_ceiling_that_is_not_a_finite_amount_is_refused(self, monkeypatch, value):
+        with pytest.raises(ValidationError, match="TAXONOMY_SPEND_CAP_USD"):
+            _build_settings(monkeypatch, {"TAXONOMY_SPEND_CAP_USD": value})
 
-    @pytest.mark.parametrize(
-        "name", ["TAXONOMY_EMBED_CACHE_MAX_MB", "TAXONOMY_JOBS_CACHE_RETENTION_DAYS"]
-    )
-    def test_a_negative_limit_is_a_configuration_error_not_unlimited(self, monkeypatch, name):
-        with pytest.raises(ValidationError):
-            _build_settings(monkeypatch, {name: "-1"})
-        assert getattr(_build_settings(monkeypatch, {name: "0"}), name) == 0
 
-    @pytest.mark.parametrize("name", ["TAXONOMY_ARTIFACT_MAX_MB", "TAXONOMY_ARTIFACT_TOTAL_MAX_MB"])
-    def test_artifact_limits_need_at_least_one_megabyte(self, monkeypatch, name):
-        with pytest.raises(ValidationError):
-            _build_settings(monkeypatch, {name: "0"})
-
+class TestTenantBindings:
     def test_tenant_bindings_are_read_from_json(self, monkeypatch):
         s = _build_settings(monkeypatch, {"TAXONOMY_TENANT_BY_ORGANIZATION": '{"org-1": "t-acme"}'})
         assert s.TAXONOMY_TENANT_BY_ORGANIZATION == {"org-1": "t-acme"}
 
     def test_no_organization_has_a_tenant_by_default(self, monkeypatch):
         assert _build_settings(monkeypatch, {}).TAXONOMY_TENANT_BY_ORGANIZATION == {}
-
-
-class TestHeaderBudget:
-    def test_a_target_plus_the_header_budget_must_fit_the_embedder(self, monkeypatch):
-        with pytest.raises(ValidationError, match="8192"):
-            _build_settings(
-                monkeypatch,
-                {
-                    "CHUNK_TARGET_TOKENS": "8000",
-                    "CHUNK_HEADER_MAX_TOKENS": "256",
-                    "CHUNK_HEADER_ENABLED": "true",
-                },
-            )
-
-    def test_the_same_target_is_fine_without_headers(self, monkeypatch):
-        s = _build_settings(
-            monkeypatch, {"CHUNK_TARGET_TOKENS": "8000", "CHUNK_HEADER_ENABLED": "false"}
-        )
-        assert s.CHUNK_TARGET_TOKENS == 8000
-
-    @pytest.mark.parametrize("value", ["0", "-5", "5000"])
-    def test_the_budget_is_bounded(self, monkeypatch, value):
-        with pytest.raises(ValidationError):
-            _build_settings(monkeypatch, {"CHUNK_HEADER_MAX_TOKENS": value})

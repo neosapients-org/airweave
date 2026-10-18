@@ -1,13 +1,15 @@
-"""The taxonomy jobs worker: ``python -m airweave.domains.taxonomy.jobs.worker``.
+"""The taxonomy jobs worker: ``python -m airweave.domains.taxonomy.jobs.worker <build.yaml>``.
 
 A separate Deployment of the same image (see the Helm template ``taxonomy-jobs-worker.yaml``).
-It polls ``TAXONOMY_JOBS_TASK_QUEUE`` only and registers only the job workflow and activity. It
-needs the full classifier install (UMAP, HDBSCAN, numba) and a role that may write
-``taxonomy/tenants/*/candidates/*`` and read the rest of the taxonomy prefix.
+It polls the one jobs queue (``limits.JOBS_TASK_QUEUE``) only and registers only the job
+workflow and activity. It needs the full classifier install (UMAP, HDBSCAN, numba) and a role
+that may write ``taxonomy/tenants/*/candidates/*`` and read the rest of the taxonomy prefix.
+``<build.yaml>`` is the classifier package's YAML, which the chart mounts and names.
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import signal
 from pathlib import Path
@@ -15,10 +17,11 @@ from typing import Any, Optional
 
 from airweave.core.config import settings
 from airweave.core.logging import logger
+from airweave.domains.taxonomy import limits
 
 
-def build_runner(container: Any) -> Any:
-    """Assemble the runner from the container's taxonomy resolver and the settings."""
+def build_runner(container: Any, build_config_path: str) -> Any:
+    """Assemble the runner from the container's resolver, the settings and the build YAML."""
     import yaml  # type: ignore[import-untyped]
 
     from airweave.adapters.storage.aws_s3 import S3Backend
@@ -31,9 +34,7 @@ def build_runner(container: Any) -> Any:
 
     if not settings.TAXONOMY_S3_BUCKET:
         raise SystemExit("TAXONOMY_S3_BUCKET is required for the taxonomy jobs worker")
-    if not settings.TAXONOMY_JOBS_BUILD_CONFIG:
-        raise SystemExit("TAXONOMY_JOBS_BUILD_CONFIG (the classifier package's YAML) is required")
-    build_config = yaml.safe_load(Path(settings.TAXONOMY_JOBS_BUILD_CONFIG).read_text())
+    build_config = yaml.safe_load(Path(build_config_path).read_text())
     storage = S3Backend(
         bucket=settings.TAXONOMY_S3_BUCKET,
         region=settings.STORAGE_AWS_REGION or "us-east-1",
@@ -45,11 +46,11 @@ def build_runner(container: Any) -> Any:
         CandidateWriter(storage, TAXONOMY_S3_PREFIX),
         PackageGateway(build_config, cache_dir=settings.TAXONOMY_JOBS_CACHE_DIR or None),
         container.taxonomy_processor.resolver,
-        work_dir=settings.TAXONOMY_JOBS_WORK_DIR,
-        lease_seconds=settings.TAXONOMY_JOBS_LEASE_SECONDS,
-        max_chunks=settings.TAXONOMY_JOBS_MAX_CHUNKS,
-        default_sample_documents=settings.DISCOVER_SAMPLE_DOCUMENTS,
-        min_documents=settings.DISCOVER_MIN_DOCUMENTS,
+        work_dir=limits.jobs_work_dir(settings.TAXONOMY_DATA_DIR),
+        lease_seconds=limits.JOBS_LEASE_SECONDS,
+        max_chunks=limits.JOBS_MAX_CHUNKS,
+        default_sample_documents=limits.DISCOVER_SAMPLE_DOCUMENTS,
+        min_documents=limits.DISCOVER_MIN_DOCUMENTS,
         min_chunks=settings.DISCOVER_MIN_CHUNKS,
     )
 
@@ -61,8 +62,8 @@ def registrations(runner: Any) -> tuple[list, list]:
     return [TaxonomyJobWorkflow], [TaxonomyJobActivity(runner).run]
 
 
-async def main(stop: Optional[asyncio.Event] = None) -> None:
-    """Run until stopped."""
+async def main(build_config_path: str, stop: Optional[asyncio.Event] = None) -> None:
+    """Run until stopped; ``build_config_path`` is the classifier package's YAML."""
     from temporalio.worker import Worker
 
     from airweave.core import container as container_mod
@@ -72,7 +73,7 @@ async def main(stop: Optional[asyncio.Event] = None) -> None:
     if not settings.TAXONOMY_JOBS_ENABLED or not settings.TAXONOMY_ENABLED:
         raise SystemExit("TAXONOMY_ENABLED and TAXONOMY_JOBS_ENABLED must both be true")
     initialize_container(settings)
-    runner = build_runner(container_mod.container)
+    runner = build_runner(container_mod.container, build_config_path)
     workflows, activities = registrations(runner)
     client = await get_client()
     stop = stop or asyncio.Event()
@@ -81,12 +82,12 @@ async def main(stop: Optional[asyncio.Event] = None) -> None:
         loop.add_signal_handler(sig, stop.set)
     worker = Worker(
         client,
-        task_queue=settings.TAXONOMY_JOBS_TASK_QUEUE,
+        task_queue=limits.JOBS_TASK_QUEUE,
         workflows=workflows,
         activities=activities,
         max_concurrent_activities=1,  # one build at a time: it needs the whole pod
     )
-    logger.info(f"Taxonomy jobs worker on queue {settings.TAXONOMY_JOBS_TASK_QUEUE}")
+    logger.info(f"Taxonomy jobs worker on queue {limits.JOBS_TASK_QUEUE}")
     async with worker:
         housekeeping = asyncio.create_task(_housekeeping(client, stop))
         try:
@@ -105,23 +106,34 @@ async def _housekeeping(client: Any, stop: asyncio.Event) -> None:
     from airweave.domains.taxonomy.jobs.temporal import start_job_workflow
 
     async def dispatch(job: Any) -> None:
-        await start_job_workflow(client, settings.TAXONOMY_JOBS_TASK_QUEUE, job.id)
+        await start_job_workflow(client, limits.JOBS_TASK_QUEUE, job.id)
 
     def cleanup(job_id: Any) -> None:
-        shutil.rmtree(Path(settings.TAXONOMY_JOBS_WORK_DIR) / str(job_id), ignore_errors=True)
+        shutil.rmtree(
+            Path(limits.jobs_work_dir(settings.TAXONOMY_DATA_DIR)) / str(job_id), ignore_errors=True
+        )
 
     await housekeeping_loop(
         stop,
         SqlTaxonomyJobRepository(),
         dispatch,
         cleanup,
-        interval_seconds=settings.TAXONOMY_JOBS_RECONCILE_SECONDS,
-        grace_seconds=settings.TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS,
-        max_age_seconds=settings.TAXONOMY_JOBS_MAX_AGE_HOURS * 3600,
+        interval_seconds=limits.JOBS_RECONCILE_SECONDS,
+        grace_seconds=limits.JOBS_DISPATCH_GRACE_SECONDS,
+        max_age_seconds=limits.JOBS_MAX_AGE_HOURS * 3600,
         cache_dir=settings.TAXONOMY_JOBS_CACHE_DIR or None,
-        retention_days=settings.TAXONOMY_JOBS_CACHE_RETENTION_DAYS,
+        retention_days=limits.JOBS_CACHE_RETENTION_DAYS,
     )
 
 
+def _build_config_argument() -> str:
+    """The classifier package's YAML, named on the command line (the chart mounts it)."""
+    parser = argparse.ArgumentParser(description="The taxonomy discover and propose jobs worker")
+    parser.add_argument(
+        "build_config", help="path to the classifier package's YAML (a discover job needs it)"
+    )
+    return parser.parse_args().build_config
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(_build_config_argument()))

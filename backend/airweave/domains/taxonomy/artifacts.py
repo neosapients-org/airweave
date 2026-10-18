@@ -154,7 +154,7 @@ class TaxonomyResolver:
     ) -> Optional[ResolvedTaxonomy]:
         """Return the collection's verified taxonomy, or None when it has no active file.
 
-        The answer (including a failure) is cached for ``TAXONOMY_ACTIVE_CACHE_SECONDS``, so a
+        The answer (including a failure) is cached for ``limits.ACTIVE_CACHE_SECONDS``, so a
         collection switches version, or recovers, on a sync after that. ``fresh`` skips the
         cached answer and reads the active file again (a re-label job starting right after the
         platform rewrote the file must not label with the previous version).

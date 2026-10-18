@@ -6,7 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
 from airweave.core.config import settings
-from airweave.core.config.settings import Settings
+from airweave.core.config.chunking import ChunkPlan
 from airweave.core.shared_models import AirweaveFieldFlag
 from airweave.domains.sync_pipeline.async_helpers import run_in_thread_pool
 from airweave.domains.sync_pipeline.exceptions import EntityProcessingError, SyncFailureError
@@ -16,38 +16,29 @@ if TYPE_CHECKING:
     from airweave.domains.sync_pipeline.contexts import SyncContext
     from airweave.domains.sync_pipeline.contexts.runtime import SyncRuntime
 
-# The settings that decide how a text entity is chunked (contract airweave-neo/1, section 9).
-CHUNK_FINGERPRINT_SETTINGS = (
-    "CHUNKER_VERSION",
-    "CHUNKER_MODE",
-    "CHUNK_TARGET_TOKENS",
-    "CHUNK_OVERLAP_TOKENS",
-    "CHUNK_HEADER_ENABLED",
-)
-# Part of the fingerprint only when a header is on and its budget is not the default, so the
-# fingerprint of every deployment that never set it stays what it was.
-HEADER_BUDGET_SETTING = "CHUNK_HEADER_MAX_TOKENS"
-HEADER_BUDGET_DEFAULT = 256
-
 
 def chunk_fingerprint(entity: BaseEntity) -> Optional[str]:
     """Return the chunk fingerprint that goes into the entity's hash, or None.
 
     An unchanged entity hashes to "keep", so without this it would keep chunks made under
-    other settings forever. With every chunk setting at its default the fingerprint is None
-    and the hash stays exactly as upstream computes it; any other value (for example a target
-    of 300 instead of 600) changes every text entity's hash once, so each is re-chunked on its
-    next sync. Code files are chunked by the code chunker whatever the settings: no fingerprint.
+    other settings forever. With upstream's chunker (``semantic``, the default target) the
+    fingerprint is None and the hash stays exactly as upstream computes it; any other plan (for
+    example ``sentence_pack`` at a target of 300) changes every text entity's hash once, so each is
+    re-chunked on its next sync. Code files are chunked by the code chunker whatever the settings:
+    no fingerprint.
     """
     if isinstance(entity, CodeFileEntity):
         return None
-    values = {name: getattr(settings, name) for name in CHUNK_FINGERPRINT_SETTINGS}
-    budget = getattr(settings, HEADER_BUDGET_SETTING)
-    if settings.CHUNK_HEADER_ENABLED and budget != HEADER_BUDGET_DEFAULT:
-        values[HEADER_BUDGET_SETTING] = budget
-    defaults = {name: Settings.model_fields[name].default for name in CHUNK_FINGERPRINT_SETTINGS}
-    if values == defaults:
+    plan = ChunkPlan.from_settings(settings)
+    if plan.is_upstream:
         return None
+    values = {
+        "CHUNKER_VERSION": plan.version,
+        "CHUNKER_MODE": plan.mode,
+        "CHUNK_TARGET_TOKENS": plan.target_tokens,
+        "CHUNK_OVERLAP_TOKENS": plan.overlap_tokens,
+        "CHUNK_HEADER_ENABLED": plan.header,
+    }
     return json.dumps(values, sort_keys=True, separators=(",", ":"))
 
 

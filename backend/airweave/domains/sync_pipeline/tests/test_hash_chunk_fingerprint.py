@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import pytest
 
-from airweave.core.config import settings
+from airweave.core.config import chunking, settings
 from airweave.domains.sync_pipeline.entity.actions import EntityKeepAction, EntityUpdateAction
 from airweave.domains.sync_pipeline.entity.resolver import EntityActionResolver
 from airweave.domains.sync_pipeline.pipeline.hash_computer import HashComputer, chunk_fingerprint
@@ -18,13 +18,8 @@ from airweave.platform.entities.stub import PdfStubFileEntity, SmallStubEntity
 UPSTREAM_PLAIN_HASH = "c539757d9e79245ae691fb4dc2f7b3e866911f55217b1c5dec4dd82a95eec522"
 UPSTREAM_PDF_HASH = "afd500577b15b868049abf3d061538ee44c1c942407163ea3cd23a14fe7d68b5"
 
-NEO = {
-    "CHUNKER_VERSION": "2",
-    "CHUNKER_MODE": "sentence_pack",
-    "CHUNK_TARGET_TOKENS": 300,
-    "CHUNK_OVERLAP_TOKENS": 45,
-    "CHUNK_HEADER_ENABLED": True,
-}
+# The two settings a deployment makes; the overlap, the header and the version follow from them.
+NEO = {"CHUNKER_MODE": "sentence_pack", "CHUNK_TARGET_TOKENS": 300}
 
 
 def _plain() -> SmallStubEntity:
@@ -117,6 +112,16 @@ class TestNeoSettings:
         at_300 = await computer.compute_for_entity(_pdf(tmp_path))
         chunk_settings(CHUNK_TARGET_TOKENS=600)
         assert await computer.compute_for_entity(_pdf(tmp_path)) != at_300
+
+    async def test_the_chunker_version_is_part_of_the_hash(
+        self, tmp_path, monkeypatch, chunk_settings
+    ):
+        """A new chunker version re-chunks every text entity once, whatever the settings."""
+        computer = HashComputer()
+        chunk_settings(**NEO)
+        before = await computer.compute_for_entity(_pdf(tmp_path))
+        monkeypatch.setattr(chunking, "SENTENCE_PACK_VERSION", "3")
+        assert await computer.compute_for_entity(_pdf(tmp_path)) != before
 
     async def test_code_files_never_fingerprinted(self, tmp_path, chunk_settings):
         computer = HashComputer()

@@ -8,7 +8,7 @@ from uuid import UUID
 
 import pytest
 
-from airweave.core.config import settings
+from airweave.core.config import chunking, settings
 from airweave.domains.converters.fakes.registry import FakeConverterRegistry
 from airweave.domains.converters.page_markers import PAGE_SENTINEL, page_marker
 from airweave.domains.sync_pipeline.processors.chunk_embed import ChunkEmbedProcessor
@@ -78,7 +78,7 @@ def sentence_pack(monkeypatch):
     def _set(target: int = 40, overlap: int = 16):
         monkeypatch.setattr(settings, "CHUNKER_MODE", "sentence_pack")
         monkeypatch.setattr(settings, "CHUNK_TARGET_TOKENS", target)
-        monkeypatch.setattr(settings, "CHUNK_OVERLAP_TOKENS", overlap)
+        monkeypatch.setattr(chunking, "OVERLAP_PERCENT", overlap * 100 // target)
 
     return _set
 
@@ -127,7 +127,8 @@ class TestSharedFixture:
             )
             for c in want
         ]
-        assert [c.textual_representation for c in chunks] == [c["_test"]["body"] for c in want]
+        bodies = [c.textual_representation[c.chunk_body_offset :] for c in chunks]
+        assert bodies == [c["_test"]["body"] for c in want]
         assert [c.entity_id for c in chunks] == [c["entity_id"] for c in want]
 
     async def test_no_sentinel_or_refused_character_in_chunks(self, chunks):

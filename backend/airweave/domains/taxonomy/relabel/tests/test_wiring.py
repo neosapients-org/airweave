@@ -7,6 +7,7 @@ from unittest.mock import patch
 from airweave.core.container.factory import _create_relabel
 from airweave.core.events.enums import ALL_EVENT_TYPE_ENUMS, TaxonomyEventType
 from airweave.core.events.taxonomy import TaxonomyRelabelCompletedEvent
+from airweave.domains.taxonomy import limits
 from airweave.domains.taxonomy.relabel.tests.helpers import COLLECTION, ORG
 
 
@@ -41,16 +42,7 @@ def test_the_event_type_is_known_to_the_bus_and_to_webhooks():
 
 
 def settings(**kw):
-    base = {
-        "RELABEL_SPEND_CAP_USD": 5.0,
-        "RELABEL_USD_PER_THOUSAND_CHUNKS": 0.006,
-        "RELABEL_BATCH_SIZE": 7,
-        "RELABEL_PAGE_SIZE": 9,
-        "RELABEL_WRITE_CONCURRENCY": 3,
-        "RELABEL_LEASE_SECONDS": 33,
-        "RELABEL_RESUME_INTERVAL_SECONDS": 11,
-        "TAXONOMY_CLASSIFY_TIMEOUT_SECONDS": 44,
-    }
+    base = {"TAXONOMY_SPEND_CAP_USD": 5.0}
     base.update(kw)
     return SimpleNamespace(**base)
 
@@ -63,9 +55,17 @@ def test_service_and_runner_share_the_syncs_resolver_and_pool():
     processor = SimpleNamespace(resolver=object(), pool=object())
     service, runner = _create_relabel(settings(), processor, object())
     assert runner._resolver is processor.resolver and runner._pool is processor.pool
-    assert (runner._batch, runner._page, runner._concurrency) == (7, 9, 3)
-    assert (runner._lease, runner._timeout, runner._interval) == (33, 44, 11)
-    assert service._cap == 5.0
+    assert (runner._batch, runner._page, runner._concurrency) == (
+        limits.RELABEL_BATCH_SIZE,
+        limits.RELABEL_PAGE_SIZE,
+        limits.RELABEL_WRITE_CONCURRENCY,
+    )
+    assert (runner._lease, runner._timeout, runner._interval) == (
+        limits.RELABEL_LEASE_SECONDS,
+        limits.CLASSIFY_TIMEOUT_SECONDS,
+        limits.RELABEL_RESUME_INTERVAL_SECONDS,
+    )
+    assert service._cap == 5.0  # the one TAXONOMY_SPEND_CAP_USD ceiling
 
 
 async def test_worker_starts_and_stops_the_runner():

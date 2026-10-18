@@ -183,59 +183,29 @@ env:
   CLASSIFICATION_MODEL: gpt-4o-mini
   CLASSIFICATION_BATCH_SIZE: '25'
 
-  # Chunking, topic labels and search (contract airweave-neo/1, section 9).
-  # Every value here is the upstream default, so deploying the chart changes nothing.
-  # Switch on per environment in its own values file, in rollout order (plan section 6):
-  # size Vespa, publish each collection's taxonomy, then the chunk settings and labels.
-  # Neo values in comments.
+  # Chunking, topic labels and search (contract airweave-neo/1, section 9). Only what a
+  # deployment decides is listed; every other number is a constant in the code. The defaults
+  # keep upstream behaviour, so deploying the chart changes nothing. Switch on per environment in
+  # its own values file, in rollout order (plan section 6): size Vespa, publish each collection's
+  # taxonomy, then the chunk settings and labels. Neo values in comments.
+  CHUNKER_MODE: semantic                 # Neo: sentence_pack (adds positions, pages and a header)
   CHUNK_TARGET_TOKENS: '4096'            # Neo: '300'
-  CHUNK_OVERLAP_TOKENS: '0'              # Neo: '45'
-  CHUNK_HEADER_MAX_TOKENS: '256'         # a longer header is cut to this many tokens
-  CHUNK_HEADER_ENABLED: 'false'          # Neo: 'true'
-  CHUNKER_MODE: semantic                 # Neo: sentence_pack
-  CHUNKER_VERSION: '1'                   # Neo: '2'
   SEARCH_FILTER_GROUPS_OR: 'false'       # Neo: 'true'
   TAXONOMY_ENABLED: 'false'              # Neo: 'true' (needs TAXONOMY_S3_BUCKET)
   # TAXONOMY_S3_BUCKET: per environment  (read access via the service account's IAM role)
-  TAXONOMY_ACTIVE_CACHE_SECONDS: '300'
-  TAXONOMY_LOCAL_DIR: /data/airweave-taxonomy/versions        # worker volume "taxonomy"
-  TAXONOMY_EMBED_CACHE_DIR: /data/airweave-taxonomy/embed-cache
-  TAXONOMY_EMBED_CACHE_MAX_MB: '512'                           # each thread's cache file starts over past this
-  TAXONOMY_ARTIFACT_MAX_MB: '256'                              # one taxonomy file; a larger manifest entry is refused
-  TAXONOMY_ARTIFACT_TOTAL_MAX_MB: '1024'                       # one version's files together
-  TAXONOMY_CLASSIFY_THREADS: '2'
-  TAXONOMY_CLASSIFY_TIMEOUT_SECONDS: '60'
-  # Re-label jobs. The cap is the approved spend ceiling per job in USD; '0' approves nothing,
-  # so no job can start until the owner sets a value for the environment.
-  RELABEL_SPEND_CAP_USD: '0'
-  RELABEL_USD_PER_THOUSAND_CHUNKS: '0.006'
-  RELABEL_BATCH_SIZE: '64'
-  RELABEL_PAGE_SIZE: '100'
-  RELABEL_WRITE_CONCURRENCY: '8'
-  RELABEL_LEASE_SECONDS: '120'
-  RELABEL_RESUME_INTERVAL_SECONDS: '60'
-  # Taxonomy discover (A13) and propose (A12) jobs. The API and the jobs worker both need
-  # TAXONOMY_JOBS_ENABLED=true (the jobs worker pod sets it itself); spend caps default to 0,
-  # which approves nothing. A paid run also needs the owner's approval.
+  TAXONOMY_DATA_DIR: /data/airweave-taxonomy   # the worker volume "taxonomy": versions/, embed-cache/, jobs/
+  # TAXONOMY_CLASSIFY_THREADS: '2'       # classifier threads per worker; memory grows with it
+  # The approved spend ceiling, in USD, for ONE re-label, discover or propose job. '0' approves
+  # nothing, so no job can start until the owner sets a value for the environment.
+  TAXONOMY_SPEND_CAP_USD: '0'
+  # Discover and propose jobs: the API and the jobs worker both need TAXONOMY_JOBS_ENABLED=true
+  # (the jobs worker pod sets it itself).
   TAXONOMY_JOBS_ENABLED: 'false'
-  TAXONOMY_JOBS_TASK_QUEUE: airweave-taxonomy-jobs-queue
-  TAXONOMY_JOBS_LEASE_SECONDS: '300'
-  TAXONOMY_JOBS_MAX_CHUNKS: '20000'
-  DISCOVER_SPEND_CAP_USD: '0'
-  DISCOVER_SAMPLE_DOCUMENTS: '200'
-  DISCOVER_MIN_DOCUMENTS: '1'
-  DISCOVER_MIN_CHUNKS: '100'
+  # DISCOVER_MIN_CHUNKS: '100'           # fewer chunks of text and a discover job fails before spending
   # Which tenant's prefix a discovery writes to, per organization: JSON {"<organization uuid>":
   # "<tenant id>"}. A caller never chooses it. Set it per environment before enabling discovery.
   TAXONOMY_TENANT_BY_ORGANIZATION: '{}'
-  # Days an unused per-tenant job cache (TAXONOMY_JOBS_CACHE_DIR) is kept; 0 = for ever.
-  TAXONOMY_JOBS_CACHE_RETENTION_DAYS: '30'
-  # The jobs worker starts a workflow for a job nothing runs every ..._RECONCILE_SECONDS, once it
-  # is older than ..._DISPATCH_GRACE_SECONDS, and fails one unattended for ..._MAX_AGE_HOURS.
-  TAXONOMY_JOBS_RECONCILE_SECONDS: '60'
-  TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS: '120'
-  TAXONOMY_JOBS_MAX_AGE_HOURS: '24'
-  EVOLUTION_SPEND_CAP_USD: '0'
+  # TAXONOMY_JOBS_CACHE_DIR: ''          # opt-in per-tenant job caches; they hold customer text
 
   # Storage backend
   STORAGE_BACKEND: aws
@@ -298,10 +268,9 @@ worker:
     requests:
       cpu: 100m
       memory: 256Mi
-  # Writable volume for TAXONOMY_LOCAL_DIR and TAXONOMY_EMBED_CACHE_DIR (verified taxonomy
-  # versions and one SQLite embedding cache per classifier thread, each capped near
-  # TAXONOMY_EMBED_CACHE_MAX_MB, so size the volume above threads x that plus the versions). Unused while
-  # TAXONOMY_ENABLED is off.
+  # Writable volume for TAXONOMY_DATA_DIR (verified taxonomy versions and one SQLite embedding
+  # cache per classifier thread, each capped near 512 MB, so size the volume above threads x that
+  # plus the versions). Unused while TAXONOMY_ENABLED is off.
   taxonomyVolume:
     sizeLimit: 5Gi
 
@@ -309,7 +278,7 @@ worker:
 # Taxonomy jobs worker (discover A13, propose A12): off by default
 # =============================================================================
 # A SEPARATE Deployment of the same image on its own Temporal task queue
-# (TAXONOMY_JOBS_TASK_QUEUE); the sync workers never register these activities.
+# (a constant in the code); the sync workers never register these activities.
 #
 # IMAGE: clustering needs the full classifier install, which the runtime install leaves out:
 # the classifier package (pinned once the developer releases it), umap-learn, pynndescent,

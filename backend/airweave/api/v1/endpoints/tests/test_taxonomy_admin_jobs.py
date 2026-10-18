@@ -23,7 +23,7 @@ def job_service(cap=5.0):
         enqueued.append(job.id)
 
     repo = InMemoryTaxonomyJobRepository()
-    return TaxonomyJobService(repo, enqueue, discover_cap_usd=cap, evolution_cap_usd=cap), enqueued
+    return TaxonomyJobService(repo, enqueue, cap_usd=cap), enqueued
 
 
 class Resolver:

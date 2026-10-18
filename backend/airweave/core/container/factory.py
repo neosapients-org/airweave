@@ -136,6 +136,7 @@ from airweave.domains.syncs.jobs.state_machine import SyncJobStateMachine
 from airweave.domains.syncs.repository import SyncRepository
 from airweave.domains.syncs.service import SyncService
 from airweave.domains.syncs.state_machine import SyncStateMachine
+from airweave.domains.taxonomy import limits
 from airweave.domains.taxonomy.artifacts import TAXONOMY_S3_PREFIX, TaxonomyResolver
 from airweave.domains.taxonomy.classifier_pool import ClassifierPool
 from airweave.domains.temporal.client import get_cached_client as get_cached_temporal_client
@@ -1407,19 +1408,19 @@ def _create_taxonomy_processor(
     resolver = TaxonomyResolver(
         storage=storage,
         prefix=TAXONOMY_S3_PREFIX,
-        local_dir=settings.TAXONOMY_LOCAL_DIR,
-        active_cache_seconds=settings.TAXONOMY_ACTIVE_CACHE_SECONDS,
-        max_file_bytes=settings.TAXONOMY_ARTIFACT_MAX_MB * 1024 * 1024,
-        max_total_bytes=settings.TAXONOMY_ARTIFACT_TOTAL_MAX_MB * 1024 * 1024,
+        local_dir=limits.versions_dir(settings.TAXONOMY_DATA_DIR),
+        active_cache_seconds=limits.ACTIVE_CACHE_SECONDS,
+        max_file_bytes=limits.ARTIFACT_MAX_MB * 1024 * 1024,
+        max_total_bytes=limits.ARTIFACT_TOTAL_MAX_MB * 1024 * 1024,
     )
     pool = ClassifierPool(
         threads=settings.TAXONOMY_CLASSIFY_THREADS,
-        cache_dir=settings.TAXONOMY_EMBED_CACHE_DIR,
+        cache_dir=limits.embed_cache_dir(settings.TAXONOMY_DATA_DIR),
         dense_embedder=dense_embedder,
-        max_cache_mb=settings.TAXONOMY_EMBED_CACHE_MAX_MB,
+        max_cache_mb=limits.EMBED_CACHE_MAX_MB,
     )
     return TaxonomyProcessor(
-        resolver=resolver, pool=pool, timeout_seconds=settings.TAXONOMY_CLASSIFY_TIMEOUT_SECONDS
+        resolver=resolver, pool=pool, timeout_seconds=limits.CLASSIFY_TIMEOUT_SECONDS
     )
 
 
@@ -1442,8 +1443,8 @@ def _create_relabel(
     service = RelabelService(
         repo,
         VespaChunkStore,
-        configured_cap_usd=settings.RELABEL_SPEND_CAP_USD,
-        usd_per_thousand=settings.RELABEL_USD_PER_THOUSAND_CHUNKS,
+        configured_cap_usd=settings.TAXONOMY_SPEND_CAP_USD,
+        usd_per_thousand=limits.RELABEL_USD_PER_THOUSAND_CHUNKS,
     )
     runner = RelabelRunner(
         repo,
@@ -1451,13 +1452,13 @@ def _create_relabel(
         taxonomy_processor.resolver,
         taxonomy_processor.pool,
         event_bus,
-        batch_size=settings.RELABEL_BATCH_SIZE,
-        page_size=settings.RELABEL_PAGE_SIZE,
-        write_concurrency=settings.RELABEL_WRITE_CONCURRENCY,
-        lease_seconds=settings.RELABEL_LEASE_SECONDS,
-        classify_timeout=settings.TAXONOMY_CLASSIFY_TIMEOUT_SECONDS,
-        usd_per_thousand=settings.RELABEL_USD_PER_THOUSAND_CHUNKS,
-        resume_interval=settings.RELABEL_RESUME_INTERVAL_SECONDS,
+        batch_size=limits.RELABEL_BATCH_SIZE,
+        page_size=limits.RELABEL_PAGE_SIZE,
+        write_concurrency=limits.RELABEL_WRITE_CONCURRENCY,
+        lease_seconds=limits.RELABEL_LEASE_SECONDS,
+        classify_timeout=limits.CLASSIFY_TIMEOUT_SECONDS,
+        usd_per_thousand=limits.RELABEL_USD_PER_THOUSAND_CHUNKS,
+        resume_interval=limits.RELABEL_RESUME_INTERVAL_SECONDS,
     )
     return service, runner
 
@@ -1475,13 +1476,12 @@ def _create_taxonomy_job_service(
     async def enqueue(job: Any) -> None:
         from airweave.domains.temporal.client import get_client
 
-        await start_job_workflow(await get_client(), settings.TAXONOMY_JOBS_TASK_QUEUE, job.id)
+        await start_job_workflow(await get_client(), limits.JOBS_TASK_QUEUE, job.id)
 
     return TaxonomyJobService(
         SqlTaxonomyJobRepository(),
         enqueue,
-        discover_cap_usd=settings.DISCOVER_SPEND_CAP_USD,
-        evolution_cap_usd=settings.EVOLUTION_SPEND_CAP_USD,
+        cap_usd=settings.TAXONOMY_SPEND_CAP_USD,
     )
 
 

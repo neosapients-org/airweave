@@ -15,6 +15,7 @@ import json
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from airweave.core.config import settings
+from airweave.core.config.chunking import ChunkPlan
 from airweave.domains.converters.page_markers import PageStarts, strip_page_markers
 from airweave.domains.converters.protocols import ConverterRegistryProtocol
 from airweave.domains.embedders.exceptions import EmbedderProviderError, EmbedderQuotaError
@@ -149,9 +150,8 @@ class ChunkEmbedProcessor:
         texts = [e.textual_representation for e in entities]
 
         if settings.CHUNKER_MODE == "sentence_pack":
-            chunker = SentencePackChunker(
-                settings.CHUNK_TARGET_TOKENS, settings.CHUNK_OVERLAP_TOKENS
-            )
+            plan = ChunkPlan.from_settings(settings)
+            chunker = SentencePackChunker(plan.target_tokens, plan.overlap_tokens)
             try:
                 chunk_lists = await chunker.chunk_batch([t or "" for t in texts])
             except Exception as e:

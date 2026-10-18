@@ -372,7 +372,7 @@ class TestTaxonomyJobEndpoints:
             return None
 
         return TaxonomyJobService(
-            InMemoryTaxonomyJobRepository(), enqueue, discover_cap_usd=cap, evolution_cap_usd=cap
+            InMemoryTaxonomyJobRepository(), enqueue, cap_usd=cap
         )
 
     def resolver(self, result="ok"):

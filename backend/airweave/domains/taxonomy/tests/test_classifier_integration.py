@@ -120,7 +120,7 @@ def document(tenant: str, seed: int) -> str:
 
 
 async def make_chunks(tenant: str, n_docs: int = 2, seed: int = 100) -> list:
-    """Real chunk entities: sentence_pack at 120/30 with the header, as Neo runs it (scaled)."""
+    """Real chunk entities: sentence_pack at 120 with the header, as Neo runs it (scaled)."""
     proc = ChunkEmbedProcessor(FakeConverterRegistry(), MagicMock(), MagicMock())
     ctx = MagicMock()
     ctx.source_short_name = "google_drive"
@@ -134,9 +134,8 @@ async def make_chunks(tenant: str, n_docs: int = 2, seed: int = 100) -> list:
             textual_representation=document(tenant, seed + d),
             airweave_system_metadata=AirweaveSystemMetadata(source_name="google_drive")))
     with pytest.MonkeyPatch.context() as mp:
-        for k, v in {"CHUNKER_MODE": "sentence_pack", "CHUNK_TARGET_TOKENS": 120,
-                     "CHUNK_OVERLAP_TOKENS": 30, "CHUNK_HEADER_ENABLED": True}.items():
-            mp.setattr(settings, k, v)
+        for k, v in {"CHUNKER_MODE": "sentence_pack", "CHUNK_TARGET_TOKENS": 120}.items():
+            mp.setattr(settings, k, v)  # the overlap (15%, 18) and the header follow from the mode
         return await proc._chunk_textual_entities(ents, ctx)
 
 

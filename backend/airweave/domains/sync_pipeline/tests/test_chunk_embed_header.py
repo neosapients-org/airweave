@@ -7,7 +7,7 @@ from uuid import UUID
 
 import pytest
 
-from airweave.core.config import settings
+from airweave.core.config import chunking, settings
 from airweave.domains.converters.fakes.registry import FakeConverterRegistry
 from airweave.domains.converters.page_markers import page_marker
 from airweave.domains.sync_pipeline.processors.chunk_embed import ChunkEmbedProcessor
@@ -57,11 +57,12 @@ def sync_context():
 
 @pytest.fixture
 def neo(monkeypatch):
-    def _set(header: bool = True, mode: str = "sentence_pack", target: int = 40, overlap=16):
+    """The Neo chunking at test size: a header follows the mode, the overlap is a share of the target."""
+
+    def _set(mode: str = "sentence_pack", target: int = 40, overlap: int = 16):
         monkeypatch.setattr(settings, "CHUNKER_MODE", mode)
         monkeypatch.setattr(settings, "CHUNK_TARGET_TOKENS", target)
-        monkeypatch.setattr(settings, "CHUNK_OVERLAP_TOKENS", overlap)
-        monkeypatch.setattr(settings, "CHUNK_HEADER_ENABLED", header)
+        monkeypatch.setattr(chunking, "OVERLAP_PERCENT", overlap * 100 // target)
 
     return _set
 
@@ -90,7 +91,6 @@ class TestSharedFixture:
     ):
         fx = airweave_neo_chunk_fixture
         neo(
-            True,
             "sentence_pack",
             fx["settings"]["CHUNK_TARGET_TOKENS"],
             fx["settings"]["CHUNK_OVERLAP_TOKENS"],
@@ -108,16 +108,8 @@ class TestSharedFixture:
 
 
 class TestHeaderSwitch:
-    async def test_disabled_no_header(self, processor, sync_context, neo):
-        neo(header=False)
-        out = await processor._chunk_textual_entities([_entity(TEXT)], sync_context)
-        assert all(c.chunk_body_offset == 0 for c in out)
-        assert all(
-            TEXT[c.chunk_char_start : c.chunk_char_end] == c.textual_representation for c in out
-        )
-
     async def test_enabled_every_chunk_starts_with_header(self, processor, sync_context, neo):
-        neo(header=True)
+        neo()
         out = await processor._chunk_textual_entities([_entity(TEXT)], sync_context)
         header = "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026"
         assert len(out) > 2
@@ -129,7 +121,7 @@ class TestHeaderSwitch:
             )
 
     async def test_name_with_newline_and_refused_character(self, processor, sync_context, neo):
-        neo(header=True)
+        neo()
         entity = _entity(TEXT, name="Q3\ncredit risk\x03.pdf")
         out = await processor._chunk_textual_entities([entity], sync_context)
         for c in out:
@@ -144,18 +136,6 @@ class TestHeaderSwitch:
             stored = doc.fields["textual_representation"]
             assert stored[c.chunk_body_offset :] == TEXT[c.chunk_char_start : c.chunk_char_end]
 
-    async def test_header_with_semantic_chunks(self, processor, sync_context, neo):
-        """The header works in the default chunker too: no positions, so no pages."""
-        neo(header=True, mode="semantic")
-        with patch(_SEMANTIC_CHUNKER) as cls:
-            cls.return_value.chunk_batch = AsyncMock(return_value=[[{"text": "Body text."}]])
-            (c,) = await processor._chunk_textual_entities([_entity(TEXT)], sync_context)
-        assert c.textual_representation == (
-            "Q3 credit risk report.pdf · google_drive · Finance / Risk / 2026\nBody text."
-        )
-        assert c.textual_representation[c.chunk_body_offset :] == "Body text."
-        assert c.chunk_char_start is None and c.page_from is None
-
     async def test_upstream_settings_no_header_no_fields(self, processor, sync_context):
         with patch(_SEMANTIC_CHUNKER) as cls:
             cls.return_value.chunk_batch = AsyncMock(return_value=[[{"text": "Body text."}]])
@@ -164,7 +144,7 @@ class TestHeaderSwitch:
         assert all(getattr(c, name) is None for name in CHUNK_LAYOUT_FIELDS)
 
     async def test_pages_in_header(self, processor, sync_context, neo):
-        neo(header=True)
+        neo()
         text = page_marker(3) + TEXT[:300] + page_marker(4) + TEXT[300:]
         out = await processor._chunk_textual_entities([_entity(text)], sync_context)
         headers = {c.textual_representation.split("\n", 1)[0].rsplit(" · ", 1)[1] for c in out}
@@ -175,7 +155,7 @@ class TestEmbeddingInputs:
     async def test_dense_input_has_header_sparse_input_has_no_new_fields(
         self, processor, sync_context, neo
     ):
-        neo(header=True)
+        neo()
         chunks = await processor._chunk_textual_entities([_entity(TEXT)], sync_context)
         for c in chunks:
             c.page_from, c.topic_ids, c.taxonomy_status = 1, {"acme:credit.x": 1}, "ASSIGNED"
@@ -188,7 +168,7 @@ class TestEmbeddingInputs:
             assert not set(CHUNK_LAYOUT_FIELDS) & set(json.loads(raw))
 
     async def test_code_files_never_get_a_header(self, processor, sync_context, neo):
-        neo(header=True)
+        neo()
         entity = _entity("def f():\n    return 1\n")
         out = processor._multiply_entities(
             [entity], [[{"text": "def f():\n    return 1\n"}]], sync_context
@@ -236,10 +216,11 @@ class TestHeaderTokenBudget:
     async def test_a_chunk_never_carries_a_header_over_the_budget(
         self, processor, sync_context, neo, monkeypatch
     ):
+        from airweave.domains.sync_pipeline.processors import chunk_layout
         from airweave.domains.sync_pipeline.processors.chunk_layout import _header_tokenizer
 
-        neo(header=True)
-        monkeypatch.setattr(settings, "CHUNK_HEADER_MAX_TOKENS", 32)
+        neo()
+        monkeypatch.setattr(chunk_layout, "HEADER_MAX_TOKENS", 32)
         entity = _entity(TEXT, name="n" * 400)
 
         chunks = await processor._chunk_textual_entities([entity], sync_context)
@@ -250,30 +231,3 @@ class TestHeaderTokenBudget:
             header = chunk.textual_representation[: chunk.chunk_body_offset - 1]
             assert count(header) <= 32 and header.endswith("…") is False or count(header) <= 32
             assert len(header) < 400
-
-
-class TestHeaderBudgetInTheFingerprint:
-    def test_a_custom_budget_reprocesses_entities_and_the_default_does_not(self, monkeypatch):
-        import json
-
-        from airweave.domains.sync_pipeline.pipeline.hash_computer import chunk_fingerprint
-
-        monkeypatch.setattr(settings, "CHUNK_HEADER_ENABLED", True)
-        monkeypatch.setattr(settings, "CHUNK_HEADER_MAX_TOKENS", 256)
-        default = json.loads(chunk_fingerprint(_entity(TEXT)))
-        monkeypatch.setattr(settings, "CHUNK_HEADER_MAX_TOKENS", 128)
-        custom = json.loads(chunk_fingerprint(_entity(TEXT)))
-
-        assert "CHUNK_HEADER_MAX_TOKENS" not in default
-        assert custom["CHUNK_HEADER_MAX_TOKENS"] == 128
-
-    def test_with_headers_off_the_budget_is_not_part_of_it(self, monkeypatch):
-        import json
-
-        from airweave.domains.sync_pipeline.pipeline.hash_computer import chunk_fingerprint
-
-        monkeypatch.setattr(settings, "CHUNK_HEADER_ENABLED", False)
-        monkeypatch.setattr(settings, "CHUNK_HEADER_MAX_TOKENS", 128)
-        monkeypatch.setattr(settings, "CHUNK_TARGET_TOKENS", 300)
-
-        assert "CHUNK_HEADER_MAX_TOKENS" not in json.loads(chunk_fingerprint(_entity(TEXT)))

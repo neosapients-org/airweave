@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from airweave.core.config import settings
+from airweave.core.config.chunking import HEADER_MAX_TOKENS, ChunkPlan
 from airweave.domains.converters.page_markers import PageStarts, page_at
 from airweave.platform.entities._base import BaseEntity, Breadcrumb
 
@@ -111,10 +112,8 @@ class ChunkLayout:
     @classmethod
     def from_settings(cls) -> "ChunkLayout":
         """Read the layout from the chunk settings."""
-        return cls(
-            positions=settings.CHUNKER_MODE == "sentence_pack",
-            header=settings.CHUNK_HEADER_ENABLED,
-        )
+        plan = ChunkPlan.from_settings(settings)
+        return cls(positions=plan.positions, header=plan.header)
 
     @property
     def active(self) -> bool:
@@ -144,7 +143,7 @@ class ChunkLayout:
                 chunk_entity.page_from,
                 chunk_entity.page_to,
             )
-            header = fit_header(header, settings.CHUNK_HEADER_MAX_TOKENS)
+            header = fit_header(header, HEADER_MAX_TOKENS)
             chunk_entity.textual_representation = f"{header}\n{chunk_entity.textual_representation}"
             chunk_entity.chunk_body_offset = len(header) + 1
         else:

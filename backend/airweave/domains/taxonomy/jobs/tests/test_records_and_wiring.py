@@ -7,7 +7,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
-import pytest
 from sqlalchemy.dialects import postgresql
 
 from airweave.core.container.factory import _create_taxonomy_job_service
@@ -97,8 +96,9 @@ class TestRegistrations:
 
     def test_the_jobs_task_queue_is_not_the_sync_queue(self):
         from airweave.core.config import settings
+        from airweave.domains.taxonomy import limits
 
-        assert settings.TAXONOMY_JOBS_TASK_QUEUE != settings.TEMPORAL_TASK_QUEUE
+        assert limits.JOBS_TASK_QUEUE != settings.TEMPORAL_TASK_QUEUE
 
     async def test_the_activity_runs_the_job_and_returns_its_state(self):
         from uuid import UUID
@@ -131,9 +131,7 @@ class TestContainer:
     def settings(self, **kw):
         base = {
             "TAXONOMY_JOBS_ENABLED": True,
-            "TAXONOMY_JOBS_TASK_QUEUE": "q-jobs",
-            "DISCOVER_SPEND_CAP_USD": 2.0,
-            "EVOLUTION_SPEND_CAP_USD": 3.0,
+            "TAXONOMY_SPEND_CAP_USD": 2.0,
         }
         base.update(kw)
         return SimpleNamespace(**base)
@@ -145,9 +143,9 @@ class TestContainer:
         )
         assert _create_taxonomy_job_service(self.settings(), None) is None
 
-    def test_on_builds_the_service_with_the_caps(self):
+    def test_on_builds_the_service_with_the_one_ceiling(self):
         svc = _create_taxonomy_job_service(self.settings(), object())
-        assert svc._caps == {"discover": 2.0, "propose": 3.0}
+        assert svc._cap == 2.0
 
 
 class TestSettings:
@@ -156,35 +154,13 @@ class TestSettings:
 
         s = _build_settings(monkeypatch, {})
         assert s.TAXONOMY_JOBS_ENABLED is False
-        assert (s.DISCOVER_SPEND_CAP_USD, s.EVOLUTION_SPEND_CAP_USD) == (0.0, 0.0)
-        assert s.TAXONOMY_JOBS_TASK_QUEUE == "airweave-taxonomy-jobs-queue"
-        assert (s.DISCOVER_SAMPLE_DOCUMENTS, s.DISCOVER_MIN_DOCUMENTS) == (200, 1)
+        assert s.TAXONOMY_SPEND_CAP_USD == 0.0
 
-    @pytest.mark.parametrize("name", ["DISCOVER_SPEND_CAP_USD", "EVOLUTION_SPEND_CAP_USD"])
-    def test_negative_caps_refused(self, monkeypatch, name):
-        from pydantic import ValidationError
+    def test_the_jobs_numbers_are_constants_not_settings(self):
+        from airweave.domains.taxonomy import limits
 
-        from airweave.core.config.tests.test_settings_chunking import _build_settings
-
-        with pytest.raises(ValidationError, match=name):
-            _build_settings(monkeypatch, {name: "-1"})
-
-    @pytest.mark.parametrize(
-        "name",
-        [
-            "TAXONOMY_JOBS_LEASE_SECONDS",
-            "TAXONOMY_JOBS_MAX_CHUNKS",
-            "DISCOVER_SAMPLE_DOCUMENTS",
-            "DISCOVER_MIN_DOCUMENTS",
-        ],
-    )
-    def test_counts_must_be_positive(self, monkeypatch, name):
-        from pydantic import ValidationError
-
-        from airweave.core.config.tests.test_settings_chunking import _build_settings
-
-        with pytest.raises(ValidationError, match=name):
-            _build_settings(monkeypatch, {name: "0"})
+        assert limits.JOBS_TASK_QUEUE == "airweave-taxonomy-jobs-queue"
+        assert (limits.DISCOVER_SAMPLE_DOCUMENTS, limits.DISCOVER_MIN_DOCUMENTS) == (200, 1)
 
 
 class TestReturningReadsBeforeCommit:
@@ -223,7 +199,8 @@ class TestReturningReadsBeforeCommit:
 
 class TestWorkflowWaitsForAHeldLease:
     """The first attempt of a crashed worker holds the lease; the second sees "busy". The workflow
-    waits for the lease to expire and asks again, instead of ending with the job still RUNNING."""
+    waits for the lease to expire and asks again, instead of ending with the job still RUNNING.
+    """
 
     async def test_it_asks_again_after_busy_and_stops_at_the_first_real_state(self):
         from airweave.domains.taxonomy.jobs import temporal as t

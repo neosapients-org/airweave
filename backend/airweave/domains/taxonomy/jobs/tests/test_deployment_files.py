@@ -19,16 +19,39 @@ pytestmark = pytest.mark.skipif(
     not (HELM / "values.yaml").exists() or not (ROOT / ".env.example").exists(),
     reason="the chart and .env.example are outside the backend checkout",
 )
+# What a deployment decides about the jobs; every other number is a constant in the code.
 JOB_KEYS = [
     "TAXONOMY_JOBS_ENABLED",
+    "TAXONOMY_SPEND_CAP_USD",
+    "DISCOVER_MIN_CHUNKS",
+    "TAXONOMY_TENANT_BY_ORGANIZATION",
+    "TAXONOMY_JOBS_CACHE_DIR",
+]
+# Retired settings: each is a constant now, so none may come back as an environment entry.
+RETIRED_KEYS = [
     "TAXONOMY_JOBS_TASK_QUEUE",
+    "TAXONOMY_JOBS_WORK_DIR",
+    "TAXONOMY_JOBS_BUILD_CONFIG",
     "TAXONOMY_JOBS_LEASE_SECONDS",
     "TAXONOMY_JOBS_MAX_CHUNKS",
+    "TAXONOMY_JOBS_CACHE_RETENTION_DAYS",
+    "TAXONOMY_JOBS_RECONCILE_SECONDS",
+    "TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS",
+    "TAXONOMY_JOBS_MAX_AGE_HOURS",
     "DISCOVER_SPEND_CAP_USD",
+    "EVOLUTION_SPEND_CAP_USD",
+    "RELABEL_SPEND_CAP_USD",
     "DISCOVER_SAMPLE_DOCUMENTS",
     "DISCOVER_MIN_DOCUMENTS",
-    "DISCOVER_MIN_CHUNKS",
-    "EVOLUTION_SPEND_CAP_USD",
+    "CHUNK_OVERLAP_TOKENS",
+    "CHUNK_HEADER_ENABLED",
+    "CHUNK_HEADER_MAX_TOKENS",
+    "CHUNKER_VERSION",
+    "TAXONOMY_LOCAL_DIR",
+    "TAXONOMY_EMBED_CACHE_DIR",
+    "TAXONOMY_ACTIVE_CACHE_SECONDS",
+    "TAXONOMY_ARTIFACT_MAX_MB",
+    "TAXONOMY_ARTIFACT_TOTAL_MAX_MB",
 ]
 
 
@@ -53,14 +76,20 @@ class TestValues:
         assert jobs["limits"]["memory"] == "8Gi" and jobs["requests"]["cpu"] == "1"
         assert jobs != sync
 
-    def test_env_settings_are_strings_and_approve_nothing(self, values):
+    def test_the_decisions_are_strings_and_approve_nothing(self, values):
         env = values["env"]
-        assert all(isinstance(env[k], str) for k in JOB_KEYS)
+        for key in ("TAXONOMY_JOBS_ENABLED", "TAXONOMY_SPEND_CAP_USD"):
+            assert isinstance(env[key], str), key
         assert env["TAXONOMY_JOBS_ENABLED"] == "false"
-        assert env["DISCOVER_SPEND_CAP_USD"] == "0" and env["EVOLUTION_SPEND_CAP_USD"] == "0"
+        assert env["TAXONOMY_SPEND_CAP_USD"] == "0"
 
-    def test_the_jobs_queue_is_not_the_sync_queue(self, values):
-        assert values["env"]["TAXONOMY_JOBS_TASK_QUEUE"] != "airweave-sync-queue"
+    def test_no_retired_setting_is_left_in_the_values(self, values):
+        assert not [k for k in RETIRED_KEYS if k in values["env"]]
+
+    def test_the_jobs_queue_is_a_constant_that_is_not_the_sync_queue(self):
+        from airweave.domains.taxonomy import limits
+
+        assert limits.JOBS_TASK_QUEUE != "airweave-sync-queue"
 
     def test_the_iam_and_image_requirements_are_stated_in_the_comments(self):
         text = (HELM / "values.yaml").read_text()
@@ -68,17 +97,10 @@ class TestValues:
         assert "read-only on versions, active and models" in text
         assert "umap-learn" in text and "numba" in text and "hdbscan" in text
 
-    def test_helm_defaults_equal_the_code_defaults(self, values, monkeypatch):
-        s = _build_settings(monkeypatch, {})
-        env = values["env"]
-        assert env["TAXONOMY_JOBS_TASK_QUEUE"] == s.TAXONOMY_JOBS_TASK_QUEUE
-        assert float(env["DISCOVER_SPEND_CAP_USD"]) == s.DISCOVER_SPEND_CAP_USD
-        assert float(env["EVOLUTION_SPEND_CAP_USD"]) == s.EVOLUTION_SPEND_CAP_USD
-        assert int(env["DISCOVER_SAMPLE_DOCUMENTS"]) == s.DISCOVER_SAMPLE_DOCUMENTS
-        assert int(env["DISCOVER_MIN_DOCUMENTS"]) == s.DISCOVER_MIN_DOCUMENTS
-        assert int(env["DISCOVER_MIN_CHUNKS"]) == s.DISCOVER_MIN_CHUNKS
-        assert int(env["TAXONOMY_JOBS_LEASE_SECONDS"]) == s.TAXONOMY_JOBS_LEASE_SECONDS
-        assert int(env["TAXONOMY_JOBS_MAX_CHUNKS"]) == s.TAXONOMY_JOBS_MAX_CHUNKS
+    def test_the_data_folder_is_the_workers_taxonomy_volume(self, values):
+        template = (HELM / "templates/temporal-worker.yaml").read_text()
+        assert values["env"]["TAXONOMY_DATA_DIR"] == "/data/airweave-taxonomy"
+        assert "mountPath: /data/airweave-taxonomy" in template
 
 
 class TestEnvExample:
@@ -91,11 +113,11 @@ class TestEnvExample:
         s = _build_settings(monkeypatch, {})
         for key in JOB_KEYS:
             assert key in lines, key
-        assert (
-            lines["TAXONOMY_JOBS_ENABLED"] == "false"
-            and float(lines["DISCOVER_SPEND_CAP_USD"]) == 0
-        )
-        assert lines["TAXONOMY_JOBS_TASK_QUEUE"] == s.TAXONOMY_JOBS_TASK_QUEUE
+        assert int(lines["DISCOVER_MIN_CHUNKS"]) == s.DISCOVER_MIN_CHUNKS
+        assert lines["TAXONOMY_JOBS_CACHE_DIR"] == s.TAXONOMY_JOBS_CACHE_DIR
+        assert lines["TAXONOMY_JOBS_ENABLED"] == "false"
+        assert float(lines["TAXONOMY_SPEND_CAP_USD"]) == 0
+        assert not [k for k in RETIRED_KEYS if k in lines]
 
 
 class TestTemplate:
@@ -177,16 +199,12 @@ class TestBuildConfigRollsThePod:
         assert render("a: 1") != render("a: 2")
         assert render("a: 1") == render("a: 1")
 
-    def test_new_settings_are_in_the_values_as_strings(self, values):
-        env = values["env"]
-        for key in (
-            "TAXONOMY_TENANT_BY_ORGANIZATION",
-            "TAXONOMY_JOBS_CACHE_RETENTION_DAYS",
-            "TAXONOMY_JOBS_RECONCILE_SECONDS",
-            "TAXONOMY_JOBS_DISPATCH_GRACE_SECONDS",
-            "TAXONOMY_JOBS_MAX_AGE_HOURS",
-            "TAXONOMY_ARTIFACT_MAX_MB",
-            "TAXONOMY_ARTIFACT_TOTAL_MAX_MB",
-            "CHUNK_HEADER_MAX_TOKENS",
-        ):
-            assert isinstance(env[key], str), key
+    def test_the_build_config_is_the_workers_argument_not_an_environment_entry(self, template):
+        assert "TAXONOMY_JOBS_BUILD_CONFIG" not in template
+        assert 'args: ["/etc/airweave/taxonomy-build.yaml"]' in template
+
+    def test_the_scratch_volume_is_mounted_inside_the_taxonomy_volume(self, template):
+        assert "TAXONOMY_JOBS_WORK_DIR" not in template
+        assert template.index("mountPath: /data/airweave-taxonomy\n") < template.index(
+            "mountPath: /data/airweave-taxonomy/jobs"
+        )
