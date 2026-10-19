@@ -137,7 +137,11 @@ from airweave.domains.syncs.repository import SyncRepository
 from airweave.domains.syncs.service import SyncService
 from airweave.domains.syncs.state_machine import SyncStateMachine
 from airweave.domains.taxonomy import limits
-from airweave.domains.taxonomy.artifacts import TAXONOMY_S3_PREFIX, TaxonomyResolver
+from airweave.domains.taxonomy.artifacts import (
+    TAXONOMY_S3_PREFIX,
+    TaxonomyResolver,
+    refuse_a_retired_prefix,
+)
 from airweave.domains.taxonomy.classifier_pool import ClassifierPool
 from airweave.domains.temporal.client import get_cached_client as get_cached_temporal_client
 from airweave.domains.temporal.schedule_service import TemporalScheduleService
@@ -1396,6 +1400,7 @@ def _create_taxonomy_processor(
     """
     if not settings.TAXONOMY_ENABLED:
         return None
+    refuse_a_retired_prefix()
     storage = None
     if settings.TAXONOMY_S3_BUCKET:
         from airweave.adapters.storage.aws_s3 import S3Backend

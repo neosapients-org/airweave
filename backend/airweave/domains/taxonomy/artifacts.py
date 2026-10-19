@@ -42,6 +42,26 @@ CALIBRATED, LEARNED = "calibrated", "learned"
 # in both repositories, so the two cannot disagree.
 TAXONOMY_S3_PREFIX = "taxonomy/"
 
+
+def refuse_a_retired_prefix(env: Optional[Dict[str, str]] = None) -> None:
+    """Refuse to start while ``TAXONOMY_S3_PREFIX`` names another folder.
+
+    The folder used to be a setting. A deployment that still sets it to something else would read
+    every published version and active file as missing, so it must move the objects under
+    ``taxonomy/`` and unset it.
+
+    Raises ``RuntimeError`` for a value that is not the fixed folder.
+    """
+    import os
+
+    configured = ((env if env is not None else os.environ).get("TAXONOMY_S3_PREFIX") or "").strip()
+    if configured and configured.rstrip("/") + "/" != TAXONOMY_S3_PREFIX:
+        raise RuntimeError(
+            f"TAXONOMY_S3_PREFIX={configured} is no longer a setting: taxonomy files are read from "
+            f"{TAXONOMY_S3_PREFIX} only. Move the objects there and unset it."
+        )
+
+
 # Files a version folder must hold, each listed in manifest.json with its sha256 (contract 8)
 REQUIRED_FILES = (
     "final_taxonomy.json",

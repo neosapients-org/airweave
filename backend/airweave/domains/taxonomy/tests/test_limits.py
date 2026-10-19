@@ -31,3 +31,15 @@ def test_the_numbers_are_sane():
         "CLASSIFY_TIMEOUT_SECONDS",
     ):
         assert getattr(limits, name) >= 1, name
+
+
+def test_a_retired_prefix_setting_is_refused_instead_of_orphaning_the_artifacts():
+    import pytest
+
+    from airweave.domains.taxonomy.artifacts import refuse_a_retired_prefix
+
+    refuse_a_retired_prefix({})
+    refuse_a_retired_prefix({"TAXONOMY_S3_PREFIX": "taxonomy"})
+    refuse_a_retired_prefix({"TAXONOMY_S3_PREFIX": "taxonomy/"})
+    with pytest.raises(RuntimeError, match="no longer a setting"):
+        refuse_a_retired_prefix({"TAXONOMY_S3_PREFIX": "tax"})
