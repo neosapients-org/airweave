@@ -23,6 +23,7 @@ import logging
 import os
 import re
 import threading
+import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, wait
 from pathlib import Path
@@ -160,8 +161,17 @@ class ClassifierPool:
         self._ensure_started()
         index = next(self._round_robin) % self._n
         loop = asyncio.get_running_loop()
+        # The caller's clock starts now, not when the queued batch reaches its thread.
+        deadline = time.monotonic() + timeout
         future = loop.run_in_executor(
-            self._executors[index], self._classify_on_thread, index, taxonomy, rows, loop, timeout
+            self._executors[index],
+            self._classify_on_thread,
+            index,
+            taxonomy,
+            rows,
+            loop,
+            timeout,
+            deadline,
         )
         return await asyncio.wait_for(future, timeout)
 
@@ -172,11 +182,12 @@ class ClassifierPool:
         rows: List[Dict[str, Any]],
         loop: asyncio.AbstractEventLoop,
         timeout: float,
+        deadline: float,
     ) -> List[Dict[str, Any]]:
         from taxonomy_classifier.contract import to_contract  # type: ignore[import-not-found]
 
         if self._bridge is not None:
-            self._bridge.bind(loop, timeout)
+            self._bridge.bind(loop, timeout, deadline)
         self._rotate_cache(index)
         classifier = self._classifier(index, taxonomy)
         result = classifier.classify(rows)
@@ -279,11 +290,6 @@ class ClassifierPool:
         in place (a live connection to a deleted database is worse than a file), and the next
         start removes them as stale. Another pool's files are never touched.
         """
-        with _OWNED_LOCK:
-            slots = _OWNED_DIRS.get(self._dir_key, set())
-            slots.discard(self._slot)
-            if not slots:
-                _OWNED_DIRS.pop(self._dir_key, None)
         executors, self._executors = self._executors, []
         closers = [executor.submit(self._release_thread_state) for executor in executors]
         for executor in executors:
@@ -295,7 +301,37 @@ class ClassifierPool:
                 len(pending),
                 self._cache_dir,
             )
+            # The slot stays claimed until the last of those threads has stopped: a pool
+            # created meanwhile would take the same slot and, as the first in the directory,
+            # delete the files this classifier still has open.
+            remaining = len(pending)
+            lock = threading.Lock()
+
+            def _one_stopped(_future: Any) -> None:
+                nonlocal remaining
+                with lock:
+                    remaining -= 1
+                    last = remaining == 0
+                if last:
+                    self._release_slot()
+
+            for future in pending:
+                future.add_done_callback(_one_stopped)
             return
+        try:
+            self._delete_own_files()
+        finally:
+            self._release_slot()
+
+    def _release_slot(self) -> None:
+        """Let another pool in this process use this pool's slot of the directory."""
+        with _OWNED_LOCK:
+            slots = _OWNED_DIRS.get(self._dir_key, set())
+            slots.discard(self._slot)
+            if not slots:
+                _OWNED_DIRS.pop(self._dir_key, None)
+
+    def _delete_own_files(self) -> None:
         slot = f"s{self._slot}-" if self._slot else ""
         own = re.compile(rf"^{os.getpid()}-{slot}\d+(?:-g\d+)?\.sqlite$")
         try:

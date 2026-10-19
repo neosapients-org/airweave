@@ -10,7 +10,7 @@ from airweave.core.logging import logger
 from airweave.domains.search.adapters.vector_db.filter_translator import FilterTranslator
 from airweave.domains.search.builders.search_plan import SearchPlanBuilder
 from airweave.domains.search.classic.types import ClassicSearchStrategy
-from airweave.domains.search.types.filters import FilterCondition, FilterGroup
+from airweave.domains.search.types.filters import FilterCondition, FilterGroup, planner_schema
 from airweave.domains.search.types.plan import RetrievalStrategy, SearchPlan, SearchQuery
 
 # Operators each new field takes (contract 5.1); every other operator is refused.
@@ -122,12 +122,16 @@ class TestLlmSchemasUnchanged:
         ],
     )
     def test_schema_identical_to_upstream(self, name, model):
-        raw = json.dumps(model.model_json_schema(), sort_keys=True).encode()
+        raw = json.dumps(planner_schema(model.model_json_schema()), sort_keys=True).encode()
         assert hashlib.sha256(raw).hexdigest() == UPSTREAM_SCHEMA_SHA256[name]
 
-    def test_new_fields_hidden_from_enum(self):
-        enum = SearchPlan.model_json_schema()["$defs"]["FilterableField"]["enum"]
+    def test_new_fields_hidden_from_what_the_planners_are_given(self):
+        enum = planner_schema(SearchPlan.model_json_schema())["$defs"]["FilterableField"]["enum"]
         assert not set(ALLOWED) & set(enum)
+
+    def test_the_api_schema_still_documents_the_new_fields(self):
+        enum = SearchPlan.model_json_schema()["$defs"]["FilterableField"]["enum"]
+        assert set(ALLOWED) <= set(enum)
 
 
 class TestTranslation:

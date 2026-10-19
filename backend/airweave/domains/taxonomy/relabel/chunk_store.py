@@ -74,7 +74,7 @@ def decode_token(token: Optional[str]) -> Tuple[int, Optional[str]]:
         return 0, None
     try:
         index, inner = json.loads(token)
-        if not isinstance(index, int) or index < 0 or not (inner is None or isinstance(inner, str)):
+        if type(index) is not int or index < 0 or not (inner is None or isinstance(inner, str)):
             raise ValueError
     except (ValueError, TypeError) as e:
         raise ValueError("unusable scroll token") from e

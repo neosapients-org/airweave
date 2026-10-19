@@ -23,6 +23,7 @@ Computed by one scroll over the collection's chunks, reading small fields only. 
 
 from __future__ import annotations
 
+import hashlib
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Set
@@ -44,6 +45,19 @@ from airweave.domains.taxonomy.relabel.chunks import (
 )
 
 SCAN_PAGE = 500
+
+# The most distinct documents one statistics pass tracks (about 100 bytes each, three sets). A
+# larger collection is refused rather than left to exhaust the API worker's memory.
+MAX_STATS_DOCUMENTS = 1_000_000
+
+
+class StatsTooLarge(RuntimeError):
+    """The collection has more documents than one statistics pass counts."""
+
+
+def _key(document_key: str) -> int:
+    """A document key as 8 bytes: far smaller than the string, and collision-free in practice."""
+    return int.from_bytes(hashlib.blake2b(document_key.encode(), digest_size=8).digest(), "big")
 
 
 @dataclass
@@ -104,27 +118,34 @@ async def collect_stats(
 ) -> ChunkStats:
     """Scroll the whole collection once and count."""
     stats = ChunkStats(collection_id=str(collection_id))
-    at_version: Set[str] = set()
-    not_labelled_docs: Set[str] = set()
-    by_source: Dict[str, Set[str]] = {}
+    at_version: Set[int] = set()
+    not_labelled_docs: Set[int] = set()
+    seen: Set[int] = set()
+    by_source: Dict[str, Set[int]] = {}
     token: Optional[str] = None
     while True:
         rows, token = await store.scroll(collection_id, SCAN_FIELDS, page_size, token)
         for row in rows:
             _count(row, target_version, stats, at_version, not_labelled_docs)
-            source = str(row.fields.get(F_SOURCE) or "unknown")
-            by_source.setdefault(source, set()).add(row.document_key)
+            document = _key(row.document_key)
+            seen.add(document)
+            by_source.setdefault(str(row.fields.get(F_SOURCE) or "unknown"), set()).add(document)
+        if len(seen) > MAX_STATS_DOCUMENTS:
+            raise StatsTooLarge(
+                f"the collection has more than {MAX_STATS_DOCUMENTS} documents: "
+                f"too many to count in one pass"
+            )
         if token is None:
             break
     stats.documents_at_version = len(at_version)
     stats.not_labelled_documents = len(not_labelled_docs)
     stats.documents_by_source = {source: len(ids) for source, ids in by_source.items()}
-    stats.documents = len(set().union(*by_source.values())) if by_source else 0
+    stats.documents = len(seen)
     return stats
 
 
 def _count(
-    row: ChunkRow, target: str, stats: ChunkStats, at_version: Set[str], nl_docs: Set[str]
+    row: ChunkRow, target: str, stats: ChunkStats, at_version: Set[int], nl_docs: Set[int]
 ) -> None:
     stats.total += 1
     status, version = row.status, row.version
@@ -136,7 +157,7 @@ def _count(
     stats.pieces += max(0, int(row.fields.get("taxonomy_piece_count") or 0) - admin)
     stats.unresolved_pieces += int(row.fields.get("taxonomy_unresolved_pieces") or 0)
     if target and version == target:
-        at_version.add(row.document_key)
+        at_version.add(_key(row.document_key))
     if not row.labellable:
         return
     stats.labellable += 1
@@ -149,4 +170,4 @@ def _count(
             stats.stampable += 1
     if status == NOT_LABELLED and row.own_length > 0:
         stats.not_labelled_chunks += 1
-        nl_docs.add(row.document_key)
+        nl_docs.add(_key(row.document_key))

@@ -361,3 +361,20 @@ class TestBatchDeadline:
 
         vectors, _ = await loop.run_in_executor(None, work)
         assert len(vectors) == 1
+
+
+class TestDeadlineFromSubmission:
+    async def test_a_batch_that_waited_in_the_queue_has_only_the_rest_of_its_time(self):
+        import time
+
+        dense = FakeDense(delay=0.0)
+        transport = AirweaveEmbedTransport(dense)
+        loop = asyncio.get_running_loop()
+        submitted_at_deadline = time.monotonic() - 0.01  # the caller's time was spent queued
+
+        def work():
+            transport.bind(loop, 5, submitted_at_deadline)
+            transport(["late"])
+
+        with pytest.raises(TimeoutError, match="deadline"):
+            await loop.run_in_executor(None, work)

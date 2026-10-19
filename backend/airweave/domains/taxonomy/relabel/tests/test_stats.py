@@ -200,3 +200,14 @@ class TestPieces:
 
 def test_collection_id_is_a_uuid_string():
     assert UUID(str(COLLECTION))
+
+
+async def test_a_collection_with_too_many_documents_is_refused_not_held_in_memory(monkeypatch):
+    import pytest
+
+    from airweave.domains.taxonomy.relabel import stats as stats_module
+
+    monkeypatch.setattr(stats_module, "MAX_STATS_DOCUMENTS", 2)
+    store = FakeChunkStore([chunk(0, doc=f"doc-{i}") for i in range(4)])
+    with pytest.raises(stats_module.StatsTooLarge):
+        await collect_stats(store, COLLECTION, NEW, page_size=3)

@@ -64,7 +64,7 @@ def purge_expired_caches(
     """Remove the tenant folders nothing has touched for ``retention_days`` (0: keep for ever).
 
     Returns:
-        The names of the folders removed.
+        The names of the folders removed (one that could not be removed is logged and retried).
     """
     root = Path(cache_dir)
     if retention_days <= 0 or not root.is_dir():
@@ -73,7 +73,12 @@ def purge_expired_caches(
     removed: List[str] = []
     for folder in sorted(p for p in root.iterdir() if p.is_dir()):
         if _newest_use(folder) < cutoff:
-            shutil.rmtree(folder, ignore_errors=True)
+            try:
+                shutil.rmtree(folder)
+            except OSError as e:
+                # Customer text stays on disk: say so, and leave the folder for the next pass.
+                logger.error(f"[TaxonomyJob] could not remove the expired cache {folder.name}: {e}")
+                continue
             removed.append(folder.name)
     if removed:
         logger.info(

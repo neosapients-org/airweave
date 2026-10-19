@@ -14,10 +14,12 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from airweave.api.context import ApiContext
+from airweave.core.exceptions import InvalidInputError
 from airweave.domains.collections.protocols import CollectionRepositoryProtocol
 from airweave.domains.search.adapters.vector_db.protocol import VectorDBProtocol
 from airweave.domains.search.protocols import BrowseServiceProtocol
 from airweave.domains.search.types.filters import (
+    CHUNK_SCOPED_FIELDS,
     FilterableField,
     FilterCondition,
     FilterGroup,
@@ -62,20 +64,25 @@ class BrowseService(BrowseServiceProtocol):
         collection_id = str(collection.id)
         name_substring = (request.name_query or "").strip() or None
 
-        results, total = await asyncio.gather(
-            self._vector_db.filter_search(
-                filter_groups=filter_groups,
-                collection_id=collection_id,
-                limit=request.limit,
-                offset=request.offset,
-                name_substring=name_substring,
-            ),
-            self._vector_db.count(
-                filter_groups=filter_groups,
-                collection_id=collection_id,
-                name_substring=name_substring,
-            ),
+        page = self._vector_db.filter_search(
+            filter_groups=filter_groups,
+            collection_id=collection_id,
+            limit=request.limit,
+            offset=request.offset,
+            name_substring=name_substring,
         )
+        total: int | None = None
+        if request.include_total:
+            results, total = await asyncio.gather(
+                page,
+                self._vector_db.count(
+                    filter_groups=filter_groups,
+                    collection_id=collection_id,
+                    name_substring=name_substring,
+                ),
+            )
+        else:
+            results = await page
 
         duration_ms = int((time.monotonic() - start) * 1000)
         ctx.logger.info(
@@ -98,6 +105,18 @@ class BrowseService(BrowseServiceProtocol):
         AND semantics across user filters AND our forced conditions, we extend each user
         group's conditions instead of appending a new group.
         """
+        for group in request.filter or []:
+            scoped = sorted(
+                {c.field.value for c in group.conditions if c.field in CHUNK_SCOPED_FIELDS}
+            )
+            if scoped:
+                # Browse lists one row per entity, read from its first chunk: a label or page
+                # that sits on a later chunk would make the entity vanish. Search matches chunks.
+                raise InvalidInputError(
+                    f"Browse cannot filter on chunk fields ({', '.join(scoped)}); "
+                    f"use search to filter by topic, page or position."
+                )
+
         chunk_anchor = FilterCondition(
             field=FilterableField.SYSTEM_METADATA_CHUNK_INDEX,
             operator=FilterOperator.EQUALS,

@@ -182,6 +182,30 @@ class TestOneBuildPerJob:
         assert (await repo.get(j.id)).state == COMPLETED
         assert not runner._builds
 
+    async def test_a_result_finished_just_as_the_attempt_is_cancelled_is_kept_for_the_retry(
+        self, tmp_path, monkeypatch
+    ):
+        from airweave.domains.taxonomy.jobs import runner as runner_module
+
+        runner, repo, _, _, gw = make(tmp_path)
+        j = job()
+        await repo.create(j)
+        real_shield = asyncio.shield
+
+        async def cancelled_after_the_thread_finished(future):
+            await real_shield(future)
+            raise asyncio.CancelledError  # the result is ready, but the attempt never reads it
+
+        monkeypatch.setattr(runner_module.asyncio, "shield", cancelled_after_the_thread_finished)
+        with pytest.raises(asyncio.CancelledError):
+            await runner.run_job(j.id)
+        monkeypatch.undo()
+
+        await runner.run_job(j.id)  # the retry
+
+        assert len(gw.calls) == 1, "the paid build ran again"
+        assert (await repo.get(j.id)).state == COMPLETED
+
 
 class TestCostUnknown:
     async def test_a_build_whose_ledger_cannot_be_read_fails_instead_of_costing_zero(

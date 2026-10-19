@@ -331,12 +331,52 @@ async def test_site_with_malformed_assigned_labels_ignored(logger):
 
 
 @pytest.mark.asyncio
-async def test_site_graph_error_falls_back_to_no_short_circuit(logger):
-    """If reading group labels fails, the site is not pre-skipped — per-file still runs."""
+async def test_site_graph_error_fails_closed_when_a_block_list_is_set(logger):
+    """A site is not indexed on a container label that could not be checked."""
     http_client = MagicMock()
     http_client.get = AsyncMock(return_value=_response(500))
     f = _make_filter(excluded=["guid-1"], http_client=http_client, logger=logger)
-    assert await f.should_skip_site(site_id="s", group_id="g") is False
+    with pytest.raises(httpx.HTTPStatusError):
+        await f.should_skip_site(site_id="s", group_id="g")
+
+
+def test_enabled_when_encrypted_files_must_raise(logger):
+    f = _make_filter(skip_encrypted=False, http_client=MagicMock(), logger=logger)
+    assert f.enabled is True and f.blocks_containers is False
+
+
+@pytest.mark.parametrize(
+    "module,cls",
+    [
+        ("airweave.platform.sources.onedrive", "OneDriveSource"),
+        ("airweave.platform.sources.sharepoint", "SharePointSource"),
+        ("airweave.platform.sources.sharepoint_online.source", "SharePointOnlineSource"),
+    ],
+)
+@pytest.mark.parametrize(
+    "excluded,skip_unlabeled,skip_encrypted,built",
+    [
+        ([], False, True, False),  # nothing configured: no label calls
+        ([], False, False, True),  # encrypted files must raise: the filter must exist
+        (["g"], False, True, True),
+        ([], True, True, True),
+    ],
+)
+def test_the_source_builds_the_filter_for_every_label_setting(
+    module, cls, excluded, skip_unlabeled, skip_encrypted, built, logger
+):
+    import importlib
+
+    source = object.__new__(getattr(importlib.import_module(module), cls))
+    source._label_filter = None
+    source._excluded_sensitivity_label_ids = excluded
+    source._skip_unlabeled_files = skip_unlabeled
+    source._skip_encrypted_files = skip_encrypted
+    source._http_client = MagicMock()
+    source._logger = logger
+    source.get_access_token = AsyncMock(return_value="t")
+
+    assert (source._get_label_filter() is not None) is built
 
 
 # ---------------------------------------------------------------------------
@@ -412,3 +452,36 @@ async def test_token_provider_called_per_graph_call(logger):
     await f.should_skip_item(drive_id="d", item_id="i1")
     await f.should_skip_item(drive_id="d", item_id="i2")
     assert token_provider.call_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("excluded,raises", [(["guid-1"], True), ([], False)])
+async def test_sharepoint_does_not_index_a_site_whose_label_check_failed(logger, excluded, raises):
+    from airweave.platform.entities._base import Breadcrumb
+    from airweave.platform.sources.sharepoint import SharePointSource
+
+    source = object.__new__(SharePointSource)
+    source._label_filter = None
+    source._excluded_sensitivity_label_ids = excluded
+    source._skip_unlabeled_files = False
+    source._skip_encrypted_files = False  # a filter exists in both cases
+    source._http_client = MagicMock()
+    source._logger = logger
+    source.get_access_token = AsyncMock(return_value="t")
+    source._get = AsyncMock(side_effect=RuntimeError("graph down"))
+
+    async def no_drives(*_a, **_k):
+        return
+        yield  # pragma: no cover
+
+    source._generate_drive_entities = no_drives
+    crumb = Breadcrumb(entity_id="s", name="S", entity_type="Site")
+
+    async def run():
+        return [e async for e in source._generate_drives_with_items("s", "S", crumb, 0)]
+
+    if raises:
+        with pytest.raises(RuntimeError):
+            await run()
+    else:
+        assert await run() == []

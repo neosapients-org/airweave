@@ -66,15 +66,26 @@ class SensitivityLabelFilter:
 
     @property
     def enabled(self) -> bool:
-        """True if any label-based filtering is configured."""
-        return bool(self._excluded) or self._skip_unlabeled
+        """True if any label check is configured.
+
+        Turning ``skip_encrypted`` off counts: a file whose labels cannot be read because it is
+        encrypted must then raise, which only the label read can do.
+        """
+        return bool(self._excluded) or self._skip_unlabeled or not self._skip_encrypted
+
+    @property
+    def blocks_containers(self) -> bool:
+        """True if a block list is configured, so a site's container label can exclude it."""
+        return bool(self._excluded)
 
     async def should_skip_site(self, *, site_id: str, group_id: Optional[str]) -> bool:
         """Check the container label on the site's underlying M365 Group.
 
         Returns True if any ``assignedLabel`` GUID is in the block list. A
         site without a backing group, or one whose labels we cannot read,
-        is never short-circuited here — per-file checks still run.
+        is never short-circuited here — per-file checks still run. A group whose labels
+        cannot be read while a block list is configured raises: the site is not indexed on
+        an unverified label.
         """
         if not self._excluded:
             return False
@@ -84,11 +95,11 @@ class SensitivityLabelFilter:
         try:
             labels = await self._fetch_group_assigned_labels(group_id)
         except Exception as exc:  # noqa: BLE001
-            self._logger.warning(
-                f"Could not read assignedLabels for group {group_id} "
-                f"(site {site_id}): {exc}. Falling back to per-file checks."
+            self._logger.error(
+                f"Could not read assignedLabels for group {group_id} (site {site_id}): {exc}. "
+                f"The block list is active, so the site is not synced on an unchecked label."
             )
-            return False
+            raise
 
         matched = next(
             (lid for lid in labels if lid and lid.lower() in self._excluded),

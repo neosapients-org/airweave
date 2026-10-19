@@ -10,9 +10,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, List, Optional, Union
 
-from pydantic import BaseModel, Field, GetJsonSchemaHandler, model_validator
-from pydantic.json_schema import JsonSchemaValue
-from pydantic_core import CoreSchema
+from pydantic import BaseModel, Field, model_validator
 
 
 class FilterableField(str, Enum):
@@ -45,8 +43,8 @@ class FilterableField(str, Enum):
     SYSTEM_METADATA_SYNC_JOB_ID = "airweave_system_metadata.sync_job_id"
 
     # Chunk positions, pages and topic labels (contract airweave-neo/1, section 5.1).
-    # Accepted in request filters, but left out of the JSON schema (below), so the schemas the
-    # LLM search planners are given stay exactly as upstream.
+    # Accepted in request filters and shown in the API schema. The schemas the LLM search planners
+    # are given leave them out (``planner_schema``), so those stay exactly as upstream.
     TOPIC_IDS = "topic_ids"
     BROAD_FAMILY_IDS = "broad_family_ids"
     TAXONOMY_STATUS = "taxonomy_status"
@@ -54,16 +52,6 @@ class FilterableField(str, Enum):
     PAGE_FROM = "page_from"
     PAGE_TO = "page_to"
     CHUNK_CHAR_START = "chunk_char_start"
-
-    @classmethod
-    def __get_pydantic_json_schema__(
-        cls, core_schema: CoreSchema, handler: GetJsonSchemaHandler
-    ) -> JsonSchemaValue:
-        """Leave the chunk fields out of the enum's JSON schema."""
-        json_schema = handler.resolve_ref_schema(handler(core_schema))
-        hidden = {f.value for f in _CHUNK_FIELD_OPERATORS}
-        json_schema["enum"] = [v for v in json_schema["enum"] if v not in hidden]
-        return json_schema
 
 
 class FilterOperator(str, Enum):
@@ -148,6 +136,9 @@ _LIST_OPS: frozenset[FilterOperator] = frozenset(
     }
 )
 
+# The most values one ``in`` / ``not_in`` takes on a chunk field: each becomes an OR clause in YQL.
+MAX_CHUNK_FIELD_LIST_VALUES = 100
+
 # The operators each chunk field supports (contract airweave-neo/1, section 5.1).
 _CHUNK_FIELD_OPERATORS: dict[FilterableField, frozenset[FilterOperator]] = {
     FilterableField.TOPIC_IDS: frozenset({FilterOperator.CONTAINS, FilterOperator.IN}),
@@ -158,6 +149,25 @@ _CHUNK_FIELD_OPERATORS: dict[FilterableField, frozenset[FilterOperator]] = {
     ),
     **dict.fromkeys(_INTEGER_FIELDS, frozenset({FilterOperator.EQUALS}) | _ORDERING_OPS),
 }
+
+
+# Fields that describe one chunk, not the whole entity (topics, pages, positions, labelling).
+CHUNK_SCOPED_FIELDS: frozenset[FilterableField] = frozenset(_CHUNK_FIELD_OPERATORS)
+
+
+def planner_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Drop the chunk fields from a JSON schema before an LLM planner is given it.
+
+    The fields are accepted in request filters (and documented in the API schema), but the
+    planners keep the schema they had upstream, so they never propose a label filter.
+    Mutates and returns ``schema``.
+    """
+    hidden = {f.value for f in _CHUNK_FIELD_OPERATORS}
+    for definition in (schema.get("$defs") or {}).values():
+        if isinstance(definition, dict) and isinstance(definition.get("enum"), list):
+            if hidden & set(definition["enum"]):
+                definition["enum"] = [v for v in definition["enum"] if v not in hidden]
+    return schema
 
 
 def _validate_iso_timestamp(value: str) -> None:
@@ -280,6 +290,15 @@ class FilterCondition(BaseModel):
             names = ", ".join(sorted(o.value for o in allowed))
             raise ValueError(
                 f"Operator '{op.value}' is not supported on '{f.value}'. Use: {names}."
+            )
+        if (
+            f in _CHUNK_FIELD_OPERATORS
+            and isinstance(v, list)
+            and len(v) > MAX_CHUNK_FIELD_LIST_VALUES
+        ):
+            raise ValueError(
+                f"Field '{f.value}' takes at most {MAX_CHUNK_FIELD_LIST_VALUES} values in a list, "
+                f"got {len(v)}."
             )
         if f in _INTEGER_FIELDS and (isinstance(v, bool) or not isinstance(v, int)):
             raise ValueError(f"Field '{f.value}' takes an integer value, got {v!r}.")

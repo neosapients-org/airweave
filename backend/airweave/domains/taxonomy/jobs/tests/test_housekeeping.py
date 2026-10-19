@@ -129,6 +129,20 @@ class TestCaches:
 
         assert removed == [old.name] and not old.exists() and fresh.exists()
 
+    def test_a_failed_deletion_is_not_reported_as_removed_and_is_tried_again(
+        self, tmp_path, monkeypatch
+    ):
+        old = self.make(tmp_path, "t-acme", age_days=45)
+
+        def refuse(_path):
+            raise PermissionError("read-only")
+
+        monkeypatch.setattr(housekeeping.shutil, "rmtree", refuse)
+        assert purge_expired_caches(tmp_path, retention_days=30) == [] and old.exists()
+
+        monkeypatch.undo()
+        assert purge_expired_caches(tmp_path, retention_days=30) == [old.name]
+
     def test_a_folder_is_as_old_as_its_newest_file(self, tmp_path):
         folder = self.make(tmp_path, "t-acme", age_days=45)
         (folder / "llm_cache" / "new.json").write_text("used today")

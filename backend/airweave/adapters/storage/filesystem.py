@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import shutil
+import uuid
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Dict, List, Union
@@ -101,12 +102,21 @@ class FilesystemBackend(StorageBackend):
         await self._ensure_parent_dir(full_path)
 
         def _write() -> bool:
+            # Write a sibling first, then publish it with a no-replace operation, so a crash or a
+            # full disk never leaves a truncated file at the final path to block every retry.
+            tmp = full_path.with_name(f".{full_path.name}.{uuid.uuid4().hex}.tmp")
             try:
-                with open(full_path, "xb") as f:
+                with open(tmp, "wb") as f:
                     f.write(content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                try:
+                    os.link(tmp, full_path)  # fails if the target exists, never replaces it
+                except FileExistsError:
+                    return False
                 return True
-            except FileExistsError:
-                return False
+            finally:
+                tmp.unlink(missing_ok=True)
 
         return await asyncio.to_thread(_write)
 

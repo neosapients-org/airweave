@@ -51,6 +51,8 @@ class RegistryMap:
                 isinstance(k, str) and isinstance(v, str) for k, v in m.items()
             ):
                 raise RegistryMapError(f"registry_map.json: {name} must map strings to strings")
+            if any(not k.strip() or not v.strip() for k, v in m.items()):
+                raise RegistryMapError(f"registry_map.json: {name} has an empty id")
         return cls(str(version), dict(categories), dict(families))
 
 
@@ -102,8 +104,9 @@ def map_record(
         reg = registry.categories.get(topic["category_id"])
         if reg is None:
             continue  # counted above through its pieces
-        topic_ids[reg] = int(topic.get("supporting_children") or 0) or sum(
-            reg in ids for ids in piece_ids
+        # Several classifier categories may map to one registry topic: their pieces add up.
+        topic_ids[reg] = topic_ids.get(reg, 0) + (
+            int(topic.get("supporting_children") or 0) or sum(reg in ids for ids in piece_ids)
         )
         fam = topic.get("broad_family_id")
         if fam in registry.families:

@@ -8,7 +8,7 @@ from airweave.domains.search.adapters.vector_db.protocol import VectorDBProtocol
 from airweave.domains.search.agentic.state import AgentState
 from airweave.domains.search.agentic.tools.dispatcher import Tool
 from airweave.domains.search.agentic.tools.types import CountToolResult
-from airweave.domains.search.types.filters import FilterGroup
+from airweave.domains.search.types.filters import FilterGroup, planner_schema
 
 COUNT_TOOL: dict[str, Any] = {
     "type": "function",
@@ -25,7 +25,7 @@ COUNT_TOOL: dict[str, Any] = {
             "properties": {
                 "filter_groups": {
                     "type": "array",
-                    "items": FilterGroup.model_json_schema(),
+                    "items": planner_schema(FilterGroup.model_json_schema()),
                     "description": (
                         "Filter groups to narrow the count. "
                         "Conditions within a group are AND. "

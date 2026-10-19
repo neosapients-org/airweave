@@ -284,10 +284,13 @@ class TaxonomyJobRunner:
             output = await asyncio.shield(running)
         finally:
             if running.done():
+                # A cancellation can arrive after the thread finished and before its result was
+                # read: keep the paid-for result on disk, or the retry builds (and pays) again.
+                if not running.cancelled() and running.exception() is None:
+                    _save_build(work, running.result())
                 self._builds.pop(job.id, None)
         if beat.lost:
             raise _Ended
-        _save_build(work, output)
         if beat.cancelled:
             await self._end(job, CANCELLED, None)
             raise _Ended

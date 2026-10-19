@@ -231,3 +231,16 @@ class TestWeightIsBounded:
 
         with pytest.raises(ValidationError):
             TopicBoost.model_validate_json('{"topic_ids": [], "weight": Infinity}')
+
+
+def test_the_vespa_topic_match_counts_presence_not_piece_count():
+    """A chunk's stored weight is its piece count; the match caps it at 1 and is a share, 0 to 1."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[5]
+    for rel in (
+        "vespa/app/schemas/base_entity.sd",
+        "ops/helm/airweave-svc/files/vespa-app/schemas/base_entity.sd",
+    ):
+        text = (repo / rel).read_text()
+        assert "f(x)(min(x, 1))" in text and "max(sum(query(topics)), 1)" in text, rel

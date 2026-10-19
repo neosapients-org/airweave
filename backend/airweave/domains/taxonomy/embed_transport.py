@@ -48,11 +48,17 @@ class AirweaveEmbedTransport:
         self._embedder = embedder
         self._local = threading.local()
 
-    def bind(self, loop: asyncio.AbstractEventLoop, timeout: float) -> None:
-        """Set the loop that owns the embedder and the deadline, for this thread."""
+    def bind(
+        self, loop: asyncio.AbstractEventLoop, timeout: float, deadline: Optional[float] = None
+    ) -> None:
+        """Set the loop that owns the embedder and the deadline, for this thread.
+
+        ``deadline`` is an absolute ``time.monotonic()`` instant fixed when the caller submitted
+        the batch; without it the clock starts now.
+        """
         self._local.loop = loop
         self._local.timeout = timeout
-        self._local.deadline = time.monotonic() + timeout
+        self._local.deadline = deadline if deadline is not None else time.monotonic() + timeout
 
     def __call__(self, batch: List[str]) -> Tuple[List[np.ndarray], int]:
         """Embed one batch; raises whatever the embedder raised, or ``TimeoutError``."""

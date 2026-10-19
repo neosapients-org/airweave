@@ -337,6 +337,25 @@ class TestStaleCacheFiles:
         assert path.exists(), "a live classifier's database must not be deleted under it"
         await asyncio.sleep(1.6)
 
+    async def test_the_slot_stays_claimed_until_the_busy_thread_has_stopped(
+        self, tmp_path, stand_in, monkeypatch
+    ):
+        from airweave.domains.taxonomy import classifier_pool
+
+        monkeypatch.setattr(classifier_pool, "_CLOSE_WAIT_SECONDS", 0.2)
+        pool = ClassifierPool(1, tmp_path)
+        with pytest.raises(asyncio.TimeoutError):
+            await pool.classify(_taxonomy(_delay=1.0), _rows(1), 0.05)
+        pool.close()  # the timed-out batch is still running
+
+        # A pool made now must not be the "first" of the directory (which deletes stale files)
+        later = ClassifierPool(1, tmp_path)
+        assert later._slot != pool._slot
+        later.close()
+
+        await asyncio.sleep(1.5)
+        assert pool._slot not in classifier_pool._OWNED_DIRS.get(pool._dir_key, set())
+
     def test_a_negative_cache_limit_is_an_error_not_unlimited(self, tmp_path):
         with pytest.raises(ValueError, match="max_cache_mb"):
             ClassifierPool(1, tmp_path, max_cache_mb=-1)

@@ -124,7 +124,7 @@ class FakePool:
                 ],
             }
             for r in rows
-            if r["chunk_id"] not in self.drop
+            if r["chunk_id"].split("::")[-1] not in self.drop
         ]
 
 
@@ -316,6 +316,21 @@ class TestDocumentIdentityForTheClassifier:
 
         assert len({_document_id(a), _document_id(b), _document_id(c)}) == 3
         assert _document_id(a).startswith("5c0b9a6e-0000-4000-8000-000000000001/")
+
+    async def test_same_entity_id_in_two_schemas_is_labelled_independently(self, enabled):
+        class OnlyPdf(FakePool):
+            async def classify(self, taxonomy, rows, timeout):
+                kept = [r for r in rows if "/MailEntity/" not in r["document_id"]]
+                return await super().classify(taxonomy, kept, timeout)
+
+        pdf, mail = chunk(0, 0, 0, 30), chunk(0, 0, 0, 30)
+        mail.airweave_system_metadata.entity_type = "MailEntity"
+        assert pdf.entity_id == mail.entity_id
+
+        await processor(pool=OnlyPdf()).process([pdf, mail], sync_context())
+
+        assert pdf.taxonomy_status != "ERROR" and pdf.topic_ids
+        assert mail.taxonomy_status == "ERROR" and not mail.topic_ids
 
     def test_chunks_of_one_document_share_one_id(self):
         from airweave.domains.sync_pipeline.processors.taxonomy import _document_id

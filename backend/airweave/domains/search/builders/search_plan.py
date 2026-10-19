@@ -8,8 +8,12 @@ that must always be satisfied, not optional additions.
 from typing import List, Optional
 
 from airweave.core.config import settings
+from airweave.core.exceptions import InvalidInputError
 from airweave.domains.search.types.filters import FilterGroup
 from airweave.domains.search.types.plan import SearchPlan
+
+# The most filter groups the OR-keeping merge may build (user groups x LLM groups).
+MAX_MERGED_GROUPS = 100
 
 
 class SearchPlanBuilder:
@@ -87,6 +91,12 @@ class SearchPlanBuilder:
 
         complete_plan = plan.model_copy(deep=True)
         if complete_plan.filter_groups:
+            merged = len(complete_plan.filter_groups) * len(user_groups)
+            if merged > MAX_MERGED_GROUPS:
+                raise InvalidInputError(
+                    f"The filters combine into {merged} groups; at most {MAX_MERGED_GROUPS} "
+                    f"are allowed. Use fewer filter groups."
+                )
             complete_plan.filter_groups = [
                 FilterGroup(conditions=[*llm.conditions, *user.conditions])
                 for llm in complete_plan.filter_groups

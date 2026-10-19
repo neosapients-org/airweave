@@ -3,11 +3,33 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Annotated, Optional
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AfterValidator, BaseModel, Field, field_validator, model_validator
 
 from airweave.domains.search.types import FilterGroup, RetrievalStrategy, SearchResult, TopicBoost
+
+# Request-boundary bounds: each filter is compiled into YQL (and, for browse, run twice).
+MAX_FILTER_GROUPS = 20
+MAX_CONDITIONS_PER_GROUP = 20
+MAX_BROWSE_OFFSET = 10_000
+
+
+def _check_condition_counts(groups: list[FilterGroup]) -> list[FilterGroup]:
+    for group in groups:
+        if len(group.conditions) > MAX_CONDITIONS_PER_GROUP:
+            raise ValueError(
+                f"a filter group takes at most {MAX_CONDITIONS_PER_GROUP} conditions, "
+                f"got {len(group.conditions)}"
+            )
+    return groups
+
+
+BoundedFilterGroups = Annotated[
+    list[FilterGroup],
+    Field(max_length=MAX_FILTER_GROUPS),
+    AfterValidator(_check_condition_counts),
+]
 
 
 class SearchTier(str, Enum):
@@ -39,7 +61,7 @@ class InstantSearchRequest(BaseModel):
         default=RetrievalStrategy.HYBRID,
         description="Which retrieval strategy to use.",
     )
-    filter: Optional[list[FilterGroup]] = Field(
+    filter: Optional[BoundedFilterGroups] = Field(
         default=None, description="Filter groups (combined with OR)."
     )
     limit: int = Field(default=100, ge=1, le=1000, description="Max results to return.")
@@ -81,7 +103,7 @@ class ClassicSearchRequest(BaseModel):
     }
 
     query: str = Field(..., description="Search query text.")
-    filter: Optional[list[FilterGroup]] = Field(
+    filter: Optional[BoundedFilterGroups] = Field(
         default=None, description="Filter groups (combined with OR)."
     )
     limit: int = Field(default=100, ge=1, le=1000, description="Max results to return.")
@@ -112,7 +134,7 @@ class AgenticSearchRequest(BaseModel):
     thinking: bool = Field(
         default=False, description="Enable extended thinking / chain-of-thought."
     )
-    filter: Optional[list[FilterGroup]] = Field(
+    filter: Optional[BoundedFilterGroups] = Field(
         default=None, description="Filter groups (combined with OR)."
     )
     limit: Optional[int] = Field(
@@ -161,13 +183,27 @@ class BrowseRequest(BaseModel):
         }
     }
 
-    filter: Optional[list[FilterGroup]] = Field(
+    filter: Optional[BoundedFilterGroups] = Field(
         default=None,
         description="Filter groups (combined with OR). Same shape as search filters.",
     )
     limit: int = Field(default=50, ge=1, le=200, description="Max rows per page.")
-    offset: int = Field(default=0, ge=0, description="Number of rows to skip.")
+    offset: int = Field(
+        default=0,
+        ge=0,
+        le=MAX_BROWSE_OFFSET,
+        description=(
+            f"Number of rows to skip (at most {MAX_BROWSE_OFFSET}; narrow the filter to go deeper)."
+        ),
+    )
 
+    include_total: bool = Field(
+        default=True,
+        description=(
+            "Count all matching entities. The count scans the collection on every call, so "
+            "send false for the pages after the first and keep the total from page one."
+        ),
+    )
     sync_ids: Optional[list[str]] = Field(
         default=None,
         description="Convenience: limit results to these sync_ids. Translated to a FilterGroup.",
@@ -199,7 +235,10 @@ class BrowseResponse(BaseModel):
     results: list[SearchResult] = Field(
         default_factory=list, description="Rows on this page (one per source entity)."
     )
-    total: int = Field(..., description="Total entity count matching the filter.")
+    total: Optional[int] = Field(
+        default=None,
+        description="Total entity count matching the filter; absent when include_total is false.",
+    )
     limit: int = Field(..., description="Limit echoed back from the request.")
     offset: int = Field(..., description="Offset echoed back from the request.")
 

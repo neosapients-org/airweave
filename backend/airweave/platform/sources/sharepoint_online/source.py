@@ -663,7 +663,11 @@ class SharePointOnlineBase(BaseSource):
         """
         if self._label_filter is not None:
             return self._label_filter
-        if not self._excluded_sensitivity_label_ids and not self._skip_unlabeled_files:
+        if (
+            not self._excluded_sensitivity_label_ids
+            and not self._skip_unlabeled_files
+            and self._skip_encrypted_files
+        ):
             return None
         self._label_filter = SensitivityLabelFilter(
             excluded_label_ids=self._excluded_sensitivity_label_ids,

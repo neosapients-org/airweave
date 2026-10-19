@@ -28,6 +28,7 @@ from airweave.adapters.llm.registry import LLMModelSpec
 from airweave.adapters.llm.tool_response import LLMResponse
 from airweave.core.logging import logger as _default_logger
 from airweave.core.protocols.llm import LLMProtocol
+from airweave.domains.search.types.filters import planner_schema
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -127,7 +128,7 @@ class BaseLLM(LLMProtocol):
             raise ValueError("Prompt cannot be empty")
 
         try:
-            schema_json = schema.model_json_schema()
+            schema_json = planner_schema(schema.model_json_schema())
         except Exception as e:
             raise ValueError(f"Failed to build JSON schema from Pydantic model: {e}") from e
 

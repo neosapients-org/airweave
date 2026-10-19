@@ -168,7 +168,7 @@ class TaxonomyProcessor:
             if own.strip():
                 rows.append(
                     {
-                        "chunk_id": chunk.entity_id,
+                        "chunk_id": _chunk_key(chunk),
                         "document_id": _document_id(chunk),
                         "text": own,
                     }
@@ -206,10 +206,10 @@ class TaxonomyProcessor:
         sync_context: "SyncContext",
         counts: Counter,
     ) -> None:
-        by_id = {r["chunk_id"]: r for r in records}
+        by_id = {r["chunk_id"]: r for r in records}  # keyed as submitted: sync, schema, id
         untranslated: set = set()
         for chunk in chunks:
-            record = by_id.get(chunk.entity_id)
+            record = by_id.get(_chunk_key(chunk))
             if record is None:
                 _set_status(chunk, ERROR)
                 counts[ERROR] += 1
@@ -276,6 +276,16 @@ def _document_id(chunk: BaseEntity) -> str:
     sync_id = str(meta.sync_id) if meta and meta.sync_id else ""
     schema = (meta.entity_type if meta and meta.entity_type else None) or type(chunk).__name__
     return f"{sync_id}/{schema}/{original}"
+
+
+def _chunk_key(chunk: BaseEntity) -> str:
+    """The chunk's identity in a classifier batch: its document's (sync, schema, id) and its own id.
+
+    A chunk's entity id (``<original>__chunk_<n>``) repeats across schemas that share a source id,
+    so two entities of different schemas with the same id and chunk index would otherwise collide
+    in the result map, and one record would label the other's chunk.
+    """
+    return f"{_document_id(chunk)}::{chunk.entity_id}"
 
 
 def _set_status(chunk: BaseEntity, status: str) -> None:

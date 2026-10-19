@@ -169,6 +169,6 @@ async def test_a_token_for_the_last_schema_is_still_followed():
 def test_tokens_round_trip_and_garbage_is_refused():
     assert decode_token(encode_token(3, "abc")) == (3, "abc")
     assert decode_token(None) == (0, None)
-    for bad in ("nope", "[1]", '["a", null]', "[-1, null]", "[1, 2]"):
+    for bad in ("nope", "[1]", '["a", null]', "[-1, null]", "[1, 2]", "[true, null]"):
         with pytest.raises(ValueError):
             decode_token(bad)

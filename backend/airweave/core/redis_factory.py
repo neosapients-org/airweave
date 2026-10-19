@@ -51,11 +51,18 @@ def _parse_sentinel_nodes(raw: str) -> list[tuple[str, int]]:
             not isinstance(entry, (list, tuple))
             or len(entry) != 2
             or not isinstance(entry[0], str)
+            or isinstance(entry[1], bool)
             or not isinstance(entry[1], (int, str))
         ):
             raise ValueError(f"REDIS_NODES entries must be [host, port], got: {entry!r}")
         host, port = entry
-        nodes.append((host, int(port)))
+        try:
+            number = int(port)
+        except ValueError as exc:
+            raise ValueError(f"REDIS_NODES port must be a number, got: {entry!r}") from exc
+        if not 1 <= number <= 65535:
+            raise ValueError(f"REDIS_NODES port must be 1-65535, got: {entry!r}")
+        nodes.append((host, number))
     return nodes
 
 
@@ -64,17 +71,14 @@ def get_socket_keepalive_options() -> dict[int, int]:
 
     macOS does not support the Linux keepalive constants and will raise if they
     are passed to ``setsockopt``. We return an empty dict there and on any
-    Linux system that does not expose ``TCP_KEEPIDLE``.
+    Linux system that does not expose all three keepalive constants.
     """
     if platform.system() == "Darwin":
         return {}
-    if not hasattr(socket, "TCP_KEEPIDLE"):
+    wanted = (("TCP_KEEPIDLE", 60), ("TCP_KEEPINTVL", 10), ("TCP_KEEPCNT", 6))
+    if not all(hasattr(socket, name) for name, _ in wanted):
         return {}
-    return {
-        socket.TCP_KEEPIDLE: 60,
-        socket.TCP_KEEPINTVL: 10,
-        socket.TCP_KEEPCNT: 6,
-    }
+    return {getattr(socket, name): value for name, value in wanted}
 
 
 def make_redis_client(

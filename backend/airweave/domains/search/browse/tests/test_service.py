@@ -17,10 +17,10 @@ from airweave.domains.search.adapters.vector_db.fakes.vector_db import FakeVecto
 from airweave.domains.search.agentic.tests.conftest import make_result
 from airweave.domains.search.browse.service import BrowseService
 from airweave.domains.search.types.filters import (
+    FilterableField,
     FilterCondition,
     FilterGroup,
     FilterOperator,
-    FilterableField,
 )
 from airweave.models.collection import Collection
 from airweave.schemas.search_v2 import BrowseRequest
@@ -92,6 +92,41 @@ class TestBrowseService:
         assert response.offset == 0
         assert len(response.results) == 1
         assert response.results[0].entity_id == "ent-1"
+
+    @pytest.mark.asyncio
+    async def test_the_count_is_skipped_when_not_asked_for(self) -> None:
+        svc, vector_db, repo = _make_service()
+        repo.seed_readable(DEFAULT_READABLE_ID, _make_collection())
+        vector_db.seed_filter_results([make_result(entity_id="ent-1", name="Row 1")])
+        vector_db.seed_count(42)
+
+        response = await svc.browse(
+            AsyncMock(),
+            _make_ctx(),
+            DEFAULT_READABLE_ID,
+            BrowseRequest(limit=10, offset=10, include_total=False),
+        )
+
+        assert response.total is None and len(response.results) == 1
+        assert not any(call[0] == "count" for call in vector_db._calls)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("field", ["topic_ids", "page_from", "taxonomy_status"])
+    async def test_chunk_fields_are_refused_because_a_row_reads_only_the_first_chunk(
+        self, field: str
+    ) -> None:
+        from airweave.core.exceptions import InvalidInputError
+
+        svc, _, repo = _make_service()
+        repo.seed_readable(DEFAULT_READABLE_ID, _make_collection())
+        value = {"topic_ids": ["a:b"], "page_from": 3, "taxonomy_status": ["ASSIGNED"]}[field]
+        operator = {"topic_ids": "in", "page_from": "equals", "taxonomy_status": "in"}[field]
+        request = BrowseRequest(
+            filter=[{"conditions": [{"field": field, "operator": operator, "value": value}]}]
+        )
+
+        with pytest.raises(InvalidInputError):
+            await svc.browse(AsyncMock(), _make_ctx(), DEFAULT_READABLE_ID, request)
 
     @pytest.mark.asyncio
     async def test_collection_not_found_raises_404(self) -> None:

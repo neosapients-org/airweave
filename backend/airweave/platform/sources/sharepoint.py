@@ -111,7 +111,11 @@ class SharePointSource(BaseSource):
         """Lazily build a Purview sensitivity-label filter from config."""
         if self._label_filter is not None:
             return self._label_filter
-        if not self._excluded_sensitivity_label_ids and not self._skip_unlabeled_files:
+        if (
+            not self._excluded_sensitivity_label_ids
+            and not self._skip_unlabeled_files
+            and self._skip_encrypted_files
+        ):
             return None
         self._label_filter = SensitivityLabelFilter(
             excluded_label_ids=self._excluded_sensitivity_label_ids,
@@ -760,6 +764,12 @@ class SharePointSource(BaseSource):
                 if await label_filter.should_skip_site(site_id=site_id, group_id=group_id):
                     return
             except Exception as exc:  # noqa: BLE001
+                if label_filter.blocks_containers:
+                    # A block list is configured: do not index the site on an unchecked label.
+                    self.logger.error(
+                        f"Could not check the container label of site {site_id}: {exc}"
+                    )
+                    raise
                 self.logger.warning(
                     f"Could not pre-check container label for site {site_id}: {exc}"
                 )

@@ -368,7 +368,9 @@ schema base_entity {
     # HYBRID + TOPIC BOOST (contract airweave-neo/1, section 5.1)
     # The hybrid score plus topic_weight x topic match. A boost, not a filter:
     # chunks without topic_ids still match and keep their hybrid score.
-    # topic_match = sum over the query's topics of (query weight x chunk weight).
+    # topic_match = the share of the query's topics the chunk carries, 0 to 1: a chunk's stored
+    # weight is its piece count, so it counts as presence (capped at 1), and a long chunk with
+    # many pieces gets no more than a short one.
     # =========================================================================
     rank-profile hybrid_topic inherits hybrid {
         inputs {
@@ -377,7 +379,10 @@ schema base_entity {
         }
 
         function topic_match() {
-            expression: sum(query(topics) * tensorFromWeightedSet(attribute(topic_ids), t))
+            expression {
+                sum(query(topics) * map(tensorFromWeightedSet(attribute(topic_ids), t), f(x)(min(x, 1))))
+                    / max(sum(query(topics)), 1)
+            }
         }
 
         global-phase {
