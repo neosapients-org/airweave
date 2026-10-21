@@ -1,0 +1,158 @@
+# Staging environment overrides for airweave-svc
+# Only values that differ from values.yaml.
+#
+# values.yaml carries DEV defaults (dev ECR repo, dev secret, dev S3 bucket, dev
+# nodepool) — all overridden below. Mirror any new env-specific default here.
+
+replicaCount: 1
+
+image:
+  repository: 679451892000.dkr.ecr.us-east-1.amazonaws.com/airweave-svc-staging-use1-shared1
+  pullPolicy: Always
+  tag: 'staging-latest'
+
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::679451892000:role/airweave-svc-staging-use1-shared1-irsa
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 2Gi
+  requests:
+    cpu: 100m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+
+env:
+  # MUST be 'dev', not 'staging'. platform/auth/settings.py loads
+  # yaml/<ENVIRONMENT>.integrations.yaml at import time and only dev/prd/
+  # self-hosted ship a file, so 'staging' raises FileNotFoundError and the pod
+  # crashloops before serving a request. 'prd' is also wrong — it routes OAuth
+  # client secrets through Azure Key Vault. Environment tagging for traces comes
+  # from OTEL_RESOURCE_ATTRIBUTES below, which is set to staging correctly.
+  ENVIRONMENT: dev
+  LOG_LEVEL: debug
+
+  # Reached only in-cluster via neo-gateway-svc's /v1/meridian proxy. Enabling
+  # this requires the AUTH0_* keys in Secrets Manager or the pod fails to boot.
+  AUTH_ENABLED: 'false'
+
+  CLASSIFICATION_ENABLED: 'true'
+
+  # OAuth redirect_uri base. The callback route is served by neo-gateway-svc, so
+  # this is the gateway's public prefix, not an Airweave host.
+  # …/v1/meridian/source-connections/callback must be registered on each OAuth app.
+  API_FULL_URL: https://staging-dp.neosapientai.com/v1/meridian
+
+  # staging.neosapientai.com resolves to the staging cp ALB; neo-sapients.* is dev.
+  APP_FULL_URL: https://staging.neosapientai.com/meridian-mesh/connectors
+
+  STORAGE_AWS_BUCKET: airweave-staging-use1-shared1
+
+  OTEL_RESOURCE_ATTRIBUTES: service.name=airweave-svc,service.version=1.0.0,deployment.environment=staging,service.namespace=neo-platform
+
+  # readOnlyRootFilesystem: caches must point at the writable emptyDirs.
+  HF_HOME: /tmp/hf_cache
+  XDG_CACHE_HOME: /tmp/cache
+
+ingress:
+  enabled: false
+
+# Alembic migrations run on boot; shorter delays let the kubelet kill the pod
+# mid-migration.
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 120
+  periodSeconds: 15
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 60
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+externalSecrets:
+  secretName: neo-airweave-svc-staging-use1-shared1-secrets
+
+# Inherited by all 10 workloads in this chart. The staging nodepool carries both
+# taints; missing either leaves every pod Pending.
+nodeSelector:
+  karpenter.sh/nodepool: staging-use1-shared1-generic-arm64-w50
+
+tolerations:
+  - key: kubernetes.io/arch
+    operator: Equal
+    value: arm64
+    effect: NoExecute
+  - key: neo/env
+    operator: Equal
+    value: staging
+    effect: NoExecute
+
+postgresql:
+  storage: 5Gi
+  # Shared by the backend, worker, Temporal and Svix. 50 exhausted the pool in
+  # dev on a simultaneous reconnect and 500'd every DB-backed endpoint.
+  args:
+    - -c
+    - max_connections=200
+    - -c
+    - shared_buffers=128MB
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 512Mi
+
+redis:
+  storage: 1Gi
+  resources:
+    limits:
+      cpu: 100m
+      memory: 128Mi
+    requests:
+      cpu: 25m
+      memory: 64Mi
+
+temporal:
+  resources:
+    limits:
+      cpu: 250m
+      memory: 256Mi
+    requests:
+      cpu: 50m
+      memory: 128Mi
+
+vespa:
+  storage: 10Gi
+  # 4Gi (values.yaml default) OOM-killed Vespa mid-sync in dev.
+  resources:
+    limits:
+      cpu: '1'
+      memory: 6Gi
+    requests:
+      cpu: 250m
+      memory: 3Gi
+
+worker:
+  replicaCount: 1
+  # Docling + embedding batches OOM-killed the 768Mi values.yaml default in dev.
+  resources:
+    limits:
+      cpu: '2'
+      memory: 3Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
