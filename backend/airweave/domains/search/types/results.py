@@ -11,6 +11,25 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field, PrivateAttr
 
+# Chunk position, page and label fields a search result carries (contract 5.2).
+CHUNK_RESULT_FIELDS: tuple[str, ...] = (
+    "chunk_char_start",
+    "chunk_char_end",
+    "chunk_own_start",
+    "chunk_body_offset",
+    "page_from",
+    "page_to",
+    "topic_ids",
+    "broad_family_ids",
+    "taxonomy_spans",
+    "taxonomy_status",
+    "taxonomy_version",
+)
+
+
+def _is_none(value: Any) -> bool:
+    return value is None
+
 
 class SearchBreadcrumb(BaseModel):
     """Breadcrumb in search result."""
@@ -122,6 +141,47 @@ class SearchResult(BaseModel):
     raw_source_fields: dict[str, Any] = Field(
         ...,
         description="All source-specific fields.",
+    )
+
+    # Chunk positions, pages and topic labels (contract airweave-neo/1, section 5.2).
+    # Left out of the response when unset, so chunks written with the upstream chunk
+    # settings come back exactly as before. Offsets are Unicode code points, end-exclusive.
+    chunk_char_start: Optional[int] = Field(
+        default=None, exclude_if=_is_none, description="Body start in the document text."
+    )
+    chunk_char_end: Optional[int] = Field(
+        default=None, exclude_if=_is_none, description="Body end in the document text."
+    )
+    chunk_own_start: Optional[int] = Field(
+        default=None, exclude_if=_is_none, description="Start of the chunk's own text."
+    )
+    chunk_body_offset: Optional[int] = Field(
+        default=None,
+        exclude_if=_is_none,
+        description="Where the body starts inside textual_representation.",
+    )
+    page_from: Optional[int] = Field(
+        default=None, exclude_if=_is_none, description="First page or slide."
+    )
+    page_to: Optional[int] = Field(
+        default=None, exclude_if=_is_none, description="Last page or slide."
+    )
+    topic_ids: Optional[dict[str, int]] = Field(
+        default=None,
+        exclude_if=_is_none,
+        description="Registry category id -> number of classifier pieces carrying it.",
+    )
+    broad_family_ids: Optional[list[str]] = Field(
+        default=None, exclude_if=_is_none, description="Registry family ids."
+    )
+    taxonomy_spans: Optional[str] = Field(
+        default=None, exclude_if=_is_none, description="JSON array of labelled spans."
+    )
+    taxonomy_status: Optional[str] = Field(
+        default=None, exclude_if=_is_none, description="Labelling status of the chunk."
+    )
+    taxonomy_version: Optional[str] = Field(
+        default=None, exclude_if=_is_none, description="Taxonomy version of the labels."
     )
 
     def to_summary_md(self) -> str:

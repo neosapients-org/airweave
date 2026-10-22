@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from airweave.domains.search.protocols import SearchPlanExecutorProtocol
-from airweave.domains.search.types import FilterGroup, SearchPlan, SearchResults
+from airweave.domains.search.types import FilterGroup, SearchPlan, SearchResults, TopicBoost
 
 
 class FakeSearchPlanExecutor(SearchPlanExecutorProtocol):
@@ -19,6 +19,7 @@ class FakeSearchPlanExecutor(SearchPlanExecutorProtocol):
         self._sequence: list[SearchResults | Exception] = []
         self._calls: list[tuple] = []
         self._error: Exception | None = None
+        self.boosts: list[TopicBoost | None] = []  # boost of each execute call
 
     def seed_result(self, result: SearchResults) -> None:
         """Seed the result to return on next execute call."""
@@ -41,9 +42,11 @@ class FakeSearchPlanExecutor(SearchPlanExecutorProtocol):
         ctx: Any = None,
         collection_readable_id: str = "",
         user_principal: str | None = None,
+        boost: TopicBoost | None = None,
     ) -> SearchResults:
         """Record the call and return seeded result, or raise seeded error."""
         self._calls.append(("execute", plan, user_filter, collection_id))
+        self.boosts.append(boost)
         if self._error:
             err = self._error
             self._error = None

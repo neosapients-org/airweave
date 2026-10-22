@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 import aiofiles.os
 
 from airweave.core.logging import logger
+from airweave.domains.converters.page_markers import escape_page_text, page_marker
 from airweave.domains.converters.text_extractors.pptx import extract_pptx_text
 from airweave.domains.ocr.mistral.compressor import compress_image
 from airweave.domains.ocr.mistral.models import (
@@ -301,9 +302,41 @@ class MistralOCR:
 
         if any(p is None for p in parts):
             return None
-        if len(parts) == 1:
-            return parts[0]
-        return "\n\n---\n\n".join(parts)  # type: ignore[arg-type]
+        resolved = [p for p in parts if p is not None]  # all set here; keeps empty parts
+        marked = MistralOCR._with_page_markers(group, ocr_by_key, resolved)
+        if len(marked) == 1:
+            return marked[0]
+        return "\n\n---\n\n".join(marked)
+
+    @staticmethod
+    def _with_page_markers(
+        group: BatchFileGroup,
+        ocr_by_key: dict[tuple[int, int], OcrResult],
+        parts: list[str],
+    ) -> list[str]:
+        """Put a page marker before each PDF page, numbering pages across split chunks.
+
+        Each part is joined exactly as ``MistralOcrClient._extract_markdown`` joins it, so
+        removing the markers gives ``parts`` back. Chunks without per-page results (not a
+        PDF) are returned unchanged.
+        """
+        pages_per_part: list[list[str]] = []
+        for chunk in group.chunks:
+            result = ocr_by_key.get((chunk.batch_index, chunk.chunk_index))
+            if result is None or result.pages is None:
+                return parts
+            pages_per_part.append(result.pages)
+        marked, first_page = [], 1
+        for pages in pages_per_part:
+            marked.append(
+                "\n\n".join(
+                    page_marker(first_page + i) + escape_page_text(md)
+                    for i, md in enumerate(pages)
+                    if md
+                )
+            )
+            first_page += len(pages)
+        return marked
 
     @staticmethod
     def _build_final_results(

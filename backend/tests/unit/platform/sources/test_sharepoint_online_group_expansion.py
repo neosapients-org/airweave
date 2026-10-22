@@ -1,12 +1,26 @@
 """Unit tests for SharePoint Online SP site group expansion helpers.
 
-Covers _parse_sp_group_member, _email_from_membership_login, and the cursor
-migration path for tracked_sp_groups.
+Covers _parse_sp_group_member, _email_from_membership_login, the cursor
+migration path for tracked_sp_groups, site-scoped SP group keys, group tracking
+on the incremental path, and the tenant-user enumeration's failure handling.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
 
-from airweave.platform.sources.sharepoint_online.source import SharePointOnlineBase
+import httpx
+import pytest
+
+from airweave.domains.syncs.cursors.cursor import SyncCursor
+from airweave.platform.cursors.sharepoint_online import SharePointOnlineCursor
+from airweave.platform.sources.sharepoint_online.acl import (
+    extract_access_control,
+    format_sp_group_id,
+)
+from airweave.platform.sources.sharepoint_online.source import (
+    EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL,
+    SharePointOnlineBase,
+)
 
 # ---------------------------------------------------------------------------
 # _email_from_membership_login
@@ -181,6 +195,65 @@ def test_parse_security_group_non_federated_returns_none():
     assert SharePointOnlineBase._parse_sp_group_member(user) is None
 
 
+def test_parse_everyone_except_external_claim_returns_synthetic_sentinel():
+    """The rolemanager/spo-grid-all-users claim → synthetic group sentinel."""
+    user = {
+        "PrincipalType": 4,
+        "LoginName": ("c:0-.f|rolemanager|spo-grid-all-users/26adf163-2699-4d04-a0ad-3d935411bf45"),
+        "Title": "Everyone except external users",
+    }
+    assert SharePointOnlineBase._parse_sp_group_member(user) == (
+        EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL,
+        "group",
+    )
+
+
+def test_parse_everyone_except_external_uppercase_tenant_id():
+    """Tenant ID GUIDs may be upper- or lowercase; both should match."""
+    user = {
+        "PrincipalType": 4,
+        "LoginName": ("c:0-.f|rolemanager|spo-grid-all-users/26ADF163-2699-4D04-A0AD-3D935411BF45"),
+        "Title": "Everyone except external users",
+    }
+    assert SharePointOnlineBase._parse_sp_group_member(user) == (
+        EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL,
+        "group",
+    )
+
+
+def test_parse_other_rolemanager_claim_skipped_and_flagged_as_unrecognized():
+    """A different rolemanager claim shouldn't match; should be flagged for logging."""
+    user = {
+        "PrincipalType": 4,
+        "LoginName": "c:0-.f|rolemanager|some-future-claim",
+        "Title": "Custom Role",
+    }
+    assert SharePointOnlineBase._parse_sp_group_member(user) is None
+    assert SharePointOnlineBase._is_unrecognized_pt4_login(user) is True
+
+
+def test_is_unrecognized_pt4_login_false_for_known_shapes():
+    """Known PT=4 shapes (Entra group, claim) must NOT be flagged as unrecognized."""
+    entra = {
+        "PrincipalType": 4,
+        "LoginName": (
+            "c:0o.c|federateddirectoryclaimprovider|7d344400-39bc-4ee7-aa6e-437bd8de85c0"
+        ),
+    }
+    claim = {
+        "PrincipalType": 4,
+        "LoginName": "c:0-.f|rolemanager|spo-grid-all-users/26adf163-2699-4d04-a0ad-3d935411bf45",
+    }
+    assert SharePointOnlineBase._is_unrecognized_pt4_login(entra) is False
+    assert SharePointOnlineBase._is_unrecognized_pt4_login(claim) is False
+
+
+def test_is_unrecognized_pt4_login_false_for_non_pt4():
+    """The flag is scoped to PT=4 only; other PrincipalTypes are skipped silently."""
+    user = {"PrincipalType": 1, "LoginName": "i:0#.f|membership|alice@example.com"}
+    assert SharePointOnlineBase._is_unrecognized_pt4_login(user) is False
+
+
 def test_parse_distlist_skipped():
     user = {"PrincipalType": 2, "LoginName": "some-dl", "Title": "DL"}
     assert SharePointOnlineBase._parse_sp_group_member(user) is None
@@ -246,6 +319,9 @@ def _bare_base() -> SharePointOnlineBase:
     instance._include_pages = False
     instance._item_level_entra_groups = set()
     instance._item_level_sp_groups = {}
+    instance._needs_internal_user_enum = False
+    instance._drive_site_urls = {}
+    instance._logger = MagicMock()
     return instance
 
 
@@ -329,12 +405,216 @@ def test_track_entity_groups_no_access_noop():
     assert base._item_level_sp_groups == {}
 
 
-def test_track_entity_groups_empty_site_url_still_stores_under_empty_key():
-    """Groups are still stored under the empty-string key when no site_url.
+def test_track_entity_groups_without_a_site_does_not_track_sp_groups():
+    """An SP group without its site cannot be expanded, so it is not tracked or persisted."""
+    base = _bare_base()
+    base._track_entity_groups(_StubEntity(["group:sp:orphan", "group:entra:g1"]), "")
+    assert base._item_level_sp_groups == {}
+    assert base._item_level_entra_groups == {"entra:g1"}
 
-    Expansion skips empty-key buckets, so this is effectively a no-op for
-    broker purposes but keeps the data structure consistent.
+
+# ---------------------------------------------------------------------------
+# Site-scoped SP group keys end to end (review 4301738218)
+# ---------------------------------------------------------------------------
+
+SITE_A = "https://t.sharepoint.com/sites/A"
+SITE_B = "https://t.sharepoint.com/sites/B"
+
+
+def _members_perm() -> dict:
+    return {
+        "id": "sg-3",
+        "roles": ["read"],
+        "grantedToV2": {"siteGroup": {"displayName": "Members", "id": "3"}},
+    }
+
+
+def _sp_user(email: str) -> dict:
+    return {"PrincipalType": 1, "LoginName": f"i:0#.f|membership|{email}", "Email": email}
+
+
+@pytest.mark.asyncio
+async def test_same_named_groups_on_two_sites_keep_their_own_members():
+    """Viewer and membership use one site-scoped key; two "Members" groups never merge.
+
+    Regression: both sides were ``sp:members``, so one site's members could read the
+    other site's files.
     """
     base = _bare_base()
-    base._track_entity_groups(_StubEntity(["group:sp:orphan"]), "")
-    assert base._item_level_sp_groups == {"": {"sp:orphan"}}
+    graph = MagicMock()
+    graph.get_site_groups = AsyncMock(return_value=[{"Title": "Members", "Id": 3}])
+    users = {SITE_A: [_sp_user("alice@t.com")], SITE_B: [_sp_user("bob@t.com")]}
+    graph.get_site_group_users = AsyncMock(side_effect=lambda url, _id, **_kw: users[url])
+    base._create_graph_client = MagicMock(return_value=graph)
+    base._make_sp_token_provider_for_site = MagicMock(return_value=AsyncMock())
+
+    viewers = {}
+    for site in (SITE_A, SITE_B):
+        access = await extract_access_control([_members_perm()], site_url=site)
+        viewers[site] = access.viewers[0]
+        entity = _StubEntity(access.viewers)
+        base._track_entity_groups(entity, site)
+
+    memberships = {(m.member_id, m.group_id) async for m in base._expand_sp_site_groups()}
+
+    assert viewers[SITE_A] != viewers[SITE_B]
+    assert memberships == {
+        ("alice@t.com", viewers[SITE_A][len("group:") :]),
+        ("bob@t.com", viewers[SITE_B][len("group:") :]),
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tracked",
+    [
+        {SITE_A: ["sp:members"]},  # pre-scoping key
+        {"": ["sp:members"]},  # tracked without a site
+        ["sp:members"],  # oldest list format
+    ],
+)
+async def test_a_cursor_with_unscoped_sp_group_keys_forces_a_full_sync(tracked):
+    """Entities indexed under unscoped viewers are re-indexed before memberships switch."""
+    base = _bare_base()
+    ran = []
+
+    async def full(_cursor, _files):
+        ran.append("full")
+        return
+        yield  # pragma: no cover
+
+    async def incremental(_cursor, _files):
+        ran.append("incremental")
+        return
+        yield  # pragma: no cover
+
+    base._full_sync = full
+    base._incremental_sync = incremental
+    base._should_do_full_sync = MagicMock(return_value=(False, "incremental"))
+    cursor = MagicMock()
+    cursor.data = {"tracked_sp_groups": tracked}
+
+    async for _ in base.generate_entities(cursor=cursor):
+        pass
+
+    assert ran == ["full"]
+    assert base._item_level_sp_groups == {}
+
+
+@pytest.mark.asyncio
+async def test_a_cursor_with_scoped_sp_group_keys_stays_incremental():
+    base = _bare_base()
+    ran = []
+
+    async def incremental(_cursor, _files):
+        ran.append("incremental")
+        return
+        yield  # pragma: no cover
+
+    base._incremental_sync = incremental
+    base._should_do_full_sync = MagicMock(return_value=(False, "incremental"))
+    cursor = MagicMock()
+    cursor.data = {"tracked_sp_groups": {SITE_A: [format_sp_group_id(SITE_A, "Members")]}}
+
+    async for _ in base.generate_entities(cursor=cursor):
+        pass
+
+    assert ran == ["incremental"]
+
+
+# ---------------------------------------------------------------------------
+# Incremental path tracks SP groups under the drive's site (review 4301738222)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_incremental_sync_tracks_sp_groups_under_the_drive_site_and_persists_them():
+    """A group first seen on a delta run is expandable now and on the next run.
+
+    Regression: the delta path tracked SP groups under the empty site key, which
+    expansion skips, and never wrote them to the cursor.
+    """
+    base = _bare_base()
+    graph = MagicMock()
+    item = {"id": "item-1", "name": "a.docx", "file": {"mimeType": "x"}, "size": 1}
+    graph.get_drive_delta = AsyncMock(return_value=([item], "https://delta/next"))
+    graph.get_item_permissions = AsyncMock(return_value=[_members_perm()])
+    graph.get_drive_site_url = AsyncMock(return_value="https://t.sharepoint.com/sites/HR/")
+    base._create_graph_client = MagicMock(return_value=graph)
+    base._label_filter = MagicMock()
+    base._label_filter.should_skip_item = AsyncMock(return_value=False)
+    cursor = SyncCursor(
+        sync_id=uuid4(),
+        cursor_schema=SharePointOnlineCursor,
+        cursor_data={"drive_delta_tokens": {"drive-1": "https://delta/prev"}},
+    )
+
+    entities = [e async for e in base._incremental_sync(cursor, None)]
+
+    site = "https://t.sharepoint.com/sites/HR"
+    group_id = format_sp_group_id(site, "Members")
+    assert entities[0].access.viewers == [f"group:{group_id}"]
+    assert base._item_level_sp_groups == {site: {group_id}}
+    assert cursor.data["tracked_sp_groups"] == {site: [group_id]}
+
+
+# ---------------------------------------------------------------------------
+# Tenant-user enumeration must not complete truncated (review 4301738224)
+# ---------------------------------------------------------------------------
+
+
+def _failing_user_pages(graph: MagicMock) -> None:
+    async def users():
+        yield {"email": "a@t.com", "display_name": "A"}
+        yield {"email": "b@t.com", "display_name": "B"}
+        request = httpx.Request("GET", "https://graph.microsoft.com/v1.0/users")
+        raise httpx.HTTPStatusError(
+            "boom", request=request, response=httpx.Response(503, request=request)
+        )
+
+    graph.list_internal_tenant_users = users
+
+
+@pytest.mark.asyncio
+async def test_tenant_user_enumeration_reraises_after_a_partial_page():
+    """A later-page failure re-raises after the users already yielded.
+
+    Regression: the error was logged and the stream completed, so the membership sync
+    saw a complete-looking, truncated set and deleted the rest as orphans.
+    """
+    base = _bare_base()
+    graph = MagicMock()
+    _failing_user_pages(graph)
+    base._create_graph_client = MagicMock(return_value=graph)
+
+    seen = []
+    with pytest.raises(httpx.HTTPStatusError):
+        async for m in base._expand_everyone_except_external():
+            seen.append(m.member_id)
+    assert seen == ["a@t.com", "b@t.com"]
+
+
+@pytest.mark.asyncio
+async def test_membership_stream_fails_when_tenant_user_enumeration_fails():
+    """The failure reaches the ACL pipeline, which then skips orphan cleanup."""
+    base = _bare_base()
+    graph = MagicMock()
+    _failing_user_pages(graph)
+    base._create_graph_client = MagicMock(return_value=graph)
+    base._create_group_expander = MagicMock(return_value=MagicMock())
+
+    async def no_entra(_expander):
+        return
+        yield  # pragma: no cover
+
+    async def sp_groups_using_the_claim():
+        base._needs_internal_user_enum = True
+        return
+        yield  # pragma: no cover
+
+    base._expand_entra_groups = no_entra
+    base._expand_sp_site_groups = sp_groups_using_the_claim
+
+    with pytest.raises(httpx.HTTPStatusError):
+        async for _ in base.generate_access_control_memberships():
+            pass

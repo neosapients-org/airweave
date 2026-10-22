@@ -4,6 +4,7 @@ Usage:
     from airweave.domains.search.types import SearchResult, FilterGroup, SearchPlan
 """
 
+from airweave.domains.search.types.boost import TopicBoost
 from airweave.domains.search.types.embeddings import QueryEmbeddings
 from airweave.domains.search.types.filters import (
     FilterableField,
@@ -49,6 +50,8 @@ __all__ = [
     "RetrievalStrategy",
     "SearchQuery",
     "SearchPlan",
+    # boost
+    "TopicBoost",
     # embeddings
     "QueryEmbeddings",
     # metadata

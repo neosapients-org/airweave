@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -23,9 +24,11 @@ from airweave.domains.search.adapters.vector_db.vespa_config import (
     HNSW_EXPLORE_ADDITIONAL,
     TARGET_HITS,
 )
+from airweave.domains.search.types.boost import TopicBoost
 from airweave.domains.search.types.embeddings import QueryEmbeddings
 from airweave.domains.search.types.plan import RetrievalStrategy, SearchPlan
 from airweave.domains.search.types.results import (
+    CHUNK_RESULT_FIELDS,
     CompiledQuery,
     SearchAccessControl,
     SearchBreadcrumb,
@@ -36,6 +39,18 @@ from airweave.domains.search.types.results import (
 
 if TYPE_CHECKING:
     from vespa.application import Vespa
+
+# Rank profile for a topic boost (vespa/app/schemas/base_entity.sd)
+TOPIC_BOOST_PROFILE = "hybrid_topic"
+
+
+# Sort keys of `filter_search` (see there).
+_FILTER_SEARCH_ORDER = (
+    "airweave_system_metadata_sync_id",
+    "airweave_system_metadata_original_entity_id",
+    "airweave_system_metadata_chunk_index",
+    "entity_id",
+)
 
 
 class VespaVectorDB:
@@ -88,10 +103,13 @@ class VespaVectorDB:
         embeddings: QueryEmbeddings,
         collection_id: str,
         acl_principals: Optional[list[str]] = None,
+        boost: Optional[TopicBoost] = None,
     ) -> CompiledQuery:
         """Compile plan and embeddings into Vespa query."""
         yql = self._build_yql(plan, collection_id, acl_principals=acl_principals)
         params = self._build_params(plan, embeddings)
+        if boost is not None:
+            self._add_topic_boost(params, boost)
 
         raw_query = {"yql": yql, "params": params}
 
@@ -160,8 +178,16 @@ class VespaVectorDB:
         self,
         filter_groups: list,
         collection_id: str,
+        name_substring: str | None = None,
+        acl_principals: Optional[list[str]] = None,
     ) -> int:
-        """Count entities matching filters without retrieving content."""
+        """Count entities matching filters without retrieving content.
+
+        If `name_substring` is provided, an additional case-insensitive substring
+        match against the `name` attribute is AND-ed in. This uses Vespa's
+        regex `matches` operator, since `contains` on an attribute is a token
+        (whole-word) match, not a substring match.
+        """
         where_parts = [
             f"airweave_system_metadata_collection_id contains '{collection_id}'",
         ]
@@ -169,6 +195,14 @@ class VespaVectorDB:
         filter_yql = self._filter_translator.translate(filter_groups)
         if filter_yql:
             where_parts.append(f"({filter_yql})")
+
+        if name_substring:
+            where_parts.append(self._build_name_substring_clause(name_substring))
+
+        # The same access clause as search: a count must not reveal rows the viewer cannot see.
+        acl_yql = self._build_acl_clause(acl_principals)
+        if acl_yql:
+            where_parts.append(f"({acl_yql})")
 
         all_schemas = ", ".join(ALL_VESPA_SCHEMAS)
         yql = f"select * from sources {all_schemas} where {' AND '.join(where_parts)}"
@@ -197,8 +231,15 @@ class VespaVectorDB:
         collection_id: str,
         limit: int = 50,
         offset: int = 0,
+        name_substring: str | None = None,
+        acl_principals: Optional[list[str]] = None,
     ) -> list:
-        """Retrieve entities matching filters without embeddings or ranking."""
+        """Retrieve entities matching filters without embeddings or ranking.
+
+        If `name_substring` is provided, an additional case-insensitive substring
+        match against the `name` attribute is AND-ed in. See `count` for the
+        rationale (Vespa `contains` on an attribute is token-match, not substring).
+        """
         where_parts = [
             f"airweave_system_metadata_collection_id contains '{collection_id}'",
         ]
@@ -207,8 +248,20 @@ class VespaVectorDB:
         if filter_yql:
             where_parts.append(f"({filter_yql})")
 
+        if name_substring:
+            where_parts.append(self._build_name_substring_clause(name_substring))
+
+        acl_yql = self._build_acl_clause(acl_principals)
+        if acl_yql:
+            where_parts.append(f"({acl_yql})")
+
         all_schemas = ", ".join(ALL_VESPA_SCHEMAS)
-        yql = f"select * from sources {all_schemas} where {' AND '.join(where_parts)}"
+        # A total order, so adjacent pages of an offset walk neither repeat nor skip a row: the
+        # sync, the source's entity id and the chunk index name one chunk, and the Vespa
+        # `entity_id` breaks any tie between schemas. All four are attributes.
+        order = ", ".join(_FILTER_SEARCH_ORDER)
+        where = " AND ".join(where_parts)
+        yql = f"select * from sources {all_schemas} where {where} order by {order}"
 
         try:
             response = await asyncio.to_thread(
@@ -280,6 +333,24 @@ class VespaVectorDB:
             clauses.append(f"access_viewers contains '{escaped}'")
 
         return " OR ".join(clauses)
+
+    def _build_name_substring_clause(self, substring: str) -> str:
+        """Build a case-insensitive substring match against the `name` attribute.
+
+        Vespa's `contains` on an attribute field is a token (whole-word) match,
+        not a substring match — so a query like "Qui" misses "Quick…". We use
+        the `matches` regex operator instead, which scans the full string.
+
+        Special regex characters in the user input are escaped so a query like
+        "1.5+ release" can't blow up the regex engine.
+        """
+        escaped_for_regex = re.escape(substring)
+        # YQL double-quoted string literal: escape backslashes first, then
+        # double quotes (the literal delimiter). `re.escape` does not escape
+        # `"` because it is not a regex metacharacter, so without this an
+        # input like `Quick "test"` would break the YQL parse.
+        escaped_for_yql = escaped_for_regex.replace("\\", "\\\\").replace('"', '\\"')
+        return f'name matches "(?i).*{escaped_for_yql}.*"'
 
     def _build_retrieval_clause(
         self,
@@ -373,6 +444,19 @@ class VespaVectorDB:
 
         return params
 
+    def _add_topic_boost(self, params: Dict[str, Any], boost: TopicBoost) -> None:
+        """Rank with hybrid_topic: the hybrid score plus weight x topic match (contract 5.1).
+
+        Each boosted topic gets weight 1 in the query tensor, so a chunk's topic match is the
+        number of its classifier pieces carrying a boosted topic. A boost, not a filter.
+        """
+        params["ranking.profile"] = TOPIC_BOOST_PROFILE
+        params["input.query(topics)"] = {"cells": {tid: 1.0 for tid in boost.topic_ids}}
+        params["input.query(topic_weight)"] = boost.weight
+        self._logger.debug(
+            f"[VespaVectorDB] Topic boost: {len(boost.topic_ids)} topics, weight={boost.weight}"
+        )
+
     def _convert_sparse_to_tensor(
         self, sparse_emb: SparseEmbedding
     ) -> Optional[Dict[str, Dict[str, float]]]:
@@ -420,10 +504,25 @@ class VespaVectorDB:
                 url=fields.get("url"),
                 doc_categories=fields.get("doc_categories") or None,
                 raw_source_fields=raw_source_fields,
+                **self._extract_chunk_fields(fields),
             )
             results.append(result)
 
         return SearchResults(results=results)
+
+    def _extract_chunk_fields(self, fields: Dict[str, Any]) -> Dict[str, Any]:
+        """Read the chunk position, page and label fields (contract 5.2); absent stays absent."""
+        chunk_fields = {name: fields[name] for name in CHUNK_RESULT_FIELDS if name in fields}
+        if "topic_ids" in chunk_fields:
+            chunk_fields["topic_ids"] = self._parse_weighted_set(chunk_fields["topic_ids"])
+        return chunk_fields
+
+    @staticmethod
+    def _parse_weighted_set(raw: Any) -> Dict[str, int]:
+        """Accept both renderings of a Vespa weightedset: an object, or [{item, weight}]."""
+        if isinstance(raw, dict):
+            return {str(k): int(v) for k, v in raw.items()}
+        return {str(e["item"]): int(e["weight"]) for e in raw or [] if isinstance(e, dict)}
 
     def _get_required_field(self, fields: Dict[str, Any], field_name: str, entity_id: str) -> str:
         """Get a required field, logging warning if missing."""

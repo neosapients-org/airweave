@@ -5,6 +5,8 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple
 
+from airweave.core.config import settings
+from airweave.core.config.chunking import ChunkPlan
 from airweave.core.shared_models import AirweaveFieldFlag
 from airweave.domains.sync_pipeline.async_helpers import run_in_thread_pool
 from airweave.domains.sync_pipeline.exceptions import EntityProcessingError, SyncFailureError
@@ -13,6 +15,38 @@ from airweave.platform.entities._base import BaseEntity, CodeFileEntity, FileEnt
 if TYPE_CHECKING:
     from airweave.domains.sync_pipeline.contexts import SyncContext
     from airweave.domains.sync_pipeline.contexts.runtime import SyncRuntime
+
+
+def chunk_fingerprint(entity: BaseEntity) -> Optional[str]:
+    """Return the chunk fingerprint that goes into the entity's hash, or None.
+
+    An unchanged entity hashes to "keep", so without this it would keep chunks made under
+    other settings forever. With upstream's chunker (``semantic``, the default target) the
+    fingerprint is None and the hash stays exactly as upstream computes it; any other plan (for
+    example ``sentence_pack`` at a target of 300) changes every text entity's hash once, so each is
+    re-chunked on its next sync. Code files are chunked by the code chunker whatever the settings:
+    no fingerprint.
+    """
+    if isinstance(entity, CodeFileEntity):
+        return None
+    plan = ChunkPlan.from_settings(settings)
+    if plan.is_upstream:
+        return None
+    values = {
+        "CHUNKER_VERSION": plan.version,
+        "CHUNKER_MODE": plan.mode,
+        "CHUNK_TARGET_TOKENS": plan.target_tokens,
+        "CHUNK_OVERLAP_TOKENS": plan.overlap_tokens,
+        "CHUNK_HEADER_ENABLED": plan.header,
+    }
+    if plan.header:
+        # What the header line is made of but the entity's hash leaves out: its token budget,
+        # and the path (breadcrumbs are excluded as volatile). A moved document, or another
+        # budget, gets its header and embedding again. The source name in the header is the
+        # connector's short name, the same for every sync of the entity.
+        values["CHUNK_HEADER_MAX_TOKENS"] = plan.header_max_tokens
+        values["HEADER_PATH"] = [bc.name for bc in entity.breadcrumbs or []]
+    return json.dumps(values, sort_keys=True, separators=(",", ":"))
 
 
 class HashComputer:
@@ -80,6 +114,11 @@ class HashComputer:
             if isinstance(entity, (FileEntity, CodeFileEntity)):
                 content_hash = await self._compute_file_content_hash(entity)
                 entity_dict["_content_hash"] = content_hash
+
+            # Step 2b: How the entity is chunked, so a chunk-settings change re-chunks it once
+            fingerprint = chunk_fingerprint(entity)
+            if fingerprint is not None:
+                entity_dict["_chunk_fingerprint"] = fingerprint
 
             # Step 3: Exclude volatile fields
             content_dict = self._exclude_volatile_fields(entity, entity_dict)

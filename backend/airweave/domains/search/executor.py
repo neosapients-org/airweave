@@ -27,6 +27,7 @@ from airweave.domains.search.types import (
     RetrievalStrategy,
     SearchPlan,
     SearchResults,
+    TopicBoost,
 )
 from airweave.domains.search.types.filters import FilterableField, FilterCondition, FilterOperator
 from airweave.domains.search.types.results import (
@@ -45,6 +46,36 @@ from airweave.platform.sources._base import BaseSource
 
 # RRF constant (standard value used in hybrid search systems)
 RRF_K = 60
+
+
+async def resolve_acl_principals(
+    access_broker: AccessBrokerProtocol,
+    db: AsyncSession,
+    ctx: ApiContext,
+    user_principal: Optional[str],
+    collection_readable_id: str,
+) -> Optional[list[str]]:
+    """Resolve a user's ACL principals for a collection (search and browse share this).
+
+    Returns None if user_principal is not set or the collection has no AC sources (no filter);
+    a list of principals (possibly empty) otherwise.
+    """
+    if not user_principal:
+        return None
+
+    access_context = await access_broker.resolve_access_context_for_collection(
+        db=db,
+        user_principal=user_principal,
+        readable_collection_id=collection_readable_id,
+        organization_id=ctx.organization.id,
+    )
+
+    if access_context is None:
+        return None
+
+    principals = list(access_context.all_principals)
+    ctx.logger.info(f"[ACL] Resolved {len(principals)} principals for user '{user_principal}'")
+    return principals
 
 
 class SearchPlanExecutor(SearchPlanExecutorProtocol):
@@ -88,6 +119,7 @@ class SearchPlanExecutor(SearchPlanExecutorProtocol):
         ctx: ApiContext,
         collection_readable_id: str,
         user_principal: Optional[str] = None,
+        boost: Optional[TopicBoost] = None,
     ) -> SearchResults:
         """Execute the full search pipeline including federated sources."""
         # 0. Resolve access control principals
@@ -116,7 +148,7 @@ class SearchPlanExecutor(SearchPlanExecutorProtocol):
         fetch_limit = original_offset + original_limit
 
         vector_task = asyncio.create_task(
-            self._execute_vector_search(complete_plan, collection_id, acl_principals)
+            self._execute_vector_search(complete_plan, collection_id, acl_principals, boost)
         )
 
         fed_task = None
@@ -159,6 +191,7 @@ class SearchPlanExecutor(SearchPlanExecutorProtocol):
         plan: SearchPlan,
         collection_id: str,
         acl_principals: Optional[list[str]] = None,
+        boost: Optional[TopicBoost] = None,
     ) -> list[SearchResult]:
         """Embed, compile, and execute vector DB search.
 
@@ -191,6 +224,7 @@ class SearchPlanExecutor(SearchPlanExecutorProtocol):
             embeddings=embeddings,
             collection_id=collection_id,
             acl_principals=acl_principals,
+            boost=boost,
         )
         return (await self._vector_db.execute_query(compiled_query)).results
 
@@ -210,22 +244,9 @@ class SearchPlanExecutor(SearchPlanExecutorProtocol):
         Returns None if user_principal is not set or collection has no AC sources.
         Returns a list of principals (possibly empty) otherwise.
         """
-        if not user_principal:
-            return None
-
-        access_context = await self._access_broker.resolve_access_context_for_collection(
-            db=db,
-            user_principal=user_principal,
-            readable_collection_id=collection_readable_id,
-            organization_id=ctx.organization.id,
+        return await resolve_acl_principals(
+            self._access_broker, db, ctx, user_principal, collection_readable_id
         )
-
-        if access_context is None:
-            return None
-
-        principals = list(access_context.all_principals)
-        ctx.logger.info(f"[ACL] Resolved {len(principals)} principals for user '{user_principal}'")
-        return principals
 
     @staticmethod
     def _apply_acl_in_memory(

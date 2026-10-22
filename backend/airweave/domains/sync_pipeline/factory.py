@@ -52,6 +52,7 @@ from airweave.domains.sync_pipeline.pipeline.entity_tracker import EntityTracker
 from airweave.domains.sync_pipeline.protocols import (
     ChunkEmbedProcessorProtocol,
     SyncFactoryProtocol,
+    TaxonomyProcessorProtocol,
 )
 from airweave.domains.sync_pipeline.stream import AsyncSourceStream
 from airweave.domains.sync_pipeline.worker_pool import AsyncWorkerPool
@@ -107,8 +108,13 @@ class SyncFactory(SyncFactoryProtocol):
         usage_ledger: UsageLedgerProtocol,
         storage_backend: StorageBackend,
         state_machine: SyncJobStateMachineProtocol,
+        taxonomy_processor: Optional[TaxonomyProcessorProtocol] = None,
     ) -> None:
-        """Initialize with all required service and repository dependencies."""
+        """Initialize with all required service and repository dependencies.
+
+        ``taxonomy_processor`` labels chunks before the write; None (the default, and whenever
+        ``TAXONOMY_ENABLED`` is off) writes them as upstream.
+        """
         # Repositories
         self._sc_repo = sc_repo
         self._entity_repo = entity_repo
@@ -125,6 +131,7 @@ class SyncFactory(SyncFactoryProtocol):
         self._sync_state_machine = sync_state_machine
         self._sync_cursor_service = sync_cursor_service
         self._processor = processor
+        self._taxonomy_processor = taxonomy_processor
         self._arf_service = arf_service
 
         # Infrastructure
@@ -279,6 +286,7 @@ class SyncFactory(SyncFactoryProtocol):
             processor=self._processor,
             entity_repo=self._entity_repo,
             arf_service=self._arf_service,
+            taxonomy=self._taxonomy_processor,
         )
         dispatcher = dispatcher_builder.build(
             destinations=destinations,

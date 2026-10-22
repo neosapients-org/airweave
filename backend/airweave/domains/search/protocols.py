@@ -12,11 +12,14 @@ from airweave.domains.search.types import (
     FilterGroup,
     SearchPlan,
     SearchResults,
+    TopicBoost,
 )
 
 if TYPE_CHECKING:
     from airweave.schemas.search_v2 import (
         AgenticSearchRequest,
+        BrowseRequest,
+        BrowseResponse,
         ClassicSearchRequest,
         InstantSearchRequest,
     )
@@ -40,8 +43,9 @@ class SearchPlanExecutorProtocol(Protocol):
         ctx: ApiContext,
         collection_readable_id: str,
         user_principal: Optional[str] = None,
+        boost: Optional[TopicBoost] = None,
     ) -> SearchResults:
-        """Execute a search plan and return results."""
+        """Execute a search plan and return results (boost: topic boost, instant search)."""
         ...
 
 
@@ -88,6 +92,22 @@ class ClassicSearchServiceProtocol(Protocol):
         user_principal_override: Optional[str] = None,
     ) -> SearchResults:
         """Execute classic search and return results."""
+        ...
+
+
+@runtime_checkable
+class BrowseServiceProtocol(Protocol):
+    """Browse — paginated tabular listing of a collection (no query, no ranking)."""
+
+    async def browse(
+        self,
+        db: AsyncSession,
+        ctx: ApiContext,
+        readable_id: str,
+        request: BrowseRequest,
+        user_principal_override: Optional[str] = None,
+    ) -> BrowseResponse:
+        """Return a page of entities + total count; with a principal, only what that user sees."""
         ...
 
 

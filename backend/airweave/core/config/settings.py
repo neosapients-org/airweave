@@ -3,11 +3,13 @@
 Wraps environment variables and provides defaults.
 """
 
-from typing import Optional
+import math
+from typing import Dict, Literal, Optional
 
 from pydantic import PostgresDsn, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings
 
+from airweave.core.config.chunking import HEADER_MAX_TOKENS
 from airweave.core.config.enums import Environment, StorageBackendType
 
 _BANNED_PASSWORDS: frozenset[str] = frozenset(
@@ -36,6 +38,9 @@ _BANNED_SUPERUSER_EMAILS: frozenset[str] = frozenset(
     }
 )
 
+# Fallback base URL used by every Mistral SDK client when MISTRAL_BASE_URL is unset.
+MISTRAL_DEFAULT_BASE_URL: str = "https://api.mistral.ai"
+
 
 class Settings(BaseSettings):
     """Pydantic settings class.
@@ -63,13 +68,19 @@ class Settings(BaseSettings):
         RUN_ALEMBIC_MIGRATIONS (bool): Whether to run the alembic migrations.
         RUN_DB_SYNC (bool): Whether to run the system sync to process sources,
             destinations, and entity types.
-        REDIS_HOST (str): The Redis server hostname.
-        REDIS_PORT (int): The Redis server port.
+        REDIS_HOST (str): The Redis server hostname (single-host mode).
+        REDIS_PORT (int): The Redis server port (single-host mode).
         REDIS_PASSWORD (Optional[str]): The Redis password (if authentication is enabled).
         REDIS_DB (int): The Redis database number.
+        REDIS_NODES (Optional[str]): JSON list of Sentinel nodes ``[[host, port], ...]``.
+            When set together with ``REDIS_SERVICE_NAME``, enables Sentinel mode and
+            ``REDIS_HOST``/``REDIS_PORT`` are ignored.
+        REDIS_SERVICE_NAME (Optional[str]): The Sentinel master name to discover.
         TEXT2VEC_INFERENCE_URL (str): The URL for text2vec-transformers inference service.
         OPENAI_API_KEY (Optional[str]): The OpenAI API key.
         MISTRAL_API_KEY (Optional[str]): The Mistral AI API key.
+        MISTRAL_BASE_URL (Optional[str]): Override base URL for all Mistral SDK
+            clients (embedder, OCR, LLM). Unset → ``MISTRAL_DEFAULT_BASE_URL``.
         EMBEDDING_DIMENSIONS (int): Embedding dimensions for the stack (provider, Vespa).
         FIRECRAWL_API_KEY (Optional[str]): The FireCrawl API key.
         TEMPORAL_HOST (str): The host of the Temporal server.
@@ -126,6 +137,49 @@ class Settings(BaseSettings):
     CLASSIFICATION_BATCH_SIZE: int = 25
     CLASSIFICATION_RATE_LIMIT_PER_HOUR: int = 1000  # Max documents classified per org per hour
 
+    # Chunking (contract airweave-neo/1, section 3). Every default keeps upstream behaviour.
+    # The target counts the chunk body including its overlap; the header line is not counted.
+    # Only the mode and the target are settings; the overlap, the header and the version follow
+    # from the mode (see ``chunking.py``).
+    CHUNK_TARGET_TOKENS: int = 4096
+    CHUNKER_MODE: Literal["semantic", "sentence_pack"] = "semantic"
+
+    # Topic labels from the taxonomy classifier (contract section 8). There is deliberately
+    # no taxonomy version setting: the version is resolved per sync from the collection. The
+    # fixed numbers (cache lifetimes, size limits, batch sizes, timings) are constants in
+    # ``airweave.domains.taxonomy.limits``; only what a deployment decides is here.
+    TAXONOMY_ENABLED: bool = False
+    TAXONOMY_S3_BUCKET: Optional[str] = None
+    # One folder for everything the taxonomy keeps on disk: ``versions/`` (verified versions),
+    # ``embed-cache/`` (one SQLite file per classifier thread) and ``jobs/`` (the jobs worker's
+    # scratch, which holds customer text). In Kubernetes it is the worker's taxonomy volume.
+    TAXONOMY_DATA_DIR: str = "/tmp/airweave/taxonomy"
+    TAXONOMY_CLASSIFY_THREADS: int = 2  # memory grows with this
+
+    # The deployment's approved spend ceiling, in USD, for ONE re-label, discover or propose job;
+    # 0 approves nothing, so no job can start until the owner sets it. A request may ask for less.
+    TAXONOMY_SPEND_CAP_USD: float = 0.0
+
+    # Discover and propose jobs (P7 design sections 6 and 12). They run on their own Temporal task
+    # queue in a separate Deployment, never in the sync workers.
+    TAXONOMY_JOBS_ENABLED: bool = False  # the API enqueues, the jobs worker runs; both need this
+    # Fewer chunks of text than this: the job fails before it spends anything. The classifier's
+    # clustering needs hundreds of pieces; a small collection needs its small-corpus settings and a
+    # lower value here (see the T1 test plan, run D).
+    DISCOVER_MIN_CHUNKS: int = 100
+    # Keeps the jobs' embedding and LLM caches between jobs, one folder per tenant (empty = each job
+    # starts empty). The folders hold customer text and the model's answers about it: put them on
+    # an encrypted volume and delete them with the tenant's data.
+    TAXONOMY_JOBS_CACHE_DIR: str = ""
+    # Which tenant's prefix a discovery writes to, per organization: a JSON object
+    # {"<organization uuid>": "<tenant id>"}. A caller never chooses the tenant; an organization
+    # without an entry can only start discoveries for a collection that already has an active file.
+    TAXONOMY_TENANT_BY_ORGANIZATION: Dict[str, str] = {}
+
+    # Search: honour OR between a request's filter groups (contract C8). False keeps the
+    # upstream behaviour, where every user filter group is merged into one AND group.
+    SEARCH_FILTER_GROUPS_OR: bool = False
+
     # Debug configuration
     DEBUG: bool = False
 
@@ -146,11 +200,19 @@ class Settings(BaseSettings):
     RUN_DB_SYNC: bool = True
     ENABLE_INTERNAL_SOURCES: bool = False  # Enable internal/testing sources (stub, snapshot)
 
-    # Redis configuration
+    # Redis configuration.
+    # Two modes are supported:
+    # 1. Single-host (default): set REDIS_HOST + REDIS_PORT.
+    # 2. Sentinel: set REDIS_NODES (JSON list of [host, port] sentinel nodes) and
+    #    REDIS_SERVICE_NAME (the master name registered with Sentinel, e.g. "mymaster").
+    #    When both are set, REDIS_HOST and REDIS_PORT are ignored and the client
+    #    discovers the current master via Sentinel.
     REDIS_HOST: str = "localhost"
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: Optional[str] = None
     REDIS_DB: int = 0
+    REDIS_NODES: Optional[str] = None  # e.g. '[["host-0", 26379], ["host-1", 26379]]'
+    REDIS_SERVICE_NAME: Optional[str] = None  # e.g. "mymaster"
 
     TEXT2VEC_INFERENCE_URL: str = "http://localhost:9878"
 
@@ -195,6 +257,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     ANTHROPIC_API_KEY: Optional[str] = None
     MISTRAL_API_KEY: Optional[str] = None
+    MISTRAL_BASE_URL: Optional[str] = None
     FIRECRAWL_API_KEY: Optional[str] = None
     GROQ_API_KEY: Optional[str] = None
     COHERE_API_KEY: Optional[str] = None
@@ -297,6 +360,38 @@ class Settings(BaseSettings):
         v = float(v)
         if v <= 0:
             raise ValueError("HEALTH_CHECK_TIMEOUT must be positive")
+        return v
+
+    @field_validator("CHUNK_TARGET_TOKENS")
+    def validate_chunk_target_tokens(cls, v: int) -> int:
+        """Keep the chunk target within the embedding hard limit (8192 tokens)."""
+        if not 1 <= v <= 8192:
+            raise ValueError("CHUNK_TARGET_TOKENS must be between 1 and 8192")
+        return v
+
+    @field_validator("CHUNKER_MODE")
+    def validate_sentence_pack_fits_the_embedder(cls, v: str, info: ValidationInfo) -> str:
+        """With sentence_pack, a body at the target plus its header must fit the embedder."""
+        target = info.data.get("CHUNK_TARGET_TOKENS")
+        if v == "sentence_pack" and target is not None and target + HEADER_MAX_TOKENS > 8192:
+            raise ValueError(
+                f"CHUNK_TARGET_TOKENS ({target}) plus the {HEADER_MAX_TOKENS}-token header "
+                "exceeds the embedder's 8192 tokens"
+            )
+        return v
+
+    @field_validator("TAXONOMY_CLASSIFY_THREADS", "DISCOVER_MIN_CHUNKS")
+    def validate_taxonomy_positive(cls, v: int, info: ValidationInfo) -> int:
+        """Require at least one classifier thread and at least one chunk of text."""
+        if v < 1:
+            raise ValueError(f"{info.field_name} must be at least 1")
+        return v
+
+    @field_validator("TAXONOMY_SPEND_CAP_USD")
+    def validate_taxonomy_spend_cap(cls, v: float, info: ValidationInfo) -> float:
+        """The cap is finite and not negative (NaN compares false with everything)."""
+        if not math.isfinite(v) or v < 0:
+            raise ValueError(f"{info.field_name} must be a finite number, 0 or more")
         return v
 
     @field_validator("AZURE_KEYVAULT_NAME", mode="before")

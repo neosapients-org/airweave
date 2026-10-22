@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import shutil
+import uuid
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Dict, List, Union
@@ -94,6 +95,30 @@ class FilesystemBackend(StorageBackend):
                 await f.write(content)
         except Exception as e:
             raise StorageException(f"Failed to write file to {path}: {e}")
+
+    async def write_file_once(self, path: str, content: bytes) -> bool:
+        """Write only if the file does not exist (exclusive create); ``False`` if it does."""
+        full_path = self._resolve(path)
+        await self._ensure_parent_dir(full_path)
+
+        def _write() -> bool:
+            # Write a sibling first, then publish it with a no-replace operation, so a crash or a
+            # full disk never leaves a truncated file at the final path to block every retry.
+            tmp = full_path.with_name(f".{full_path.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                with open(tmp, "wb") as f:
+                    f.write(content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                try:
+                    os.link(tmp, full_path)  # fails if the target exists, never replaces it
+                except FileExistsError:
+                    return False
+                return True
+            finally:
+                tmp.unlink(missing_ok=True)
+
+        return await asyncio.to_thread(_write)
 
     async def read_file(self, path: str) -> bytes:
         """Read binary content from filesystem."""

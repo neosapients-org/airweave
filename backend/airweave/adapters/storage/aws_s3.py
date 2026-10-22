@@ -4,6 +4,7 @@ Implements StorageBackend protocol for AWS S3 and S3-compatible storage
 (MinIO, LocalStack, etc.).
 """
 
+import asyncio
 import fnmatch
 import json
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,9 @@ from airweave.domains.storage.exceptions import (
     StorageNotFoundError,
 )
 from airweave.domains.storage.protocols import StorageBackend
+
+# Times a conditional put is retried after a 409 (a race between concurrent conditional writes).
+CONDITIONAL_RETRIES = 4
 
 
 class S3Backend(StorageBackend):
@@ -126,6 +130,35 @@ class S3Backend(StorageBackend):
             )
         except Exception as e:
             raise StorageException(f"Failed to write file to {path}: {e}")
+
+    async def write_file_once(self, path: str, content: bytes) -> bool:
+        """Write only if the object does not exist (S3 conditional put, ``If-None-Match: *``).
+
+        Returns ``True`` if written, ``False`` only when the key is confirmed to exist (412).
+        Never overwrites. A 409 ``ConditionalRequestConflict`` is a race between concurrent
+        conditional writes, not proof that the object exists: the put is retried, and the
+        answer is ``False`` only if the key is then there.
+        """
+        key = self._resolve(path)
+        for attempt in range(CONDITIONAL_RETRIES):
+            try:
+                client = await self._get_client()
+                await client.put_object(Bucket=self.bucket, Key=key, Body=content, IfNoneMatch="*")
+                return True
+            except Exception as e:
+                text = str(e)
+                if "PreconditionFailed" in text or "412" in text:
+                    return False
+                if "ConditionalRequestConflict" in text or "409" in text:
+                    if await self.exists(path):
+                        return False
+                    await asyncio.sleep(0.05 * (attempt + 1))
+                    continue
+                raise StorageException(f"Failed to write file to {path}: {e}")
+        raise StorageException(
+            f"Failed to write file to {path}: conditional write kept conflicting "
+            f"({CONDITIONAL_RETRIES} attempts)"
+        )
 
     async def read_file(self, path: str) -> bytes:
         """Read binary content from S3."""

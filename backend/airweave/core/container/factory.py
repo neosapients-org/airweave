@@ -10,7 +10,7 @@ Design principles:
 - Testable: can unit test factory logic with mock settings
 """
 
-from typing import Optional
+from typing import Any, Optional, Tuple
 
 from prometheus_client import CollectorRegistry
 
@@ -107,6 +107,7 @@ from airweave.domains.search.adapters.vector_db.filter_translator import FilterT
 from airweave.domains.search.adapters.vector_db.vespa_client import VespaVectorDB
 from airweave.domains.search.agentic.service import AgenticSearchService
 from airweave.domains.search.agentic.subscribers.stream_relay import SearchStreamRelay
+from airweave.domains.search.browse.service import BrowseService
 from airweave.domains.search.builders.collection_metadata import CollectionMetadataBuilder
 from airweave.domains.search.classic.service import ClassicSearchService
 from airweave.domains.search.config import SearchConfig
@@ -125,6 +126,7 @@ from airweave.domains.sources.validation import SourceValidationService
 from airweave.domains.storage.sync_file_manager import SyncFileManager
 from airweave.domains.sync_pipeline.factory import SyncFactory
 from airweave.domains.sync_pipeline.processors.chunk_embed import ChunkEmbedProcessor
+from airweave.domains.sync_pipeline.processors.taxonomy import TaxonomyProcessor
 from airweave.domains.sync_pipeline.subscribers.progress_relay import SyncProgressRelay
 from airweave.domains.syncs.cursors.repository import SyncCursorRepository
 from airweave.domains.syncs.cursors.service import SyncCursorService
@@ -134,6 +136,14 @@ from airweave.domains.syncs.jobs.state_machine import SyncJobStateMachine
 from airweave.domains.syncs.repository import SyncRepository
 from airweave.domains.syncs.service import SyncService
 from airweave.domains.syncs.state_machine import SyncStateMachine
+from airweave.domains.taxonomy import limits
+from airweave.domains.taxonomy.artifacts import (
+    TAXONOMY_S3_PREFIX,
+    TaxonomyResolver,
+    refuse_a_retired_prefix,
+)
+from airweave.domains.taxonomy.classifier_pool import ClassifierPool
+from airweave.domains.taxonomy.package import require_classifier_package
 from airweave.domains.temporal.client import get_cached_client as get_cached_temporal_client
 from airweave.domains.temporal.schedule_service import TemporalScheduleService
 from airweave.domains.temporal.service import TemporalWorkflowService
@@ -376,6 +386,8 @@ def create_container(settings: Settings) -> Container:
     # -----------------------------------------------------------------
     # Sync factory + service
     # -----------------------------------------------------------------
+    taxonomy_processor = _create_taxonomy_processor(settings, dense_embedder)
+    relabel_service, relabel_runner = _create_relabel(settings, taxonomy_processor, event_bus)
     sync_factory = SyncFactory(
         # Repositories
         sc_repo=source_deps["sc_repo"],
@@ -398,6 +410,7 @@ def create_container(settings: Settings) -> Container:
         usage_ledger=usage_ledger,
         storage_backend=storage_backend,
         state_machine=sync_deps["sync_job_state_machine"],
+        taxonomy_processor=taxonomy_processor,
     )
 
     sync_service = SyncService(
@@ -617,6 +630,11 @@ def create_container(settings: Settings) -> Container:
         instant_search=search_deps["instant_search"],
         classic_search=search_deps["classic_search"],
         agentic_search=search_deps["agentic_search"],
+        browse_service=search_deps["browse_service"],
+        taxonomy_processor=taxonomy_processor,
+        relabel_service=relabel_service,
+        relabel_runner=relabel_runner,
+        taxonomy_job_service=_create_taxonomy_job_service(settings, taxonomy_processor),
     )
 
 
@@ -809,6 +827,7 @@ def _create_dense_embedder(
             api_key=settings.MISTRAL_API_KEY,
             model=spec.api_model_name,
             dimensions=EMBEDDING_DIMENSIONS,
+            server_url=settings.MISTRAL_BASE_URL,
         )
 
     if spec.embedder_class_ref is LocalDenseEmbedder:
@@ -1357,12 +1376,125 @@ def _create_search_services(
         collection_repo=collection_repo,
         event_bus=event_bus,
     )
+    browse_service = BrowseService(
+        vector_db=vector_db,
+        collection_repo=collection_repo,
+        access_broker=access_broker,
+        event_bus=event_bus,
+    )
 
     return {
         "instant_search": instant_search,
         "classic_search": classic_search,
         "agentic_search": agentic_search,
+        "browse_service": browse_service,
     }
+
+
+def _create_taxonomy_processor(
+    settings: Settings, dense_embedder: Optional[DenseEmbedderProtocol] = None
+) -> Optional[TaxonomyProcessor]:
+    """The taxonomy step (plan A7), or None while TAXONOMY_ENABLED is off (upstream writes).
+
+    One resolver and one classifier pool per process. The taxonomy bucket is read with the S3
+    backend; region and endpoint come from the storage settings. An unset bucket is not fatal
+    here: every labelled chunk is then written as ERROR, logged and counted. A taxonomy built
+    with the deployment's embedding model embeds through ``dense_embedder``.
+    """
+    if not settings.TAXONOMY_ENABLED:
+        return None
+    # At boot, loudly: otherwise a deployment without the package serves and fails at its first
+    # labelled chunk.
+    require_classifier_package()
+    refuse_a_retired_prefix()
+    storage = None
+    if settings.TAXONOMY_S3_BUCKET:
+        from airweave.adapters.storage.aws_s3 import S3Backend
+
+        storage = S3Backend(
+            bucket=settings.TAXONOMY_S3_BUCKET,
+            region=settings.STORAGE_AWS_REGION or "us-east-1",
+            endpoint_url=settings.STORAGE_AWS_ENDPOINT_URL,
+        )
+    resolver = TaxonomyResolver(
+        storage=storage,
+        prefix=TAXONOMY_S3_PREFIX,
+        local_dir=limits.versions_dir(settings.TAXONOMY_DATA_DIR),
+        active_cache_seconds=limits.ACTIVE_CACHE_SECONDS,
+        max_file_bytes=limits.ARTIFACT_MAX_MB * 1024 * 1024,
+        max_total_bytes=limits.ARTIFACT_TOTAL_MAX_MB * 1024 * 1024,
+    )
+    pool = ClassifierPool(
+        threads=settings.TAXONOMY_CLASSIFY_THREADS,
+        cache_dir=limits.embed_cache_dir(settings.TAXONOMY_DATA_DIR),
+        dense_embedder=dense_embedder,
+        max_cache_mb=limits.EMBED_CACHE_MAX_MB,
+    )
+    return TaxonomyProcessor(
+        resolver=resolver, pool=pool, timeout_seconds=limits.CLASSIFY_TIMEOUT_SECONDS
+    )
+
+
+def _create_relabel(
+    settings: Settings, taxonomy_processor: Optional[TaxonomyProcessor], event_bus: Any
+) -> Tuple[Optional[Any], Optional[Any]]:
+    """The re-label service (API side) and runner (worker side), or ``(None, None)`` while off.
+
+    Both use the job table and Vespa's document API; the runner shares the sync's resolver and
+    classifier pool, so a job classifies exactly as a sync does.
+    """
+    if taxonomy_processor is None:
+        return None, None
+    from airweave.domains.taxonomy.relabel.chunk_store import VespaChunkStore
+    from airweave.domains.taxonomy.relabel.repository import SqlJobRepository
+    from airweave.domains.taxonomy.relabel.runner import RelabelRunner
+    from airweave.domains.taxonomy.relabel.service import RelabelService
+
+    repo = SqlJobRepository()
+    service = RelabelService(
+        repo,
+        VespaChunkStore,
+        configured_cap_usd=settings.TAXONOMY_SPEND_CAP_USD,
+        usd_per_thousand=limits.RELABEL_USD_PER_THOUSAND_CHUNKS,
+        resolver=taxonomy_processor.resolver,
+    )
+    runner = RelabelRunner(
+        repo,
+        VespaChunkStore,
+        taxonomy_processor.resolver,
+        taxonomy_processor.pool,
+        event_bus,
+        batch_size=limits.RELABEL_BATCH_SIZE,
+        page_size=limits.RELABEL_PAGE_SIZE,
+        write_concurrency=limits.RELABEL_WRITE_CONCURRENCY,
+        lease_seconds=limits.RELABEL_LEASE_SECONDS,
+        classify_timeout=limits.CLASSIFY_TIMEOUT_SECONDS,
+        usd_per_thousand=limits.RELABEL_USD_PER_THOUSAND_CHUNKS,
+        resume_interval=limits.RELABEL_RESUME_INTERVAL_SECONDS,
+    )
+    return service, runner
+
+
+def _create_taxonomy_job_service(
+    settings: Settings, taxonomy_processor: Optional[TaxonomyProcessor]
+) -> Optional[Any]:
+    """The API side of the discover and propose jobs, or ``None`` while they are off."""
+    if taxonomy_processor is None or not settings.TAXONOMY_JOBS_ENABLED:
+        return None
+    from airweave.domains.taxonomy.jobs.records import SqlTaxonomyJobRepository
+    from airweave.domains.taxonomy.jobs.service import TaxonomyJobService
+    from airweave.domains.taxonomy.jobs.temporal import start_job_workflow
+
+    async def enqueue(job: Any) -> None:
+        from airweave.domains.temporal.client import get_client
+
+        await start_job_workflow(await get_client(), limits.JOBS_TASK_QUEUE, job.id)
+
+    return TaxonomyJobService(
+        SqlTaxonomyJobRepository(),
+        enqueue,
+        cap_usd=settings.TAXONOMY_SPEND_CAP_USD,
+    )
 
 
 def _create_storage_backend(settings: Settings):  # -> StorageBackend

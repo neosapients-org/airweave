@@ -42,6 +42,17 @@ class FilterableField(str, Enum):
     SYSTEM_METADATA_SYNC_ID = "airweave_system_metadata.sync_id"
     SYSTEM_METADATA_SYNC_JOB_ID = "airweave_system_metadata.sync_job_id"
 
+    # Chunk positions, pages and topic labels (contract airweave-neo/1, section 5.1).
+    # Accepted in request filters and shown in the API schema. The schemas the LLM search planners
+    # are given leave them out (``planner_schema``), so those stay exactly as upstream.
+    TOPIC_IDS = "topic_ids"
+    BROAD_FAMILY_IDS = "broad_family_ids"
+    TAXONOMY_STATUS = "taxonomy_status"
+    TAXONOMY_VERSION = "taxonomy_version"
+    PAGE_FROM = "page_from"
+    PAGE_TO = "page_to"
+    CHUNK_CHAR_START = "chunk_char_start"
+
 
 class FilterOperator(str, Enum):
     """Supported filter operators."""
@@ -73,6 +84,10 @@ _TEXT_FIELDS: frozenset[FilterableField] = frozenset(
         FilterableField.SYSTEM_METADATA_ORIGINAL_ENTITY_ID,
         FilterableField.SYSTEM_METADATA_SYNC_ID,
         FilterableField.SYSTEM_METADATA_SYNC_JOB_ID,
+        FilterableField.TOPIC_IDS,
+        FilterableField.BROAD_FAMILY_IDS,
+        FilterableField.TAXONOMY_STATUS,
+        FilterableField.TAXONOMY_VERSION,
     }
 )
 
@@ -83,10 +98,22 @@ _DATE_FIELDS: frozenset[FilterableField] = frozenset(
     }
 )
 
-_NUMERIC_FIELDS: frozenset[FilterableField] = frozenset(
+# Chunk position and page fields: integer attributes, integer values only.
+_INTEGER_FIELDS: frozenset[FilterableField] = frozenset(
     {
-        FilterableField.SYSTEM_METADATA_CHUNK_INDEX,
+        FilterableField.PAGE_FROM,
+        FilterableField.PAGE_TO,
+        FilterableField.CHUNK_CHAR_START,
     }
+)
+
+_NUMERIC_FIELDS: frozenset[FilterableField] = (
+    frozenset(
+        {
+            FilterableField.SYSTEM_METADATA_CHUNK_INDEX,
+        }
+    )
+    | _INTEGER_FIELDS
 )
 
 _ORDERABLE_FIELDS = _DATE_FIELDS | _NUMERIC_FIELDS
@@ -108,6 +135,40 @@ _LIST_OPS: frozenset[FilterOperator] = frozenset(
         FilterOperator.NOT_IN,
     }
 )
+
+# The most values one ``in`` / ``not_in`` takes, on any field: each becomes its own clause in
+# YQL, so with the group and condition caps this bounds the query a request can build.
+MAX_LIST_VALUES = 100
+
+# The operators each chunk field supports (contract airweave-neo/1, section 5.1).
+_CHUNK_FIELD_OPERATORS: dict[FilterableField, frozenset[FilterOperator]] = {
+    FilterableField.TOPIC_IDS: frozenset({FilterOperator.CONTAINS, FilterOperator.IN}),
+    FilterableField.BROAD_FAMILY_IDS: frozenset({FilterOperator.CONTAINS, FilterOperator.IN}),
+    **dict.fromkeys(
+        (FilterableField.TAXONOMY_STATUS, FilterableField.TAXONOMY_VERSION),
+        frozenset({FilterOperator.EQUALS, FilterOperator.NOT_EQUALS}) | _LIST_OPS,
+    ),
+    **dict.fromkeys(_INTEGER_FIELDS, frozenset({FilterOperator.EQUALS}) | _ORDERING_OPS),
+}
+
+
+# Fields that describe one chunk, not the whole entity (topics, pages, positions, labelling).
+CHUNK_SCOPED_FIELDS: frozenset[FilterableField] = frozenset(_CHUNK_FIELD_OPERATORS)
+
+
+def planner_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Drop the chunk fields from a JSON schema before an LLM planner is given it.
+
+    The fields are accepted in request filters (and documented in the API schema), but the
+    planners keep the schema they had upstream, so they never propose a label filter.
+    Mutates and returns ``schema``.
+    """
+    hidden = {f.value for f in _CHUNK_FIELD_OPERATORS}
+    for definition in (schema.get("$defs") or {}).values():
+        if isinstance(definition, dict) and isinstance(definition.get("enum"), list):
+            if hidden & set(definition["enum"]):
+                definition["enum"] = [v for v in definition["enum"] if v not in hidden]
+    return schema
 
 
 def _validate_iso_timestamp(value: str) -> None:
@@ -201,6 +262,12 @@ class FilterCondition(BaseModel):
         if op in ("in", "not_in") and isinstance(v, str):
             data["value"] = [v] if v else []
 
+        # Integer string on a chunk position or page field → int (Vespa int attribute)
+        field = getattr(data.get("field"), "value", data.get("field"))
+        if field in {f.value for f in _INTEGER_FIELDS} and isinstance(v, str):
+            if v.strip().lstrip("-").isdigit():
+                data["value"] = int(v)
+
         return data
 
     # ── Semantic validation ────────────────────────────────────────────────────
@@ -217,6 +284,20 @@ class FilterCondition(BaseModel):
             5. Numeric fields require numeric (or numeric-string) values.
         """
         f, op, v = self.field, self.operator, self.value
+
+        # 0. Chunk fields support only the operators contract 5.1 lists for them
+        allowed = _CHUNK_FIELD_OPERATORS.get(f)
+        if allowed is not None and op not in allowed:
+            names = ", ".join(sorted(o.value for o in allowed))
+            raise ValueError(
+                f"Operator '{op.value}' is not supported on '{f.value}'. Use: {names}."
+            )
+        if isinstance(v, list) and len(v) > MAX_LIST_VALUES:
+            raise ValueError(
+                f"Field '{f.value}' takes at most {MAX_LIST_VALUES} values in a list, got {len(v)}."
+            )
+        if f in _INTEGER_FIELDS and (isinstance(v, bool) or not isinstance(v, int)):
+            raise ValueError(f"Field '{f.value}' takes an integer value, got {v!r}.")
 
         # 1. Ordering operators on text fields are nonsensical
         #    e.g. entity_id > "boat"

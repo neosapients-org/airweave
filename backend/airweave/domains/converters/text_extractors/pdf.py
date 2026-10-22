@@ -16,6 +16,7 @@ import os
 from dataclasses import dataclass, field
 
 from airweave.core.logging import logger
+from airweave.domains.converters.page_markers import escape_page_text, page_marker
 from airweave.domains.sync_pipeline.exceptions import SyncFailureError
 
 MIN_CHARS_PER_PAGE = 50
@@ -41,6 +42,19 @@ class PdfExtractionResult:
     def full_text(self) -> str:
         """Return concatenated text from all successfully extracted pages."""
         texts = [p.text for p in self.pages if p.text and not p.needs_ocr]
+        return "\n\n".join(texts)
+
+    @property
+    def full_text_with_page_markers(self) -> str:
+        """Return ``full_text`` with a page marker line before each page's text.
+
+        Removing the markers (``strip_page_markers``) gives ``full_text`` back exactly.
+        """
+        texts = [
+            page_marker(p.page_num + 1) + escape_page_text(p.text)
+            for p in self.pages
+            if p.text and not p.needs_ocr
+        ]
         return "\n\n".join(texts)
 
     @property

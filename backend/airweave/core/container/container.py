@@ -76,6 +76,7 @@ from airweave.domains.organizations.protocols import (
 )
 from airweave.domains.search.protocols import (
     AgenticSearchServiceProtocol,
+    BrowseServiceProtocol,
     ClassicSearchServiceProtocol,
     InstantSearchServiceProtocol,
 )
@@ -253,6 +254,7 @@ class Container:
     instant_search: InstantSearchServiceProtocol
     classic_search: ClassicSearchServiceProtocol
     agentic_search: AgenticSearchServiceProtocol
+    browse_service: BrowseServiceProtocol
 
     # Storage domain — unified backend for file/object storage
     storage_backend: StorageBackend
@@ -269,6 +271,18 @@ class Container:
     # Optional fields (default=None) — must be last in frozen dataclass
     # OCR provider (with fallback chain + circuit breaking)
     ocr_provider: Optional[OcrProvider] = None
+
+    # Taxonomy step of the sync pipeline (None while TAXONOMY_ENABLED is off); the worker
+    # closes its classifier threads and cache files on shutdown
+    taxonomy_processor: Optional[Any] = None
+
+    # Re-label jobs (None while TAXONOMY_ENABLED is off). The API accepts and reports on jobs
+    # through the service; the worker claims and runs them through the runner.
+    relabel_service: Optional[Any] = None
+    relabel_runner: Optional[Any] = None
+
+    # Discover and propose jobs (None unless TAXONOMY_ENABLED and TAXONOMY_JOBS_ENABLED)
+    taxonomy_job_service: Optional[Any] = None
 
     # -----------------------------------------------------------------
     # Convenience methods

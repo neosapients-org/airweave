@@ -21,6 +21,9 @@ export const FeatureFlags = {
 
   // Auth Providers
   CUSTOM_AUTH_PROVIDER: 'custom_auth_provider',
+
+  // POC: tabular browse view on collections
+  COLLECTION_BROWSE: 'collection_browse',
 } as const;
 
 export type FeatureFlag = typeof FeatureFlags[keyof typeof FeatureFlags];

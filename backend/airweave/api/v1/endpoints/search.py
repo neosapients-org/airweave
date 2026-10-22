@@ -10,7 +10,7 @@ import asyncio
 import json
 from collections.abc import AsyncGenerator
 
-from fastapi import Depends, Path, Query
+from fastapi import Depends, HTTPException, Path, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
@@ -23,8 +23,10 @@ from airweave.api.v1.endpoints.admin import _require_admin
 from airweave.core.events.search import SearchStartedEvent, SearchTier
 from airweave.core.protocols import EventBus, PubSub
 from airweave.core.protocols.pubsub import PubSubSubscription
+from airweave.core.shared_models import FeatureFlag
 from airweave.domains.search.protocols import (
     AgenticSearchServiceProtocol,
+    BrowseServiceProtocol,
     ClassicSearchServiceProtocol,
     InstantSearchServiceProtocol,
 )
@@ -32,6 +34,8 @@ from airweave.domains.usage.protocols import UsageLimitCheckerProtocol
 from airweave.domains.usage.types import ActionType
 from airweave.schemas.search_v2 import (
     AgenticSearchRequest,
+    BrowseRequest,
+    BrowseResponse,
     ClassicSearchRequest,
     InstantSearchRequest,
     InternalAgenticSearchRequest,
@@ -76,6 +80,51 @@ async def instant_search(
 
     results = await service.search(db, ctx, readable_id, request)
     return SearchV2Response(results=results.results)
+
+
+@router.post(
+    "/{readable_id}/search/browse",
+    response_model=BrowseResponse,
+    summary="Browse Collection",
+    description=(
+        "Paginated tabular listing of a collection (POC, flag-gated on the frontend). "
+        "No query, no embeddings, no ranking. Returns one row per source entity."
+    ),
+)
+async def browse_collection(
+    readable_id: str = Path(...),
+    request: BrowseRequest = ...,  # type: ignore[assignment]
+    db: AsyncSession = Depends(deps.get_db),
+    ctx: ApiContext = Depends(deps.get_context),
+    usage_checker: UsageLimitCheckerProtocol = Inject(UsageLimitCheckerProtocol),
+    event_bus: EventBus = Inject(EventBus),
+    service: BrowseServiceProtocol = Inject(BrowseServiceProtocol),
+) -> BrowseResponse:
+    """Browse a collection with offset/limit pagination."""
+    if not ctx.has_feature(FeatureFlag.COLLECTION_BROWSE):
+        raise HTTPException(status_code=404, detail="Not found")
+    await usage_checker.is_allowed(db, ctx.organization.id, ActionType.QUERIES)
+    await _browse_started(event_bus, ctx, readable_id, request)
+    return await service.browse(db, ctx, readable_id, request)
+
+
+async def _browse_started(
+    event_bus: EventBus, ctx: ApiContext, readable_id: str, request: BrowseRequest
+) -> None:
+    """The search lifecycle's start event for a browse (the service emits its end)."""
+    await event_bus.publish(
+        SearchStartedEvent(
+            organization_id=ctx.organization.id,
+            request_id=ctx.request_id,
+            tier=SearchTier.BROWSE,
+            collection_readable_id=readable_id,
+            query=request.name_query or "",
+            plan=ctx.billing_plan,
+            filter=[f.model_dump() for f in request.filter] if request.filter else None,
+            limit=request.limit,
+            offset=request.offset,
+        )
+    )
 
 
 @router.post(
@@ -443,3 +492,37 @@ async def admin_agentic_search_as_user(
     )
     truncated = results.results[: request.limit] if request.limit else results.results
     return SearchV2Response(results=truncated)
+
+
+@admin_router.post(
+    "/{readable_id}/search/browse/as-user",
+    response_model=BrowseResponse,
+    summary="Browse Collection as User (Admin)",
+    description=(
+        "Admin-only: Browse with access control applied for a specific user principal, "
+        "the same filter as the search tiers' as-user routes."
+    ),
+)
+async def admin_browse_as_user(
+    readable_id: str = Path(...),
+    request: BrowseRequest = ...,  # type: ignore[assignment]
+    user_principal: str = Query(
+        ...,
+        description="User principal (email) to browse as. "
+        "Access control filtering will use this user's resolved group memberships.",
+    ),
+    db: AsyncSession = Depends(deps.get_db),
+    ctx: ApiContext = Depends(deps.get_context),
+    usage_checker: UsageLimitCheckerProtocol = Inject(UsageLimitCheckerProtocol),
+    event_bus: EventBus = Inject(EventBus),
+    service: BrowseServiceProtocol = Inject(BrowseServiceProtocol),
+) -> BrowseResponse:
+    """Admin-only: browse with ACL filtering for a specific user."""
+    _require_admin(ctx)
+    if not ctx.has_feature(FeatureFlag.COLLECTION_BROWSE):
+        raise HTTPException(status_code=404, detail="Not found")
+    await usage_checker.is_allowed(db, ctx.organization.id, ActionType.QUERIES)
+    await _browse_started(event_bus, ctx, readable_id, request)
+    return await service.browse(
+        db, ctx, readable_id, request, user_principal_override=user_principal
+    )

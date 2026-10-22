@@ -37,6 +37,7 @@ class SearchTier(str, Enum):
     INSTANT = "instant"
     CLASSIC = "classic"
     AGENTIC = "agentic"
+    BROWSE = "browse"
 
 
 # ── Diagnostics models ────────────────────────────────────────────────

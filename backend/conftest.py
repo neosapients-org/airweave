@@ -6,7 +6,10 @@ making its fixtures available to centralized tests AND colocated domain tests.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -656,6 +659,14 @@ def fake_agentic_search_v2():
 
 
 @pytest.fixture
+def fake_browse_service():
+    """Fake BrowseService."""
+    from airweave.domains.search.fakes.browse import FakeBrowseService
+
+    return FakeBrowseService()
+
+
+@pytest.fixture
 def fake_storage_backend():
     """Fake StorageBackend for testing storage consumers."""
     from airweave.domains.storage.fakes import FakeStorageBackend
@@ -737,6 +748,7 @@ def test_container(
     fake_instant_search,
     fake_classic_search,
     fake_agentic_search_v2,
+    fake_browse_service,
     fake_sync_factory,
     fake_entity_repo,
     fake_access_broker,
@@ -821,8 +833,32 @@ def test_container(
         instant_search=fake_instant_search,
         classic_search=fake_classic_search,
         agentic_search=fake_agentic_search_v2,
+        browse_service=fake_browse_service,
         sync_factory=fake_sync_factory,
         entity_repo=fake_entity_repo,
         access_broker=fake_access_broker,
         converter_registry=fake_converter_registry,
     )
+
+
+# ---------------------------------------------------------------------------
+# Shared fixtures of contract airweave-neo/1 (tests/fixtures/airweave_neo/README.md)
+# ---------------------------------------------------------------------------
+
+_AIRWEAVE_NEO_FIXTURES = Path(__file__).parent / "tests" / "fixtures" / "airweave_neo"
+_CHUNK_FIXTURE_SHA256 = "62481704fc006498d42c5c65984e70ae03613a4224d82aab36a11ec30839e8a7"
+
+
+@pytest.fixture(scope="session")
+def airweave_neo_chunk_fixture() -> dict:
+    """The shared chunk-position fixture; refuses a copy that differs from the shared one."""
+    raw = (_AIRWEAVE_NEO_FIXTURES / "chunk-positions.example.json").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == _CHUNK_FIXTURE_SHA256, "not the shared fixture"
+    return json.loads(raw)
+
+
+@pytest.fixture(scope="session")
+def airweave_neo_search_record() -> dict:
+    """The chunk record of contract section 4.4, as returned by search."""
+    path = _AIRWEAVE_NEO_FIXTURES / "search-record.example.json"
+    return json.loads(path.read_text())["record"]

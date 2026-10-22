@@ -485,3 +485,27 @@ class TestFilesystemBackendProtocolCompliance:
         for method in required_methods:
             assert hasattr(backend, method)
             assert callable(getattr(backend, method))
+
+
+class TestWriteFileOnce:
+    async def test_first_write_wins_and_leaves_no_temp_files(self, tmp_path):
+        backend = FilesystemBackend(base_path=tmp_path)
+        assert await backend.write_file_once("a/b.json", b"one") is True
+        assert await backend.write_file_once("a/b.json", b"two") is False
+        assert (tmp_path / "a" / "b.json").read_bytes() == b"one"
+        assert [p.name for p in (tmp_path / "a").iterdir()] == ["b.json"]
+
+    async def test_a_failed_write_leaves_nothing_at_the_final_path(self, tmp_path, monkeypatch):
+        backend = FilesystemBackend(base_path=tmp_path)
+
+        def full_disk(_fd):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(os, "fsync", full_disk)
+        with pytest.raises(OSError):
+            await backend.write_file_once("a/b.json", b"one")
+        monkeypatch.undo()
+
+        assert not (tmp_path / "a" / "b.json").exists()
+        assert list((tmp_path / "a").iterdir()) == []
+        assert await backend.write_file_once("a/b.json", b"one") is True

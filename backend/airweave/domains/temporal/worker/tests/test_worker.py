@@ -183,3 +183,92 @@ async def test_stop_skips_shutdown_when_not_running(mock_runtime_cls, mock_clien
 
     worker._control_server.stop.assert_awaited_once()
     mock_client_close.assert_awaited_once()
+
+
+# ── taxonomy classifier pool (batch 3, item 14) ─────────────────────
+
+
+def _with_container(monkeypatch, taxonomy_processor):
+    import airweave.core.container as container_mod
+
+    monkeypatch.setattr(
+        container_mod,
+        "container",
+        MagicMock(taxonomy_processor=taxonomy_processor),
+        raising=False,
+    )
+
+
+@patch("airweave.domains.temporal.client.close", new_callable=AsyncMock)
+@patch("temporalio.runtime.Runtime")
+async def test_stop_closes_the_classifier_pool_after_the_worker_drains(
+    mock_runtime_cls, mock_client_close, monkeypatch
+):
+    """The pool is closed once the worker has shut down, so running batches finish first."""
+    from airweave.domains.temporal.worker import TemporalWorker
+
+    order = []
+    processor = MagicMock()
+    processor.close.side_effect = lambda: order.append("pool")
+    _with_container(monkeypatch, processor)
+    worker = TemporalWorker(_make_config())
+    temporal_worker = AsyncMock()
+    temporal_worker.shutdown.side_effect = lambda: order.append("worker")
+    worker._worker = temporal_worker
+    worker._state.running = True
+    worker._control_server.stop = AsyncMock()
+
+    await worker.stop()
+
+    processor.close.assert_called_once_with()
+    assert order == ["worker", "pool"]
+
+
+@patch("airweave.domains.temporal.client.close", new_callable=AsyncMock)
+@patch("temporalio.runtime.Runtime")
+async def test_stop_without_the_taxonomy_step_is_unchanged(
+    mock_runtime_cls, mock_client_close, monkeypatch
+):
+    from airweave.domains.temporal.worker import TemporalWorker
+
+    _with_container(monkeypatch, None)
+    worker = TemporalWorker(_make_config())
+    worker._control_server.stop = AsyncMock()
+
+    await worker.stop()
+
+    mock_client_close.assert_awaited_once()
+
+
+@patch("airweave.domains.temporal.client.close", new_callable=AsyncMock)
+@patch("temporalio.runtime.Runtime")
+async def test_a_failing_pool_close_does_not_stop_the_rest_of_shutdown(
+    mock_runtime_cls, mock_client_close, monkeypatch
+):
+    from airweave.domains.temporal.worker import TemporalWorker
+
+    processor = MagicMock()
+    processor.close.side_effect = RuntimeError("disk gone")
+    _with_container(monkeypatch, processor)
+    worker = TemporalWorker(_make_config())
+    worker._control_server.stop = AsyncMock()
+
+    await worker.stop()
+
+    worker._control_server.stop.assert_awaited_once()
+    mock_client_close.assert_awaited_once()
+
+
+@patch("airweave.domains.temporal.client.close", new_callable=AsyncMock)
+@patch("temporalio.runtime.Runtime")
+async def test_stop_before_the_container_exists(mock_runtime_cls, mock_client_close, monkeypatch):
+    import airweave.core.container as container_mod
+    from airweave.domains.temporal.worker import TemporalWorker
+
+    monkeypatch.setattr(container_mod, "container", None, raising=False)
+    worker = TemporalWorker(_make_config())
+    worker._control_server.stop = AsyncMock()
+
+    await worker.stop()
+
+    mock_client_close.assert_awaited_once()

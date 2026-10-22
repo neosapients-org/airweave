@@ -17,6 +17,7 @@ from airweave.domains.search.agentic.tools.dispatcher import Tool
 from airweave.domains.search.agentic.tools.types import RenderedResult, SearchToolResult
 from airweave.domains.search.protocols import SearchPlanExecutorProtocol
 from airweave.domains.search.types import FilterGroup, SearchPlan
+from airweave.domains.search.types.filters import planner_schema
 
 SEARCH_TOOL: dict[str, Any] = {
     "type": "function",
@@ -27,7 +28,7 @@ SEARCH_TOOL: dict[str, Any] = {
             "Use different queries, expansions, retrieval strategies "
             "(semantic, keyword, hybrid), limits and filters to refine results."
         ),
-        "parameters": SearchPlan.model_json_schema(),
+        "parameters": planner_schema(planner_schema(SearchPlan.model_json_schema())),
     },
 }
 
