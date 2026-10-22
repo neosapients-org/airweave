@@ -76,8 +76,10 @@ def load(path: str | Path, verify: bool = True) -> Taxonomy:
     if sv is not None and sv not in KNOWN_SCHEMA_VERSIONS:
         raise ValueError(f"{d / 'final_taxonomy.json'}: unsupported schema_version {sv!r} (this engine reads {KNOWN_SCHEMA_VERSIONS})")
     if verify:
-        for f, h in final.get("artifacts", {}).items():
-            if (d / f).exists() and _sha(d / f) != h:
+        for f, h in final.get("artifacts", {}).items():   # an artifact the manifest lists must be there and match
+            if not (d / f).exists():
+                raise FileNotFoundError(f"artifact {f} is listed in final_taxonomy.json but missing from {d}")
+            if _sha(d / f) != h:
                 raise ValueError(f"artifact {f} does not match the checksum recorded in final_taxonomy.json")
     a = final["assignment"]
     pos = a["prototype_category_ids"]

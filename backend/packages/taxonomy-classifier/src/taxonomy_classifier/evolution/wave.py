@@ -79,7 +79,8 @@ def _status(work, cid):
 def _nearest(work, cen, prof, n_cand):
     ds = work.rep.centroids @ cen
     ss = np.asarray(work.rep.sparse @ prof).ravel()
-    r = 1 / (60 + ranks(ds[None])[0]) + 1 / (60 + ranks(ss[None])[0])
+    k = work.final["assignment"]["rrf_k"]                # the taxonomy's own RRF constant, as its classification uses
+    r = 1 / (k + ranks(ds[None])[0]) + 1 / (k + ranks(ss[None])[0])
     return [work.ids[j] for j in np.argsort(-r)[:n_cand]], ds
 
 

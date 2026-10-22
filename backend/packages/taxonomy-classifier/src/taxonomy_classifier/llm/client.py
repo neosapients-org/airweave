@@ -85,6 +85,25 @@ def validate(obj, schema, path="$"):
     return errs
 
 
+FRAMING_TOKENS = 100   # chat-format tokens around the messages (a few per message): generous on purpose
+
+
+def _read_cache(path: Path) -> dict | None:
+    """A cached response, or None when there is none or it cannot be read (a torn or corrupt entry is a miss)."""
+    try:
+        cached = json.loads(path.read_text())
+    except (OSError, ValueError):                       # missing, unreadable, or torn by a concurrent writer
+        return None
+    return cached if isinstance(cached, dict) and cached.get("status") == "OK" else None
+
+
+def _write_cache(path: Path, rec: dict) -> None:
+    """Write a cache entry so that a reader never sees it half written: a temporary file, then an atomic rename."""
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    tmp.write_text(json.dumps(rec, indent=1))
+    os.replace(tmp, path)
+
+
 class LLMClient:
     def __init__(self, cfg: dict, run_dir: Path, ledger: CostLedger, stage: str, prompt_version: str,
                  reasoning_effort: str, max_output_tokens: int, transport=None):
@@ -93,6 +112,7 @@ class LLMClient:
         self.model = cfg["llm"]["model"]
         self.effort, self.max_tokens = reasoning_effort, max_output_tokens
         self.system, self.user_template, self.schema = load_prompt(prompt_version, cfg["llm"].get("corpus_description"))
+        self._schema_json = json.dumps(self.schema, sort_keys=True)   # part of the cache key and of the request's size
         self.cache_dir = resolve(cfg["llm"].get("cache_dir", "cache/llm"))   # a different dir => no reuse of other runs' responses
         self.transport = transport
         self.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -103,6 +123,13 @@ class LLMClient:
     def render(self, **fields) -> str:
         return self.user_template.format(**fields)
 
+    def _worst_case_usd(self, user: str) -> float:
+        """The most the call can cost. A byte-level BPE token covers at least one UTF-8 byte, so the request's bytes
+        (system, user and the JSON schema, which is sent too) bound its input tokens for any language, plus an
+        allowance for the chat framing; output is bounded by max_completion_tokens."""
+        in_tokens = len(self.system.encode()) + len(user.encode()) + len(self._schema_json.encode()) + FRAMING_TOKENS
+        return (in_tokens * self.price[0] + self.max_tokens * self.price[2]) / 1e6
+
     def _cost(self, u):
         inp, out = u["prompt_tokens"], u["completion_tokens"]
         cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
@@ -111,15 +138,15 @@ class LLMClient:
     def call(self, user: str, subject_id: str, extra_meta: dict | None = None) -> dict:
         """Returns the saved call record (with 'status' in OK / FAILED / BUDGET_EXCEEDED and 'parsed')."""
         input_hash = hashlib.sha256("\x1f".join([self.model, self.version, self.system, user, self.effort,
-                                                  str(self.max_tokens)]).encode()).hexdigest()
+                                                  str(self.max_tokens), self._schema_json]).encode()).hexdigest()
         request_id = f"{self.stage}-{subject_id}-{input_hash[:12]}"
         cache_file = self.cache_dir / f"{input_hash}.json"
         base = {"request_id": request_id, "stage": self.stage, "prompt_version": self.version, "subject_id": subject_id,
                 "model": self.model, "settings": {"reasoning_effort": self.effort, "max_completion_tokens": self.max_tokens,
                                                   "response_format": "json_schema(strict)", "temperature": "not set (API default)"},
                 "system_prompt": self.system, "user_payload": user, "input_hash": input_hash, **(extra_meta or {})}
-        if cache_file.exists():
-            cached = json.load(open(cache_file))
+        cached = _read_cache(cache_file)
+        if cached is not None:
             rec = {**base, **{k: cached[k] for k in ("raw_response", "parsed", "usage", "status", "attempts", "response_model",
                                                        "finish_reason", "original_timestamp", "validation_errors")},
                    "cost_usd": 0.0, "cache_hit": True, "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -129,20 +156,23 @@ class LLMClient:
         attempts, errors = [], []
         rec = None
         for attempt in range(2):                       # invalid_response_policy: retry once, then FAILED
-            worst = (len(self.system) + len(user)) / 3 * self.price[0] / 1e6 + self.max_tokens * self.price[2] / 1e6
-            if not self.ledger.can_spend(worst):
+            worst = self._worst_case_usd(user)
+            if not self.ledger.reserve(worst):
                 rec = {**base, "status": "BUDGET_EXCEEDED", "parsed": None, "raw_response": None, "usage": None,
                        "cost_usd": 0.0, "cache_hit": False, "attempts": attempts, "validation_errors": ["budget cap"]}
                 break
             try:
-                resp, lat = self._post(user)
-            except LLMFailure as e:                    # transport failure after retries -> FAILED, never filled in
-                attempts.append({"attempt": attempt + 1, "finish_reason": None, "usage": None, "cost_usd": 0.0, "latency_s": 0.0,
-                                 "validation_errors": [f"transport: {e}"], "raw_response": None})
-                errors = [f"transport: {e}"]
-                break
-            u = resp["usage"]; c = self._cost(u)
-            self.ledger.add(self.stage, c, u, lat)
+                try:
+                    resp, lat = self._post(user)
+                except LLMFailure as e:                # transport failure after retries -> FAILED, never filled in
+                    attempts.append({"attempt": attempt + 1, "finish_reason": None, "usage": None, "cost_usd": 0.0,
+                                     "latency_s": 0.0, "validation_errors": [f"transport: {e}"], "raw_response": None})
+                    errors = [f"transport: {e}"]
+                    break
+                u = resp["usage"]; c = self._cost(u)
+                self.ledger.add(self.stage, c, u, lat)
+            finally:
+                self.ledger.release(worst)
             content = resp["choices"][0]["message"].get("content") or ""
             finish = resp["choices"][0].get("finish_reason")
             try:
@@ -166,7 +196,7 @@ class LLMClient:
         rec["timestamp"] = datetime.now(timezone.utc).isoformat()
         rec["original_timestamp"] = rec["timestamp"]
         if rec["status"] == "OK":                      # only successful responses are cached; failures are retried next run
-            json.dump(rec, open(cache_file, "w"), indent=1)
+            _write_cache(cache_file, rec)
         self._save(rec)
         return rec
 

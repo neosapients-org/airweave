@@ -17,6 +17,16 @@ import pandas as pd
 ADMIN_FORMS = ("SIGNATURE", "EXHIBIT_INDEX", "FORM_OR_METADATA", "OTHER")
 SENT = re.compile(r"[a-z0-9\)%][\.\?!](?:\s+|$)(?=[A-Z“\"(]|$)")
 NUM = re.compile(r"^[\(\-–—$]*[\d,.]+%?\)?$")
+# Words of three or more letters in any script (for ASCII text exactly [A-Za-z]{3,}).
+WORD = re.compile(r"[^\W\d_]{3,}")
+# Scripts written without spaces between words (Chinese, Japanese kana, Thai, Lao, Khmer, Myanmar): a run of them is one
+# "word" above however long it is, so their characters are counted too, two to a word.
+UNSPACED = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿฀-໿ក-៿က-႟]")
+
+
+def content_words(t: str) -> int:
+    """How much text a chunk holds, in words, for any script (the 'too little text' rule)."""
+    return len(WORD.findall(t)) + len(UNSPACED.findall(t)) // 2
 
 
 def _patterns(cfg: dict) -> dict:
@@ -39,7 +49,7 @@ def tag(texts: list[str], cfg: dict) -> pd.DataFrame:
     f["pipe_count"] = text.str.count(r"\|")
     toks = text.str.split()
     f["numeric_ratio"] = toks.map(lambda t: np.mean([bool(NUM.match(x)) for x in t]) if t else 0.0)
-    f["alpha_tokens"] = text.map(lambda t: len(re.findall(r"[A-Za-z]{3,}", t)))
+    f["alpha_tokens"] = text.map(content_words)
     f["sentence_count"] = text.map(lambda t: len(SENT.findall(t)))
     f["bullet_count"] = text.str.count("•")
     f["signature_hits"] = _hits(rx["signature"], text)

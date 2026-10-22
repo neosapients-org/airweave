@@ -31,6 +31,19 @@ class Embedder:
         self.transport = transport or self._openai
         self.stats = {"requested": 0, "cache_hits": 0, "api_embedded": 0, "api_tokens": 0, "api_requests": 0, "duplicate_texts_reused": 0}
 
+    def _checked(self, vecs, expected: int) -> list[np.ndarray]:
+        """The transport's vectors, refused before anything is cached unless there is one of the right size per text."""
+        vecs = list(vecs)
+        if len(vecs) != expected:
+            raise RuntimeError(f"embedding response has {len(vecs)} vectors for {expected} texts")
+        out = []
+        for i, v in enumerate(vecs):
+            a = np.asarray(v, dtype=np.float32)
+            if a.shape != (self.dim,) or not np.isfinite(a).all():
+                raise RuntimeError(f"embedding {i} of the response has shape {a.shape} (expected ({self.dim},)) or a non-finite value")
+            out.append(v)                                # validated, stored exactly as before
+        return out
+
     def embed(self, texts: list[str]) -> np.ndarray:
         if not texts:
             return np.zeros((0, self.dim), np.float32)
@@ -51,14 +64,19 @@ class Embedder:
         for s in range(0, len(uniq), self.batch):
             idx = uniq[s:s + self.batch]
             batch = [norm(texts[i]) for i in idx]
-            if self.ledger is not None:
-                worst = sum(len(t) for t in batch) / 3 * self.price / 1e6
-                if not self.ledger.can_spend(worst):
-                    raise RuntimeError("embedding call refused: run cost cap would be exceeded")
-            t0 = time.perf_counter()
-            vecs, toks = self.transport(batch)
-            if self.ledger is not None:
-                self.ledger.add("embedding", toks * self.price / 1e6, {"prompt_tokens": toks}, time.perf_counter() - t0)
+            # a byte-level BPE token covers at least one UTF-8 byte, so the batch's bytes bound its tokens in any language
+            worst = sum(len(t.encode()) for t in batch) * self.price / 1e6
+            if self.ledger is not None and not self.ledger.reserve(worst):
+                raise RuntimeError("embedding call refused: run cost cap would be exceeded")
+            try:
+                t0 = time.perf_counter()
+                vecs, toks = self.transport(batch)
+                if self.ledger is not None:
+                    self.ledger.add("embedding", toks * self.price / 1e6, {"prompt_tokens": toks}, time.perf_counter() - t0)
+            finally:
+                if self.ledger is not None:
+                    self.ledger.release(worst)
+            vecs = self._checked(vecs, len(batch))
             self.stats["api_embedded"] += len(batch); self.stats["api_tokens"] += toks; self.stats["api_requests"] += 1
             for i, v in zip(idx, vecs):
                 self.cache.put_if_absent(texts[i], v)

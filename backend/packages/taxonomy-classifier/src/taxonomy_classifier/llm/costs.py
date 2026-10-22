@@ -18,9 +18,26 @@ class CostLedger:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         json.dump(self.data, open(self.path, "w"), indent=1)
 
+    _reserved: float = 0.0
+
     def can_spend(self, worst_case: float) -> bool:
         with self.lock:
-            return self.data["total_usd"] + worst_case <= self.cap
+            return self.data["total_usd"] + self._reserved + worst_case <= self.cap
+
+    def reserve(self, worst_case: float) -> bool:
+        """Hold a call's worst-case cost against the cap before the call is sent; False when the cap would be passed.
+
+        Every successful reserve is followed by release() once the call's actual cost has been add()-ed (or the call
+        failed), so concurrent calls can never together pass the cap on the strength of the same headroom."""
+        with self.lock:
+            if self.data["total_usd"] + self._reserved + worst_case > self.cap:
+                return False
+            self._reserved += worst_case
+            return True
+
+    def release(self, worst_case: float) -> None:
+        with self.lock:
+            self._reserved = max(0.0, self._reserved - worst_case)
 
     def add(self, stage: str, cost: float, usage: dict | None = None, latency: float = 0.0, calls: int = 1):
         with self.lock:

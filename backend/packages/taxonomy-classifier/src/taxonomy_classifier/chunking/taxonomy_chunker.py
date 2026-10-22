@@ -53,11 +53,14 @@ def split_text(text: str, cfg: dict) -> list[dict]:
         if n <= hard:
             us.append((a, b, n)); continue
         ids = enc.encode(text[a:b], allowed_special="all")     # over-long unit: split at token boundaries
+        # Window edges are the tokens' own character offsets: a token that starts inside a multi-byte character points
+        # at that character's start, so a cut never lands mid-character (the decoded length of a slice would drift there).
+        _, offs = enc.decode_with_offsets(ids)
         cur = a
         for k in range(0, len(ids), target):
-            piece = enc.decode(ids[k:k + target])
-            e = min(b, cur + len(piece)) if k + target < len(ids) else b
-            us.append((cur, e, tok(text[cur:e]))); cur = e
+            e = min(b, max(cur, a + offs[k + target])) if k + target < len(ids) else b
+            if e > cur:
+                us.append((cur, e, tok(text[cur:e]))); cur = e
     groups, cur, cur_t = [], [], 0
     for a, b, n in us:
         if cur and cur_t + n > target and (cur_t >= 0.5 * target or cur_t + n > hard):

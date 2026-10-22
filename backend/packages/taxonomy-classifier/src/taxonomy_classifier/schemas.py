@@ -48,7 +48,8 @@ class AirweaveChunk:
 
     @classmethod
     def from_dict(cls, d: dict) -> "AirweaveChunk":
-        missing = [k for k in REQUIRED_FIELDS if not d.get(k) and d.get(k) != ""]
+        # text may be empty (a chunk with no text is classified as such); an empty id would merge unrelated records
+        missing = [k for k in REQUIRED_FIELDS if not (d.get(k) or (k == "text" and d.get(k) == ""))]
         if missing:
             raise InputError(f"Airweave chunk is missing required field(s) {missing}: {str(d)[:200]}")
         if not isinstance(d["text"], str):

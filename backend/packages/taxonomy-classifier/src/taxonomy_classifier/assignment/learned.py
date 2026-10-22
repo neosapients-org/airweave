@@ -111,6 +111,20 @@ def _sha(p: Path) -> str:
     return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 
 
+def _check_decision_settings(mp: Path, man: dict) -> None:
+    """The manifest's threshold is a probability and its label limit a positive count; anything else would silently turn
+    acceptance into all-or-none or no labels, so the model is refused before it is loaded."""
+    try:
+        threshold = float(man["threshold"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError(f"{mp}: threshold is missing or not a number") from None
+    if not 0.0 <= threshold <= 1.0:                     # also false for NaN
+        raise ValueError(f"{mp}: threshold {man['threshold']!r} is not a probability in [0, 1]")
+    limit = man.get("max_labels_per_child", 1)
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError(f"{mp}: max_labels_per_child {limit!r} is not a whole number of at least 1")
+
+
 @dataclass
 class LearnedAcceptanceModel:
     """A frozen acceptance classifier plus the manifest that pins how it may be used.
@@ -141,6 +155,7 @@ class LearnedAcceptanceModel:
             raise FeatureSchemaMismatch(f"{mp}: feature_schema_version {man.get('feature_schema_version')!r}, engine computes {FEATURE_SCHEMA_VERSION!r}")
         if tuple(man.get("feature_names", ())) != FEATURE_NAMES:
             raise FeatureSchemaMismatch(f"{mp}: feature_names differ from the engine's feature order")
+        _check_decision_settings(mp, man)
         f = Path(model_path) if model_path else mp.parent / man["model_file"]
         if not f.exists():
             raise FileNotFoundError(f"acceptance model file {f} not found (manifest {mp}); supply it via config assignment.acceptance.model_path")
