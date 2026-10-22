@@ -13,6 +13,10 @@ class CostLedger:
         self.lock = threading.RLock()
         self.data = json.load(open(self.path)) if self.path.exists() else {"cap_usd": cap_usd, "total_usd": 0.0, "stages": {}}
         self.data["cap_usd"] = cap_usd
+        # Written at once, not at the first paid call: a run served entirely from the caches still has a ledger (USD 0),
+        # so a missing ledger always means the run never got this far.
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        json.dump(self.data, open(self.path, "w"), indent=1)
 
     def can_spend(self, worst_case: float) -> bool:
         with self.lock:

@@ -21,8 +21,10 @@ RUN poetry config virtualenvs.create false \
     && poetry config virtualenvs.in-project false \
     && poetry config cache-dir /opt/poetry-cache
 
-# Copy poetry files first for better layer caching
+# Copy poetry files first for better layer caching; the taxonomy classifier is a path
+# dependency, so its folder is installed with the rest
 COPY pyproject.toml poetry.lock ./
+COPY packages ./packages
 
 # Install dependencies with cache mount
 RUN --mount=type=cache,target=/opt/poetry-cache \

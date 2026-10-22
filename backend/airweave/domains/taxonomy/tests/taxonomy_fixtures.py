@@ -131,10 +131,8 @@ def corpus(vocab: Dict[str, List[str]], n_docs: int = 6, chunks_per_doc: int = 4
 
 
 def package_root() -> Path:
-    """The editable checkout of the classifier package (its config/ is not installed)."""
-    import taxonomy_classifier
-
-    return Path(taxonomy_classifier.__file__).resolve().parents[2]
+    """The classifier package's folder in this repository (its config/ is not installed)."""
+    return Path(__file__).resolve().parents[4] / "packages" / "taxonomy-classifier"
 
 
 def build_config(tmp: Path, description: str) -> dict:

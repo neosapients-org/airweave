@@ -85,10 +85,11 @@ class TaxonomyEngine:
         if self.taxonomy is None or self.store is None:
             raise ValueError("run_wave() needs a bound taxonomy and a store")
         new_version = new_version or f"{self.taxonomy.version}+w{wave}"
+        # Every wave has a ledger, whichever reviewers it uses: the caller reads the wave's bill from it.
+        run_dir = self.store.root / self.taxonomy.taxonomy_id / "_waves" / new_version
+        run_dir.mkdir(parents=True, exist_ok=True)
+        ledger = CostLedger(self.cfg["llm"]["max_cost_usd"], run_dir / "cost_ledger.json")
         if reviewer is None or structural_reviewer is None:
-            run_dir = self.store.root / self.taxonomy.taxonomy_id / "_waves" / new_version
-            run_dir.mkdir(parents=True, exist_ok=True)
-            ledger = CostLedger(self.cfg["llm"]["max_cost_usd"], run_dir / "cost_ledger.json")
             reviewer = reviewer or LLMNoveltyReviewer(self.cfg, run_dir, ledger, self.llm_transport)
             structural_reviewer = structural_reviewer or LLMStructuralReviewer(self.cfg, run_dir, ledger, self.llm_transport)
         res = run_wave(self.taxonomy, self.cfg, airweave_chunks, self.store, wave, new_version, reviewer, structural_reviewer,
