@@ -8,7 +8,6 @@ invented. No network and no spend.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -22,7 +21,6 @@ from airweave.domains.taxonomy.jobs.candidates import CandidateWriter  # noqa: E
 from airweave.domains.taxonomy.jobs.gateway import PackageGateway, SpendCapReached  # noqa: E402
 from airweave.domains.taxonomy.jobs.records import (  # noqa: E402
     COMPLETED,
-    KIND_DISCOVER,
     KIND_PROPOSE,
     InMemoryTaxonomyJobRepository,
 )
@@ -57,6 +55,9 @@ GARDEN = [
     "rake the autumn leaves",
 ]
 TENANT = "t-acme"
+# Admits the fake embeddings (about USD 0.0001) and refuses every review: the ledger checks a call
+# against its worst case, 3000 output tokens at USD 4.50 per million (about USD 0.0135).
+REVIEWS_REFUSED_CAP = 0.005
 
 
 def stored_chunks(vocab, n_docs=6, per_doc=4, seed=0, prefix="D"):
@@ -384,5 +385,15 @@ class TestPropose:
 
 
 def test_discover_gateway_reports_a_refused_call_as_the_cap(build_cfg, tmp_path):
-    assert issubclass(SpendCapReached, RuntimeError)
-    assert Path(tmp_path).exists() and KIND_DISCOVER != KIND_PROPOSE
+    """The cap admits the embeddings but refuses the reviews: the package carries on without
+    them, so the gateway must fail the job instead of returning a candidate missing clusters."""
+    gw = gateway(build_cfg)
+    with pytest.raises(SpendCapReached, match="refused .* model call"):
+        gw.discover(
+            package_chunks(stored_chunks(CORPORA["acme"])),
+            tenant_id=TENANT,
+            candidate_version="acme-first",
+            work_dir=tmp_path,
+            spend_cap_usd=REVIEWS_REFUSED_CAP,
+            corpus_description=None,
+        )
