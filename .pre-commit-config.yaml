@@ -1,3 +1,6 @@
+# Packages copied in from their own source stay byte-identical: no hook rewrites them.
+exclude: ^backend/packages/
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0

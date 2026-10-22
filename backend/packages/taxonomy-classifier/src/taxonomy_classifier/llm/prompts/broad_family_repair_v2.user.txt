@@ -1,0 +1,5 @@
+Existing families (id | name | description):
+{families}
+
+Categories to place (each currently: {problem}):
+{categories}

@@ -153,7 +153,7 @@ disable_error_code = ["arg-type", "method-assign", "call-arg", "assignment"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-extend-exclude = ["alembic", "local.py", "fern/**", "tests"]
+extend-exclude = ["alembic", "local.py", "fern/**", "tests", "packages"]
 
 [tool.ruff.lint]
 select = [

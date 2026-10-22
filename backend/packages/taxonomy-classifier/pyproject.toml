@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airweave-taxonomy-classifier"
+version = "1.0.0"
+description = "Topic taxonomy discovery and semantic classification for Airweave retrieval chunks"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+# Versions verified in the reference build are the lower bounds.
+dependencies = [
+  "numpy>=2.5.3,<3",
+  "pandas>=3.0.6,<4",
+  "scipy>=1.18.1,<2",
+  "scikit-learn>=1.9.1,<2",
+  "umap-learn>=0.5.12,<0.6",
+  "pynndescent>=0.6.0,<0.7",
+  "numba>=0.68.0",
+  "hdbscan>=0.8.44,<0.9",
+  "tiktoken>=0.14.0",
+  "PyYAML>=6.0.3,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+taxonomy-build = "taxonomy_classifier.cli:build_main"
+taxonomy-classify = "taxonomy_classifier.cli:classify_main"
+taxonomy-novelty = "taxonomy_classifier.cli:novelty_main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+taxonomy_classifier = ["llm/prompts/*.txt", "llm/prompts/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: runs UMAP/HDBSCAN (seconds to a minute)"]
