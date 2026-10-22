@@ -153,12 +153,3 @@ class TestMoney:
     def test_a_ceiling_that_is_not_a_finite_amount_is_refused(self, monkeypatch, value):
         with pytest.raises(ValidationError, match="TAXONOMY_SPEND_CAP_USD"):
             _build_settings(monkeypatch, {"TAXONOMY_SPEND_CAP_USD": value})
-
-
-class TestTenantBindings:
-    def test_tenant_bindings_are_read_from_json(self, monkeypatch):
-        s = _build_settings(monkeypatch, {"TAXONOMY_TENANT_BY_ORGANIZATION": '{"org-1": "t-acme"}'})
-        assert s.TAXONOMY_TENANT_BY_ORGANIZATION == {"org-1": "t-acme"}
-
-    def test_no_organization_has_a_tenant_by_default(self, monkeypatch):
-        assert _build_settings(monkeypatch, {}).TAXONOMY_TENANT_BY_ORGANIZATION == {}

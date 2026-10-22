@@ -202,9 +202,6 @@ env:
   # (the jobs worker pod sets it itself).
   TAXONOMY_JOBS_ENABLED: 'false'
   # DISCOVER_MIN_CHUNKS: '100'           # fewer chunks of text and a discover job fails before spending
-  # Which tenant's prefix a discovery writes to, per organization: JSON {"<organization uuid>":
-  # "<tenant id>"}. A caller never chooses it. Set it per environment before enabling discovery.
-  TAXONOMY_TENANT_BY_ORGANIZATION: '{}'
   # TAXONOMY_JOBS_CACHE_DIR: ''          # opt-in per-tenant job caches; they hold customer text
 
   # Storage backend

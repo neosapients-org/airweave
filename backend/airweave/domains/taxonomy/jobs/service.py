@@ -12,7 +12,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 from uuid import UUID, uuid4
 
 from airweave.core.logging import logger
@@ -49,42 +49,68 @@ class JobRequest:
     corpus_description: Optional[str] = None
 
 
-def resolve_tenant(
-    organization_id: UUID,
-    bindings: Mapping[str, str],
-    active_tenant: Optional[str],
-    requested: Optional[str],
-) -> str:
-    """The tenant whose prefix a discovery writes to, from trusted state, never from the caller.
+def neo_collection_id(tenant_id: str, workspace_id: str) -> str:
+    """The collection ``readable_id`` Neo derives for a tenant and workspace.
 
-    The tenant comes from the deployment's organization binding
-    (``TAXONOMY_TENANT_BY_ORGANIZATION``) or, for a collection that already has an active file,
-    from that file. A tenant the caller names is only checked against it: an administrator of one
-    organization cannot direct a candidate (and the report's example passages from the
-    collection) into another tenant's prefix.
+    The same function as neo-platform's ``deriveCollectionId``
+    (packages/backend/security/src/collection-id.ts): ``neo-`` and the first 48 hex characters
+    of the sha256 of ``<len>:<tenant>:<len>:<workspace>``, each length counted in UTF-16 code
+    units as JavaScript counts them.
+    """
+
+    def units(s: str) -> int:
+        return len(s.encode("utf-16-le")) // 2
+
+    canonical = f"{units(tenant_id)}:{tenant_id}:{units(workspace_id)}:{workspace_id}"
+    return "neo-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:48]
+
+
+def resolve_tenant(
+    collection_readable_id: str,
+    active_tenant: Optional[str],
+    tenant_id: Optional[str],
+    workspace_id: Optional[str],
+) -> str:
+    """The tenant whose prefix a discovery writes to, proven by the collection, not trusted.
+
+    Neo names every collection after its tenant and workspace (``neo_collection_id``), so a
+    caller that names both is checked against the collection itself: only the pair that derives
+    this collection's id is accepted, and an administrator of one organization cannot direct a
+    candidate (and the report's example passages from the collection) into another tenant's
+    prefix. Without them, the tenant is the collection's active taxonomy's, which an earlier
+    checked discovery wrote.
 
     Raises:
-        RelabelRefused: 422 when no tenant can be established, 409 when the binding and the
-            active file disagree, 403 when the caller names another tenant.
+        RelabelRefused: 422 when only one of the two is given or there is nothing to go on,
+            403 when the pair does not derive this collection, 409 when the collection's active
+            taxonomy names another tenant.
     """
-    bound = bindings.get(str(organization_id))
-    if bound and active_tenant and bound != active_tenant:
-        raise RelabelRefused(
-            409,
-            "tenant_conflict",
-            "the organization's tenant and the collection's active taxonomy name different tenants",
-        )
-    tenant = bound or active_tenant
-    if not tenant:
-        raise RelabelRefused(
-            422,
-            "tenant_not_configured",
-            "no tenant is configured for this organization (TAXONOMY_TENANT_BY_ORGANIZATION) "
-            "and the collection has no active taxonomy to take it from",
-        )
-    if requested and requested != tenant:
-        raise RelabelRefused(403, "tenant_not_allowed", "tenant_id is not this organization's")
-    return tenant
+    if tenant_id or workspace_id:
+        if not (tenant_id and workspace_id):
+            raise RelabelRefused(
+                422, "tenant_scope_incomplete", "tenant_id and workspace_id go together"
+            )
+        if neo_collection_id(tenant_id, workspace_id) != collection_readable_id:
+            raise RelabelRefused(
+                403,
+                "tenant_not_allowed",
+                "tenant_id and workspace_id do not name this collection",
+            )
+        if active_tenant and active_tenant != tenant_id:
+            raise RelabelRefused(
+                409,
+                "tenant_conflict",
+                "the collection's active taxonomy names a different tenant",
+            )
+        return tenant_id
+    if active_tenant:
+        return active_tenant
+    raise RelabelRefused(
+        422,
+        "tenant_required",
+        "a first discovery needs tenant_id and workspace_id: the collection has no active "
+        "taxonomy to take the tenant from",
+    )
 
 
 class TaxonomyJobService:

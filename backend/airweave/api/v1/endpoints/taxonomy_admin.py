@@ -18,7 +18,6 @@ from airweave.api.deps import Inject
 from airweave.api.router import TrailingSlashRouter
 from airweave.api.v1.endpoints.admin import _require_admin_permission
 from airweave.core import container as container_mod
-from airweave.core.config import settings
 from airweave.core.shared_models import FeatureFlag as FeatureFlagEnum
 from airweave.domains.collections.protocols import CollectionRepositoryProtocol
 from airweave.domains.taxonomy.relabel.jobs import (
@@ -253,8 +252,12 @@ class DiscoveryRequest(BaseModel):
     idempotency_key: str = Field(..., description="A replay returns the same job")
     tenant_id: Optional[str] = Field(
         None,
-        description="Optional. The tenant is the organization's configured one "
-        "(TAXONOMY_TENANT_BY_ORGANIZATION) or the active file's; a value given here must match it",
+        description="The tenant the candidate is written for; given with workspace_id, the pair "
+        "must derive this collection's id. Needed for a first discovery; otherwise the tenant is "
+        "the collection's active taxonomy's",
+    )
+    workspace_id: Optional[str] = Field(
+        None, description="The workspace the collection belongs to; given with tenant_id"
     )
     spend_cap_usd: Optional[float] = Field(
         None, ge=0, allow_inf_nan=False, description="Lowers the approved ceiling"
@@ -295,7 +298,6 @@ async def _start_job(
     kind: str,
     readable_id: str,
     body: Any,
-    tenant_id: Optional[str],
     db: AsyncSession,
     ctx: ApiContext,
     collection_repo: CollectionRepositoryProtocol,
@@ -326,13 +328,13 @@ async def _start_job(
             },
         )
     try:
-        # Never the caller's choice: the tenant comes from the organization's binding or from the
-        # collection's active file, and a name in the body is only checked against it.
+        # Never the caller's word alone: a tenant and workspace in the body must derive this
+        # collection's id; without them the tenant is the collection's active taxonomy's.
         tenant_id = resolve_tenant(
-            ctx.organization.id,
-            settings.TAXONOMY_TENANT_BY_ORGANIZATION,
+            collection.readable_id,
             taxonomy.tenant_id if taxonomy is not None else None,
-            tenant_id,
+            getattr(body, "tenant_id", None),
+            getattr(body, "workspace_id", None),
         )
     except RelabelRefused as e:
         raise HTTPException(status_code=e.status, detail=e.detail()) from e
@@ -371,9 +373,7 @@ async def start_taxonomy_discovery(
     """Admin-only: enqueue a discover job (A13). It writes a candidate first taxonomy version."""
     from airweave.domains.taxonomy.jobs.records import KIND_DISCOVER
 
-    return await _start_job(
-        KIND_DISCOVER, readable_id, body, body.tenant_id, db, ctx, collection_repo, service
-    )
+    return await _start_job(KIND_DISCOVER, readable_id, body, db, ctx, collection_repo, service)
 
 
 @router.post("/collections/{readable_id}/taxonomy-evolution/propose", status_code=202)
@@ -388,9 +388,7 @@ async def start_taxonomy_proposal(
     """Admin-only: enqueue a propose job (A12): one evolution wave on the unresolved chunks."""
     from airweave.domains.taxonomy.jobs.records import KIND_PROPOSE
 
-    return await _start_job(
-        KIND_PROPOSE, readable_id, body, None, db, ctx, collection_repo, service
-    )
+    return await _start_job(KIND_PROPOSE, readable_id, body, db, ctx, collection_repo, service)
 
 
 @router.get("/taxonomy-jobs/{job_id}")

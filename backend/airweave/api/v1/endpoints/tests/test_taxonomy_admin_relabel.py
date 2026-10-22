@@ -10,9 +10,9 @@ from fastapi import HTTPException
 
 from airweave.api.context import ApiContext
 from airweave.api.v1.endpoints import taxonomy_admin as ep
-from airweave.core.config import settings
 from airweave.core.logging import logger
 from airweave.core.shared_models import AuthMethod, FeatureFlag
+from airweave.domains.taxonomy.jobs.service import neo_collection_id
 from airweave.domains.taxonomy.relabel.jobs import InMemoryJobRepository
 from airweave.domains.taxonomy.relabel.service import RelabelService
 from airweave.domains.taxonomy.relabel.tests.helpers import (
@@ -366,18 +366,7 @@ class TestUnresolvedEndpoint:
         assert ("GET", "/admin/collections/{readable_id}/unresolved") in paths
 
 
-class _EveryOrganizationIsAcme(dict):
-    """The deployment's tenant binding, for tests that use a fresh organization each time."""
-
-    def get(self, key, default=None):
-        return "t-acme"
-
-
 class TestTaxonomyJobEndpoints:
-    @pytest.fixture(autouse=True)
-    def tenant_binding(self, monkeypatch):
-        monkeypatch.setattr(settings, "TAXONOMY_TENANT_BY_ORGANIZATION", _EveryOrganizationIsAcme())
-
     def svc(self, cap=5.0):
         from airweave.domains.taxonomy.jobs.records import InMemoryTaxonomyJobRepository
         from airweave.domains.taxonomy.jobs.service import TaxonomyJobService
@@ -408,11 +397,12 @@ class TestTaxonomyJobEndpoints:
                 "candidate_version": "acme-first",
                 "idempotency_key": "k1",
                 "tenant_id": "t-acme",
+                "workspace_id": "w-default",
                 **kw,
             }
         )
         return await ep.start_taxonomy_discovery(
-            readable_id="neo-acme",
+            readable_id=neo_collection_id("t-acme", "w-default"),
             body=body,
             db=AsyncMock(),
             ctx=c or ctx(),

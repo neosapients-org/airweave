@@ -24,11 +24,11 @@ JOB_KEYS = [
     "TAXONOMY_JOBS_ENABLED",
     "TAXONOMY_SPEND_CAP_USD",
     "DISCOVER_MIN_CHUNKS",
-    "TAXONOMY_TENANT_BY_ORGANIZATION",
     "TAXONOMY_JOBS_CACHE_DIR",
 ]
 # Retired settings: each is a constant now, so none may come back as an environment entry.
 RETIRED_KEYS = [
+    "TAXONOMY_TENANT_BY_ORGANIZATION",  # the collection's own id proves the tenant now
     "TAXONOMY_JOBS_TASK_QUEUE",
     "TAXONOMY_JOBS_WORK_DIR",
     "TAXONOMY_JOBS_BUILD_CONFIG",
