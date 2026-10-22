@@ -171,11 +171,6 @@ class Settings(BaseSettings):
     # starts empty). The folders hold customer text and the model's answers about it: put them on
     # an encrypted volume and delete them with the tenant's data.
     TAXONOMY_JOBS_CACHE_DIR: str = ""
-    # The Airweave organization Neo's collections live in: the only one allowed to start discover
-    # and propose jobs, which write into a tenant's taxonomy prefix. Empty: no organization can.
-    # A collection id names a tenant but does not prove the caller owns it, because a caller can
-    # create a collection with any readable_id.
-    TAXONOMY_JOBS_ORGANIZATION_ID: str = ""
 
     # Search: honour OR between a request's filter groups (contract C8). False keeps the
     # upstream behaviour, where every user filter group is merged into one AND group.

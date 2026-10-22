@@ -49,53 +49,22 @@ class JobRequest:
     corpus_description: Optional[str] = None
 
 
-def neo_collection_id(tenant_id: str, workspace_id: str) -> str:
-    """The collection ``readable_id`` Neo derives for a tenant and workspace.
+def resolve_tenant(active_tenant: Optional[str], tenant_id: Optional[str]) -> str:
+    """The tenant whose prefix a discovery writes its candidate to.
 
-    The same function as neo-platform's ``deriveCollectionId``
-    (packages/backend/security/src/collection-id.ts): ``neo-`` and the first 48 hex characters
-    of the sha256 of ``<len>:<tenant>:<len>:<workspace>``, each length counted in UTF-16 code
-    units as JavaScript counts them.
-    """
-
-    def units(s: str) -> int:
-        return len(s.encode("utf-16-le")) // 2
-
-    canonical = f"{units(tenant_id)}:{tenant_id}:{units(workspace_id)}:{workspace_id}"
-    return "neo-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:48]
-
-
-def resolve_tenant(
-    collection_readable_id: str,
-    active_tenant: Optional[str],
-    tenant_id: Optional[str],
-    workspace_id: Optional[str],
-) -> str:
-    """The tenant whose prefix a discovery writes to, checked against the collection.
-
-    Neo names every collection after its tenant and workspace (``neo_collection_id``), so a
-    caller that names both is checked against the collection itself: only the pair that derives
-    this collection's id is accepted. Without them, the tenant is the collection's active
-    taxonomy's, which an earlier discovery wrote. This is a consistency check, not authorization:
-    a caller can create a collection with any readable_id, so the endpoint first requires the
-    caller's organization to be Neo's (``TAXONOMY_JOBS_ORGANIZATION_ID``).
+    A first discovery takes the tenant the caller names (Meridian sends it); later ones take the
+    collection's active taxonomy's, and a name given then must match it. Airweave does not check
+    that the caller owns the tenant: Neo calls Airweave with one service key, and the endpoints
+    already require the admin permission. The candidate only ever goes under ``candidates/``,
+    is never written over, and Meridian registers only the candidates of jobs it started, so a
+    wrong tenant name can at most leave files nobody reads. (Writing candidates under the
+    collection instead of the tenant would remove the question entirely.)
 
     Raises:
-        RelabelRefused: 422 when only one of the two is given or there is nothing to go on,
-            403 when the pair does not derive this collection, 409 when the collection's active
-            taxonomy names another tenant.
+        RelabelRefused: 409 when a named tenant differs from the active taxonomy's, 422 when a
+            first discovery names no tenant.
     """
-    if tenant_id or workspace_id:
-        if not (tenant_id and workspace_id):
-            raise RelabelRefused(
-                422, "tenant_scope_incomplete", "tenant_id and workspace_id go together"
-            )
-        if neo_collection_id(tenant_id, workspace_id) != collection_readable_id:
-            raise RelabelRefused(
-                403,
-                "tenant_not_allowed",
-                "tenant_id and workspace_id do not name this collection",
-            )
+    if tenant_id:
         if active_tenant and active_tenant != tenant_id:
             raise RelabelRefused(
                 409,
@@ -108,8 +77,7 @@ def resolve_tenant(
     raise RelabelRefused(
         422,
         "tenant_required",
-        "a first discovery needs tenant_id and workspace_id: the collection has no active "
-        "taxonomy to take the tenant from",
+        "a first discovery needs tenant_id: the collection has no active taxonomy to take it from",
     )
 
 

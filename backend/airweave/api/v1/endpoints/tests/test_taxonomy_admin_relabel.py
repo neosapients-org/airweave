@@ -10,10 +10,8 @@ from fastapi import HTTPException
 
 from airweave.api.context import ApiContext
 from airweave.api.v1.endpoints import taxonomy_admin as ep
-from airweave.core.config import settings
 from airweave.core.logging import logger
 from airweave.core.shared_models import AuthMethod, FeatureFlag
-from airweave.domains.taxonomy.jobs.service import neo_collection_id
 from airweave.domains.taxonomy.relabel.jobs import InMemoryJobRepository
 from airweave.domains.taxonomy.relabel.service import RelabelService
 from airweave.domains.taxonomy.relabel.tests.helpers import (
@@ -24,8 +22,6 @@ from airweave.domains.taxonomy.relabel.tests.helpers import (
     FakeResolver,
     chunk,
 )
-
-NEO_ORG = uuid4()  # the organization taxonomy jobs are started from (TAXONOMY_JOBS_ORGANIZATION_ID)
 
 
 def ctx(features=(FeatureFlag.API_KEY_ADMIN_SYNC,), auth=AuthMethod.API_KEY, org=None):
@@ -370,10 +366,6 @@ class TestUnresolvedEndpoint:
 
 
 class TestTaxonomyJobEndpoints:
-    @pytest.fixture(autouse=True)
-    def neo_organization(self, monkeypatch):
-        monkeypatch.setattr(settings, "TAXONOMY_JOBS_ORGANIZATION_ID", str(NEO_ORG))
-
     def svc(self, cap=5.0):
         from airweave.domains.taxonomy.jobs.records import InMemoryTaxonomyJobRepository
         from airweave.domains.taxonomy.jobs.service import TaxonomyJobService
@@ -404,15 +396,14 @@ class TestTaxonomyJobEndpoints:
                 "candidate_version": "acme-first",
                 "idempotency_key": "k1",
                 "tenant_id": "t-acme",
-                "workspace_id": "w-default",
                 **kw,
             }
         )
         return await ep.start_taxonomy_discovery(
-            readable_id=neo_collection_id("t-acme", "w-default"),
+            readable_id="neo-acme",
             body=body,
             db=AsyncMock(),
-            ctx=c or ctx(org=NEO_ORG),
+            ctx=c or ctx(),
             collection_repo=CollectionRepo(found),
             service=svc,
         )
@@ -423,7 +414,7 @@ class TestTaxonomyJobEndpoints:
             readable_id="neo-acme",
             body=body,
             db=AsyncMock(),
-            ctx=c or ctx(org=NEO_ORG),
+            ctx=c or ctx(),
             collection_repo=CollectionRepo(True),
             service=svc,
         )
@@ -492,7 +483,7 @@ class TestTaxonomyJobEndpoints:
             assert e.value.status_code == 404
 
     async def test_cancel_an_unclaimed_job(self):
-        svc, c = self.svc(), ctx(org=NEO_ORG)
+        svc, c = self.svc(), ctx()
         job = await self.discover(svc, c)
         out = await ep.cancel_taxonomy_job(UUID(job["job_id"]), ctx=c, service=svc)
         assert out["state"] == "CANCELLED" and out["status"] == "cancelled"

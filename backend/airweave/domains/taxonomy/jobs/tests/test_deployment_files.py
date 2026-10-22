@@ -25,7 +25,6 @@ JOB_KEYS = [
     "TAXONOMY_SPEND_CAP_USD",
     "DISCOVER_MIN_CHUNKS",
     "TAXONOMY_JOBS_CACHE_DIR",
-    "TAXONOMY_JOBS_ORGANIZATION_ID",
 ]
 # Retired settings: each is a constant now, so none may come back as an environment entry.
 RETIRED_KEYS = [
@@ -79,15 +78,10 @@ class TestValues:
 
     def test_the_decisions_are_strings_and_approve_nothing(self, values):
         env = values["env"]
-        for key in (
-            "TAXONOMY_JOBS_ENABLED",
-            "TAXONOMY_SPEND_CAP_USD",
-            "TAXONOMY_JOBS_ORGANIZATION_ID",
-        ):
+        for key in ("TAXONOMY_JOBS_ENABLED", "TAXONOMY_SPEND_CAP_USD"):
             assert isinstance(env[key], str), key
         assert env["TAXONOMY_JOBS_ENABLED"] == "false"
         assert env["TAXONOMY_SPEND_CAP_USD"] == "0"
-        assert env["TAXONOMY_JOBS_ORGANIZATION_ID"] == ""  # no organization until one is named
 
     def test_no_retired_setting_is_left_in_the_values(self, values):
         assert not [k for k in RETIRED_KEYS if k in values["env"]]
@@ -121,7 +115,6 @@ class TestEnvExample:
             assert key in lines, key
         assert int(lines["DISCOVER_MIN_CHUNKS"]) == s.DISCOVER_MIN_CHUNKS
         assert lines["TAXONOMY_JOBS_CACHE_DIR"] == s.TAXONOMY_JOBS_CACHE_DIR
-        assert lines["TAXONOMY_JOBS_ORGANIZATION_ID"] == s.TAXONOMY_JOBS_ORGANIZATION_ID == ""
         assert lines["TAXONOMY_JOBS_ENABLED"] == "false"
         assert float(lines["TAXONOMY_SPEND_CAP_USD"]) == 0
         assert not [k for k in RETIRED_KEYS if k in lines]
