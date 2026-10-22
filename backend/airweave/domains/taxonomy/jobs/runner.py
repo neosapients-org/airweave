@@ -31,6 +31,7 @@ from airweave.domains.taxonomy.jobs.candidates import (
     CandidateConflict,
     CandidateTaken,
     CandidateWriter,
+    UnsafeCandidateFile,
 )
 from airweave.domains.taxonomy.jobs.gateway import (
     BuildOutput,
@@ -134,13 +135,16 @@ class TaxonomyJobRunner:
             await beat.stop()
             final = await self._repo.get(job.id)
             if not keep_work and final is not None and not final.active:
-                shutil.rmtree(self._work / str(job.id), ignore_errors=True)
+                _remove_work(self._work / str(job.id))
         final = await self._repo.get(job.id)
         return final.state if final is not None else FAILED
 
     async def _fail(self, job: TaxonomyJobRecord, error: Exception) -> None:
         """End the job as failed with the reason a person can act on."""
-        if isinstance(error, (_Abort, TooFewDocuments, CandidateTaken, CandidateConflict)):
+        if isinstance(
+            error,
+            (_Abort, TooFewDocuments, CandidateTaken, CandidateConflict, UnsafeCandidateFile),
+        ):
             message = str(error)
         elif isinstance(error, SpendCapReached):
             message = str(error)
@@ -186,6 +190,13 @@ class TaxonomyJobRunner:
             await self._complete(job, done, spend=float(done.get("cost_usd") or 0.0))
             return
         serving = await self._serving(job) if job.kind == KIND_PROPOSE else None
+        # Refused before the claim and the scan: without the build YAML the package cannot
+        # discover, and finding that out after reading the collection would waste the read.
+        if job.kind == KIND_DISCOVER and not self._gateway.can_discover:
+            raise _Abort(
+                "this jobs worker has no classifier build config "
+                "(taxonomyJobsWorker.buildConfig): discover cannot run"
+            )
         # The write-once claim comes before the scan: a version another job owns is found out
         # before Vespa is read and customer text is held in memory.
         await self._candidates.claim(job.tenant_id, job.candidate_version, str(job.id), job.kind)
@@ -214,7 +225,7 @@ class TaxonomyJobRunner:
                 output.report,
                 checkpoint=guard("upload"),
             )
-        except (CandidateConflict, _Ended):
+        except (CandidateConflict, UnsafeCandidateFile, _Ended):
             raise
         except Exception as e:
             raise TransientUploadError(f"upload failed: {type(e).__name__}: {e}") from e
@@ -387,6 +398,16 @@ class _Heartbeat:
                 return
             if saved.cancel_requested:
                 self.cancelled = True
+
+
+def _remove_work(folder: Path) -> None:
+    """Remove a finished job's scratch folder; a failure is logged, and housekeeping retries."""
+    try:
+        shutil.rmtree(folder)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.error(f"[TaxonomyJob] could not remove the work in {folder.name}: {e}")
 
 
 def _unresolved_chunk(item: Dict[str, Any]) -> Dict[str, Any]:

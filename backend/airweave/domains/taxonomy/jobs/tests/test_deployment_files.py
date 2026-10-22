@@ -203,6 +203,41 @@ class TestBuildConfigRollsThePod:
         assert "TAXONOMY_JOBS_BUILD_CONFIG" not in template
         assert 'args: ["/etc/airweave/taxonomy-build.yaml"]' in template
 
+    def test_the_worker_starts_without_a_build_config(self):
+        """No ``buildConfig``: the chart passes no argument, and the worker must still start."""
+        from airweave.domains.taxonomy.jobs.worker import _build_config_argument
+
+        assert _build_config_argument([]) is None
+        assert _build_config_argument(["/etc/airweave/taxonomy-build.yaml"]) == (
+            "/etc/airweave/taxonomy-build.yaml"
+        )
+
+    def test_the_rendered_command_matches_what_the_worker_parses(self):
+        import shutil
+        import subprocess
+
+        from airweave.domains.taxonomy.jobs.worker import _build_config_argument
+
+        if shutil.which("helm") is None:
+            pytest.skip("helm is not installed")
+
+        def args(*sets):
+            out = subprocess.run(
+                ["helm", "template", "t", str(HELM), "--set", "taxonomyJobsWorker.enabled=true"]
+                + [x for s in sets for x in ("--set", s)],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            pod = out.split("component: taxonomy-jobs-worker", 1)[-1]
+            found = re.search(r"args: \[(.*)\]", pod)
+            return [a.strip().strip('"') for a in found.group(1).split(",")] if found else []
+
+        assert _build_config_argument(args()) is None
+        assert _build_config_argument(args("taxonomyJobsWorker.buildConfig=a: 1")) == (
+            "/etc/airweave/taxonomy-build.yaml"
+        )
+
     def test_the_scratch_volume_is_mounted_inside_the_taxonomy_volume(self, template):
         assert "TAXONOMY_JOBS_WORK_DIR" not in template
         assert template.index("mountPath: /data/airweave-taxonomy\n") < template.index(

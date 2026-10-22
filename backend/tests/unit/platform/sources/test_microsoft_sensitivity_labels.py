@@ -12,17 +12,26 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from tenacity import wait_none
 
 from airweave.platform.sources.microsoft_sensitivity_labels import SensitivityLabelFilter
 
 
 @pytest.fixture
 def logger():
-    """Return a logger mock — the filter only needs .info/.warning."""
+    """Return a logger mock — the filter only needs .info/.warning/.error."""
     mock = MagicMock()
     mock.info = MagicMock()
     mock.warning = MagicMock()
+    mock.error = MagicMock()
     return mock
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_wait(monkeypatch):
+    """Keep the filter's 429/5xx retries but skip their backoff sleeps."""
+    for method in (SensitivityLabelFilter._graph_get, SensitivityLabelFilter._graph_post):
+        monkeypatch.setattr(method.retry, "wait", wait_none())
 
 
 def _response(status_code: int, json_body: Any = None) -> httpx.Response:
@@ -50,24 +59,24 @@ def _make_filter(
 
 
 # ---------------------------------------------------------------------------
-# enabled flag
+# fails_closed flag — which policies refuse to index a file on an unread label
 # ---------------------------------------------------------------------------
 
 
-def test_disabled_when_empty(logger):
-    """No block list and no skip_unlabeled means the filter is a no-op."""
+def test_skip_encrypted_alone_does_not_fail_closed(logger):
+    """Encryption is reported as a 423; other read errors cannot hide plaintext."""
     f = _make_filter(http_client=MagicMock(), logger=logger)
-    assert f.enabled is False
+    assert f.fails_closed is False
 
 
-def test_enabled_when_block_list_present(logger):
+def test_block_list_fails_closed(logger):
     f = _make_filter(excluded=["guid-1"], http_client=MagicMock(), logger=logger)
-    assert f.enabled is True
+    assert f.fails_closed is True
 
 
-def test_enabled_when_skip_unlabeled(logger):
+def test_skip_unlabeled_fails_closed(logger):
     f = _make_filter(skip_unlabeled=True, http_client=MagicMock(), logger=logger)
-    assert f.enabled is True
+    assert f.fails_closed is True
 
 
 # ---------------------------------------------------------------------------
@@ -153,22 +162,69 @@ async def test_encrypted_item_raises_when_skip_encrypted_false(logger):
 
 
 @pytest.mark.asyncio
-async def test_item_check_skipped_entirely_when_disabled(logger):
-    """A disabled filter never calls Graph — no excluded labels, no skip flags."""
+async def test_default_config_reads_the_label_and_skips_an_encrypted_file(logger):
+    """skip_encrypted_files defaults to true and is a policy on its own (review 4301738201).
+
+    Regression: with no block list and skip_unlabeled off the filter was disabled, so an
+    encrypted file never reached the 423 handling and was indexed.
+    """
     http_client = MagicMock()
-    http_client.post = AsyncMock(return_value=_response(200, {"labels": []}))
+    http_client.post = AsyncMock(return_value=_response(423))
     f = _make_filter(http_client=http_client, logger=logger)
-    assert await f.should_skip_item(drive_id="d", item_id="i") is False
-    http_client.post.assert_not_called()
+    assert await f.should_skip_item(drive_id="d", item_id="i") is True
+    http_client.post.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_graph_error_falls_back_to_keep(logger):
-    """If extractSensitivityLabels errors (non-423), we keep the file rather than fail the sync."""
+@pytest.mark.parametrize("status", [403, 429, 500, 503])
+@pytest.mark.parametrize(
+    "policy", [{"excluded": ["guid-1"]}, {"skip_unlabeled": True}], ids=["block_list", "unlabeled"]
+)
+async def test_unreadable_item_label_fails_closed_under_a_label_policy(logger, status, policy):
+    """A label that cannot be read is not an allow decision (reviews 4301738207, 4311179790).
+
+    Regression: any Graph error returned False (index the file) even with a block list, so
+    a throttled sync indexed confidential-labelled files.
+    """
+    http_client = MagicMock()
+    http_client.post = AsyncMock(return_value=_response(status))
+    f = _make_filter(http_client=http_client, logger=logger, **policy)
+    with pytest.raises(httpx.HTTPStatusError):
+        await f.should_skip_item(drive_id="d", item_id="i")
+    logger.error.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_unreadable_item_label_is_kept_when_only_skip_encrypted_is_set(logger):
+    """No policy decides on the label itself, so a non-423 read failure keeps the file."""
     http_client = MagicMock()
     http_client.post = AsyncMock(return_value=_response(500))
-    f = _make_filter(excluded=["guid-1"], http_client=http_client, logger=logger)
+    f = _make_filter(http_client=http_client, logger=logger)
     assert await f.should_skip_item(drive_id="d", item_id="i") is False
+
+
+@pytest.mark.asyncio
+async def test_throttled_item_label_read_is_retried_before_deciding(logger):
+    """A 429 is retried, so throttling alone does not fail a fail-closed sync."""
+    http_client = MagicMock()
+    http_client.post = AsyncMock(
+        side_effect=[
+            _response(429),
+            _response(200, {"labels": [{"sensitivityLabelId": "GUID-1"}]}),
+        ]
+    )
+    f = _make_filter(excluded=["guid-1"], http_client=http_client, logger=logger)
+    assert await f.should_skip_item(drive_id="d", item_id="i") is True
+    assert http_client.post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_encrypted_423_is_not_retried(logger):
+    http_client = MagicMock()
+    http_client.post = AsyncMock(return_value=_response(423))
+    f = _make_filter(excluded=["guid-1"], http_client=http_client, logger=logger)
+    assert await f.should_skip_item(drive_id="d", item_id="i") is True
+    http_client.post.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -331,18 +387,19 @@ async def test_site_with_malformed_assigned_labels_ignored(logger):
 
 
 @pytest.mark.asyncio
-async def test_site_graph_error_fails_closed_when_a_block_list_is_set(logger):
-    """A site is not indexed on a container label that could not be checked."""
+@pytest.mark.parametrize("status", [403, 429, 500])
+async def test_site_graph_error_fails_closed_when_a_block_list_is_set(logger, status):
+    """A site is not indexed on a container label that could not be checked (4301738204)."""
     http_client = MagicMock()
-    http_client.get = AsyncMock(return_value=_response(500))
+    http_client.get = AsyncMock(return_value=_response(status))
     f = _make_filter(excluded=["guid-1"], http_client=http_client, logger=logger)
     with pytest.raises(httpx.HTTPStatusError):
         await f.should_skip_site(site_id="s", group_id="g")
 
 
-def test_enabled_when_encrypted_files_must_raise(logger):
+def test_only_a_block_list_blocks_containers(logger):
     f = _make_filter(skip_encrypted=False, http_client=MagicMock(), logger=logger)
-    assert f.enabled is True and f.blocks_containers is False
+    assert f.blocks_containers is False
 
 
 @pytest.mark.parametrize(
@@ -354,16 +411,16 @@ def test_enabled_when_encrypted_files_must_raise(logger):
     ],
 )
 @pytest.mark.parametrize(
-    "excluded,skip_unlabeled,skip_encrypted,built",
+    "excluded,skip_unlabeled,skip_encrypted",
     [
-        ([], False, True, False),  # nothing configured: no label calls
-        ([], False, False, True),  # encrypted files must raise: the filter must exist
-        (["g"], False, True, True),
-        ([], True, True, True),
+        ([], False, True),  # defaults: encrypted files must still be skipped (4301738201)
+        ([], False, False),  # encrypted files must raise: the filter must exist
+        (["g"], False, True),
+        ([], True, True),
     ],
 )
 def test_the_source_builds_the_filter_for_every_label_setting(
-    module, cls, excluded, skip_unlabeled, skip_encrypted, built, logger
+    module, cls, excluded, skip_unlabeled, skip_encrypted, logger
 ):
     import importlib
 
@@ -376,7 +433,7 @@ def test_the_source_builds_the_filter_for_every_label_setting(
     source._logger = logger
     source.get_access_token = AsyncMock(return_value="t")
 
-    assert (source._get_label_filter() is not None) is built
+    assert source._get_label_filter() is not None
 
 
 # ---------------------------------------------------------------------------
@@ -485,3 +542,117 @@ async def test_sharepoint_does_not_index_a_site_whose_label_check_failed(logger,
             await run()
     else:
         assert await run() == []
+
+
+# ---------------------------------------------------------------------------
+# Source wiring — label decisions reach the entity stream
+# ---------------------------------------------------------------------------
+
+_FILE_ITEM = {
+    "id": "item-1",
+    "name": "plan.docx",
+    "size": 10,
+    "file": {"mimeType": "application/vnd.openxmlformats-officedocument"},
+    "createdDateTime": "2026-01-01T00:00:00Z",
+    "lastModifiedDateTime": "2026-01-02T00:00:00Z",
+}
+
+
+def _onedrive(logger, http_client, *, excluded=(), skip_unlabeled=False):
+    from airweave.platform.sources.onedrive import OneDriveSource
+
+    source = object.__new__(OneDriveSource)
+    source._label_filter = None
+    source._excluded_sensitivity_label_ids = list(excluded)
+    source._skip_unlabeled_files = skip_unlabeled
+    source._skip_encrypted_files = True  # the config default
+    source._http_client = http_client
+    source._logger = logger
+    source.get_access_token = AsyncMock(return_value="t")
+
+    async def one_file(_drive_id):
+        yield dict(_FILE_ITEM)
+
+    source._list_all_drive_items_recursively = one_file
+    return source
+
+
+async def _onedrive_entities(source) -> list:
+    return [e async for e in source._generate_drive_item_entities("drive-1", "Drive")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,kept", [(200, True), (423, False)])
+async def test_onedrive_default_config_skips_an_encrypted_file(logger, status, kept):
+    """Defaults (no block list, skip_encrypted_files=true) still drop a 423 file (4301738201)."""
+    http_client = MagicMock()
+    http_client.post = AsyncMock(return_value=_response(status, {"labels": []}))
+    entities = await _onedrive_entities(_onedrive(logger, http_client))
+    assert len(entities) == (1 if kept else 0)
+    http_client.post.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_onedrive_does_not_index_a_file_whose_label_read_failed(logger):
+    """With a block list, an unreadable label fails the sync instead of indexing (4301738207)."""
+    http_client = MagicMock()
+    http_client.post = AsyncMock(return_value=_response(403))
+    source = _onedrive(logger, http_client, excluded=["guid-1"])
+    with pytest.raises(httpx.HTTPStatusError):
+        await _onedrive_entities(source)
+
+
+def _sharepoint_online(logger, http_client, *, excluded=()):
+    from airweave.platform.configs.config import SharePointOnlineConfig
+    from airweave.platform.sources.sharepoint_online.source import SharePointOnlineSource
+
+    source = object.__new__(SharePointOnlineSource)
+    source._init_common(SharePointOnlineConfig(excluded_sensitivity_label_ids=list(excluded)))
+    source._http_client = http_client
+    source._logger = logger
+    source._get_access_token = AsyncMock(return_value="t")
+    return source
+
+
+@pytest.mark.asyncio
+async def test_sharepoint_online_does_not_index_a_file_whose_label_read_failed(logger):
+    """The SPO drive walk propagates an unreadable label under a block list (4301738207)."""
+    http_client = MagicMock()
+    http_client.post = AsyncMock(return_value=_response(503))
+    source = _sharepoint_online(logger, http_client, excluded=["guid-1"])
+    graph_client = MagicMock()
+    graph_client.get_item_permissions = AsyncMock(return_value=[])
+
+    async def items():
+        yield dict(_FILE_ITEM)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        async for _ in source._process_file_items(
+            graph_client, items(), "drive-1", "site-1", [], None, site_url="https://t/sites/a"
+        ):
+            pass
+    graph_client.get_item_permissions.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [403, 429, 500])
+async def test_sharepoint_online_does_not_index_a_site_whose_container_label_failed(logger, status):
+    """A failed container-label read under a block list stops the site (4301738204)."""
+    http_client = MagicMock()
+    http_client.get = AsyncMock(return_value=_response(status))
+    source = _sharepoint_online(logger, http_client, excluded=["guid-1"])
+    site = {"id": "site-1", "displayName": "HR", "webUrl": "https://t.sharepoint.com/sites/hr"}
+    source._discover_sites = AsyncMock(return_value=[site])
+    graph_client = MagicMock()
+
+    async def drives(_site_id):
+        yield {"id": "drive-1", "name": "Docs", "owner": {"group": {"id": "group-1"}}}
+
+    graph_client.get_drives = drives
+    graph_client.get_drive_root_permissions = AsyncMock(return_value=[])
+    source._create_graph_client = MagicMock(return_value=graph_client)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        async for _ in source._full_sync(None, None):
+            pass
+    graph_client.get_drive_root_permissions.assert_not_called()

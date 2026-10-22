@@ -39,6 +39,13 @@ def chunk_fingerprint(entity: BaseEntity) -> Optional[str]:
         "CHUNK_OVERLAP_TOKENS": plan.overlap_tokens,
         "CHUNK_HEADER_ENABLED": plan.header,
     }
+    if plan.header:
+        # What the header line is made of but the entity's hash leaves out: its token budget,
+        # and the path (breadcrumbs are excluded as volatile). A moved document, or another
+        # budget, gets its header and embedding again. The source name in the header is the
+        # connector's short name, the same for every sync of the entity.
+        values["CHUNK_HEADER_MAX_TOKENS"] = plan.header_max_tokens
+        values["HEADER_PATH"] = [bc.name for bc in entity.breadcrumbs or []]
     return json.dumps(values, sort_keys=True, separators=(",", ":"))
 
 

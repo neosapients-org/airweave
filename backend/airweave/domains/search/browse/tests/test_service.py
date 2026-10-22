@@ -9,9 +9,13 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from airweave.adapters.event_bus.fake import FakeEventBus
 from airweave.api.context import ApiContext
+from airweave.core.events.search import SearchCompletedEvent, SearchFailedEvent, SearchTier
 from airweave.core.logging import logger
 from airweave.core.shared_models import AuthMethod
+from airweave.domains.access_control.fakes.broker import FakeAccessBroker
+from airweave.domains.access_control.schemas import AccessContext
 from airweave.domains.collections.fakes.repository import FakeCollectionRepository
 from airweave.domains.search.adapters.vector_db.fakes.vector_db import FakeVectorDB
 from airweave.domains.search.agentic.tests.conftest import make_result
@@ -22,6 +26,7 @@ from airweave.domains.search.types.filters import (
     FilterGroup,
     FilterOperator,
 )
+from airweave.domains.search.types.results import SearchAccessControl
 from airweave.models.collection import Collection
 from airweave.schemas.search_v2 import BrowseRequest
 
@@ -64,10 +69,17 @@ def _make_collection() -> Collection:
     return col
 
 
-def _make_service() -> tuple[BrowseService, FakeVectorDB, FakeCollectionRepository]:
+def _make_service(
+    broker: FakeAccessBroker | None = None, event_bus: FakeEventBus | None = None
+) -> tuple[BrowseService, FakeVectorDB, FakeCollectionRepository]:
     vector_db = FakeVectorDB()
     collection_repo = FakeCollectionRepository()
-    svc = BrowseService(vector_db=vector_db, collection_repo=collection_repo)
+    svc = BrowseService(
+        vector_db=vector_db,
+        collection_repo=collection_repo,
+        access_broker=broker or FakeAccessBroker(),
+        event_bus=event_bus or FakeEventBus(),
+    )
     return svc, vector_db, collection_repo
 
 
@@ -258,20 +270,13 @@ class TestBrowseService:
         # count signature: (op, filter_groups, collection_id, name_substring)
         assert count_call[3] == "Quick"
 
-    @pytest.mark.asyncio
-    async def test_blank_name_query_treated_as_none(self) -> None:
-        svc, vector_db, repo = _make_service()
-        repo.seed_readable(DEFAULT_READABLE_ID, _make_collection())
+    @pytest.mark.parametrize("blank", ["   ", " a ", "\t\n"])
+    def test_a_name_query_of_spaces_is_refused_not_dropped(self, blank) -> None:
+        """Dropped, it would remove the scan guard and browse the whole collection."""
+        from pydantic import ValidationError
 
-        await svc.browse(
-            AsyncMock(),
-            _make_ctx(),
-            DEFAULT_READABLE_ID,
-            BrowseRequest(name_query="   "),
-        )
-
-        filter_call = next(c for c in vector_db._calls if c[0] == "filter_search")
-        assert filter_call[5] is None
+        with pytest.raises(ValidationError, match="at least 2 characters"):
+            BrowseRequest(name_query=blank)
 
     def test_name_query_rejects_single_character(self) -> None:
         """Single-character `name_query` is rejected to avoid full-scan triggers."""
@@ -286,3 +291,77 @@ class TestBrowseService:
 
         with pytest.raises(ValidationError):
             BrowseRequest(sync_ids=[str(uuid4()) for _ in range(101)])
+
+
+def _restricted_rows():
+    public = make_result(entity_id="ent-public", name="Handbook")
+    public.access = SearchAccessControl(is_public=True, viewers=[])
+    mine = make_result(entity_id="ent-mine", name="Team plan")
+    mine.access = SearchAccessControl(is_public=False, viewers=["group:finance"])
+    secret = make_result(entity_id="ent-secret", name="Board minutes")
+    secret.access = SearchAccessControl(is_public=False, viewers=["group:board"])
+    return [public, mine, secret]
+
+
+class TestBrowseAccessControl:
+    """Browse applies search's ACL: with a user principal, only what that user's search sees."""
+
+    @pytest.mark.asyncio
+    async def test_a_restricted_entity_is_absent_for_a_user_who_may_not_see_it(self) -> None:
+        broker = FakeAccessBroker()
+        broker._access_context = AccessContext(
+            user_principal="ann@acme.test",
+            user_principals=["user:ann@acme.test"],
+            group_principals=["group:finance"],
+        )
+        svc, vector_db, repo = _make_service(broker)
+        repo.seed_readable(DEFAULT_READABLE_ID, _make_collection())
+        vector_db.seed_filter_results(_restricted_rows())
+
+        response = await svc.browse(
+            AsyncMock(),
+            _make_ctx(),
+            DEFAULT_READABLE_ID,
+            BrowseRequest(),
+            user_principal_override="ann@acme.test",
+        )
+
+        assert [r.entity_id for r in response.results] == ["ent-public", "ent-mine"]
+        # The count carries the same principals, so it cannot reveal hidden rows either.
+        assert set(vector_db.last_acl_principals) == {"user:ann@acme.test", "group:finance"}
+
+    @pytest.mark.asyncio
+    async def test_without_a_principal_no_acl_applies_as_for_search(self) -> None:
+        svc, vector_db, repo = _make_service()
+        repo.seed_readable(DEFAULT_READABLE_ID, _make_collection())
+        vector_db.seed_filter_results(_restricted_rows())
+
+        response = await svc.browse(AsyncMock(), _make_ctx(), DEFAULT_READABLE_ID, BrowseRequest())
+
+        assert len(response.results) == 3 and vector_db.last_acl_principals is None
+
+
+class TestBrowseEvents:
+    @pytest.mark.asyncio
+    async def test_a_browse_is_seen_by_analytics_and_not_billed(self) -> None:
+        bus = FakeEventBus()
+        svc, vector_db, repo = _make_service(event_bus=bus)
+        repo.seed_readable(DEFAULT_READABLE_ID, _make_collection())
+        vector_db.seed_filter_results([make_result(entity_id="ent-1")])
+
+        await svc.browse(AsyncMock(), _make_ctx(), DEFAULT_READABLE_ID, BrowseRequest())
+
+        [done] = [e for e in bus.events if isinstance(e, SearchCompletedEvent)]
+        assert done.tier == SearchTier.BROWSE and done.billable is False
+        assert len(done.results) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_failed_browse_emits_the_failed_event(self) -> None:
+        bus = FakeEventBus()
+        svc, _, _ = _make_service(event_bus=bus)
+
+        with pytest.raises(HTTPException):
+            await svc.browse(AsyncMock(), _make_ctx(), "missing", BrowseRequest())
+
+        [failed] = [e for e in bus.events if isinstance(e, SearchFailedEvent)]
+        assert failed.tier == SearchTier.BROWSE

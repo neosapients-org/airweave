@@ -14,8 +14,10 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
+from airweave.adapters.event_bus.fake import FakeEventBus
 from airweave.api.context import ApiContext
 from airweave.api.v1.endpoints.search import browse_collection
+from airweave.core.events.search import SearchStartedEvent, SearchTier
 from airweave.core.logging import logger
 from airweave.core.shared_models import AuthMethod, FeatureFlag
 from airweave.domains.search.fakes.browse import FakeBrowseService
@@ -59,6 +61,7 @@ class TestBrowseCollectionEndpoint:
                 db=AsyncMock(),
                 ctx=ctx,
                 usage_checker=usage_checker,
+                event_bus=FakeEventBus(),
                 service=service,
             )
 
@@ -72,18 +75,22 @@ class TestBrowseCollectionEndpoint:
         ctx = _make_ctx(features=[FeatureFlag.COLLECTION_BROWSE])
         usage_checker = AsyncMock()
         service = FakeBrowseService()
-        service.seed_response(
-            BrowseResponse(results=[], total=7, limit=50, offset=0)
-        )
+        service.seed_response(BrowseResponse(results=[], total=7, limit=50, offset=0))
 
+        bus = FakeEventBus()
         response = await browse_collection(
             readable_id="my-col",
-            request=BrowseRequest(limit=50),
+            request=BrowseRequest(limit=50, name_query="Acme"),
             db=AsyncMock(),
             ctx=ctx,
             usage_checker=usage_checker,
+            event_bus=bus,
             service=service,
         )
+        # The search lifecycle's start event, as the other search routes publish it.
+        [started] = [e for e in bus.events if isinstance(e, SearchStartedEvent)]
+        assert started.tier == SearchTier.BROWSE and started.query == "Acme"
+        assert started.collection_readable_id == "my-col" and started.limit == 50
 
         assert response.total == 7
         # Usage check fired with the right args.

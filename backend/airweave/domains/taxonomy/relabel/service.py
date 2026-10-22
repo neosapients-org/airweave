@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID, uuid4
 
+from airweave.domains.taxonomy.artifacts import TaxonomyResolutionError
 from airweave.domains.taxonomy.mapping import PARTIALLY_ASSIGNED, UNRESOLVED
 from airweave.domains.taxonomy.relabel.chunk_store import ChunkStore, decode_token
 from airweave.domains.taxonomy.relabel.chunks import (
@@ -173,9 +174,13 @@ class RelabelService:
         *,
         configured_cap_usd: float,
         usd_per_thousand: float,
+        resolver: Any,
         scan_page: int = 500,
     ) -> None:
         """``configured_cap_usd`` is ``TAXONOMY_SPEND_CAP_USD``, the approved ceiling per job.
+
+        ``resolver`` reads the collection's active taxonomy (the one the runner checks too), so a
+        target that is not the active version is refused before the collection is scanned.
 
         Raises ``ValueError`` for a ceiling that is not a finite amount from 0 up.
         """
@@ -186,6 +191,7 @@ class RelabelService:
         self._cap = configured_cap_usd
         self._rate = usd_per_thousand
         self._scan_page = scan_page
+        self._resolver = resolver
 
     async def start(self, req: StartRequest) -> Tuple[RelabelJob, bool]:
         """Accept a job. Returns it and whether it was created now (False: a replay)."""
@@ -193,6 +199,7 @@ class RelabelService:
         known = await self._replay(req)
         if known is not None:
             return known, False
+        await self._require_active(req)
         cap = effective_cap(req.spend_cap_usd, self._cap)
         store = self._store_factory()
         try:
@@ -239,6 +246,29 @@ class RelabelService:
             return await self._repo.create(job), True
         except ActiveJobExists as e:  # lost a race with another start
             return self._same_or_conflict(e.job, req), False
+
+    async def _require_active(self, req: StartRequest) -> None:
+        """Refuse a target that is not the collection's active version, before the scan.
+
+        The runner refuses it too, but only after the full scan the start makes and the job row:
+        a typo or a stale version is answered here, and nothing is read or stored.
+        """
+        try:
+            active = await self._resolver.resolve(req.collection_readable_id, fresh=True)
+        except TaxonomyResolutionError as e:
+            raise RelabelRefused(
+                503, "taxonomy_unreadable", f"the active taxonomy could not be read: {e}"
+            ) from e
+        if active is None:
+            raise RelabelRefused(409, "no_active_taxonomy", "the collection has no active taxonomy")
+        if active.taxonomy_version != req.taxonomy_version:
+            raise RelabelRefused(
+                409,
+                "not_the_active_version",
+                f"the collection labels with {active.taxonomy_version!r}, "
+                f"not {req.taxonomy_version!r}",
+                active_version=active.taxonomy_version,
+            )
 
     async def statistics(self, collection_id: UUID, target_version: str) -> ChunkStats:
         """Chunk statistics against ``target_version`` (empty is allowed: bootstrap)."""

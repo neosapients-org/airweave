@@ -12,7 +12,7 @@ from airweave.domains.search.types import (
     SearchQuery,
     TopicBoost,
 )
-from airweave.domains.search.types.filters import MAX_CHUNK_FIELD_LIST_VALUES, FilterCondition
+from airweave.domains.search.types.filters import MAX_LIST_VALUES, FilterCondition
 from airweave.schemas.search_v2 import (
     MAX_BROWSE_OFFSET,
     MAX_CONDITIONS_PER_GROUP,
@@ -47,15 +47,24 @@ class TestFilterBounds:
         with pytest.raises(ValidationError):
             BrowseRequest(offset=MAX_BROWSE_OFFSET + 1)
 
-    def test_a_long_list_on_a_taxonomy_field_is_refused(self):
+    @pytest.mark.parametrize(
+        ("field", "operator"),
+        [
+            ("topic_ids", "in"),
+            ("airweave_system_metadata.sync_id", "in"),
+            ("airweave_system_metadata.entity_type", "not_in"),
+            ("entity_id", "in"),
+        ],
+    )
+    def test_a_long_list_is_refused_on_every_field(self, field, operator):
         def cond(n):
             return FilterCondition(
-                field="topic_ids", operator="in", value=[f"acme:t{i}" for i in range(n)]
+                field=field, operator=operator, value=[f"acme:t{i}" for i in range(n)]
             )
 
-        cond(MAX_CHUNK_FIELD_LIST_VALUES)
-        with pytest.raises(ValidationError):
-            cond(MAX_CHUNK_FIELD_LIST_VALUES + 1)
+        cond(MAX_LIST_VALUES)
+        with pytest.raises(ValidationError, match="at most"):
+            cond(MAX_LIST_VALUES + 1)
 
 
 class TestTopicIds:

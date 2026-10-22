@@ -15,6 +15,10 @@ Two filter points:
 
 Tenant-specific label GUIDs are configured by the user. Sublabels are NOT
 expanded server-side; configure each label-to-block explicitly.
+
+A label that cannot be read never turns into an allow decision while a policy
+depends on it: with a block list (or ``skip_unlabeled``) configured, a failed
+lookup raises after bounded retries instead of indexing the content unchecked.
 """
 
 from __future__ import annotations
@@ -22,8 +26,13 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable, Iterable, Optional, Protocol
 
 import httpx
+from tenacity import retry, stop_after_attempt
 
 from airweave.core.logging import ContextualLogger
+from airweave.platform.sources.retry_helpers import (
+    retry_if_rate_limit_or_timeout,
+    wait_rate_limit_with_backoff,
+)
 
 
 class _AsyncHttpClient(Protocol):
@@ -40,8 +49,11 @@ class SensitivityLabelFilter:
     """Applies a Purview sensitivity-label block list to Graph driveItems.
 
     The filter is stateless apart from the configured block set; it makes
-    Graph calls through the caller-supplied token + http_client to inherit
-    the source's retry/throttle behavior.
+    Graph calls through the caller-supplied token + http_client (inheriting the
+    source's rate limiter) and retries 429/5xx/timeouts itself.
+
+    Every file's labels are read: ``skip_encrypted_files`` is always a policy (skip or
+    raise on a 423), so even an otherwise empty configuration must see the 423.
     """
 
     def __init__(
@@ -65,13 +77,15 @@ class SensitivityLabelFilter:
         self._logger = logger
 
     @property
-    def enabled(self) -> bool:
-        """True if any label check is configured.
+    def fails_closed(self) -> bool:
+        """True if a file whose labels cannot be read must not be indexed.
 
-        Turning ``skip_encrypted`` off counts: a file whose labels cannot be read because it is
-        encrypted must then raise, which only the label read can do.
+        The block list and ``skip_unlabeled`` decide on the label itself, so an unread label
+        is an unchecked file. ``skip_encrypted`` alone does not: Graph reports encryption as
+        a 423, and the bytes of an encrypted file stay encrypted, so indexing a file whose
+        label read failed for another reason discloses nothing.
         """
-        return bool(self._excluded) or self._skip_unlabeled or not self._skip_encrypted
+        return bool(self._excluded) or self._skip_unlabeled
 
     @property
     def blocks_containers(self) -> bool:
@@ -82,10 +96,10 @@ class SensitivityLabelFilter:
         """Check the container label on the site's underlying M365 Group.
 
         Returns True if any ``assignedLabel`` GUID is in the block list. A
-        site without a backing group, or one whose labels we cannot read,
-        is never short-circuited here — per-file checks still run. A group whose labels
-        cannot be read while a block list is configured raises: the site is not indexed on
-        an unverified label.
+        site without a backing group is never short-circuited here — per-file
+        checks still run. A group whose labels cannot be read (after retries) while a
+        block list is configured raises: item labels do not inherit the container label,
+        so the site is not indexed on an unverified label.
         """
         if not self._excluded:
             return False
@@ -124,10 +138,11 @@ class SensitivityLabelFilter:
         Returns True if any label on the file is in the block list, if the
         file is label-encrypted and ``skip_encrypted`` is set, or if the
         file is unlabeled and ``skip_unlabeled`` is set.
-        """
-        if not self.enabled:
-            return False
 
+        Raises:
+            Exception: The label read failed (after retries) while ``fails_closed``; the file
+                is not indexed on an unchecked label, and the sync fails so it is retried.
+        """
         try:
             labels = await self._extract_item_labels(drive_id, item_id)
         except _EncryptedFileError:
@@ -138,9 +153,16 @@ class SensitivityLabelFilter:
                 return True
             raise
         except Exception as exc:  # noqa: BLE001
+            if self.fails_closed:
+                self._logger.error(
+                    f"Could not read sensitivity labels for {item_name or item_id} "
+                    f"in drive {drive_id}: {exc}. A label policy is active, so the file "
+                    f"is not indexed on an unchecked label."
+                )
+                raise
             self._logger.warning(
                 f"Could not read sensitivity labels for {item_name or item_id} "
-                f"in drive {drive_id}: {exc}. Indexing without label filter."
+                f"in drive {drive_id}: {exc}. No label policy depends on it; indexing."
             )
             return False
 
@@ -185,6 +207,12 @@ class SensitivityLabelFilter:
             if isinstance(entry, dict) and entry.get("sensitivityLabelId")
         ]
 
+    @retry(
+        stop=stop_after_attempt(5),
+        retry=retry_if_rate_limit_or_timeout,
+        wait=wait_rate_limit_with_backoff,
+        reraise=True,
+    )
     async def _graph_get(
         self, url: str, *, params: Optional[dict[str, Any]] = None
     ) -> dict[str, Any]:
@@ -195,6 +223,12 @@ class SensitivityLabelFilter:
         body: dict[str, Any] = response.json()
         return body
 
+    @retry(
+        stop=stop_after_attempt(5),
+        retry=retry_if_rate_limit_or_timeout,
+        wait=wait_rate_limit_with_backoff,
+        reraise=True,
+    )
     async def _graph_post(self, url: str) -> dict[str, Any]:
         token = await self._token_provider()
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}

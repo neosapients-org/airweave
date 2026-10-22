@@ -13,7 +13,8 @@ Access graph generation:
 - Extracts permissions from drive items via Graph API
 - Expands Entra ID groups via /groups/{id}/members
 - Expands SP site groups via SharePoint REST API (requires SP-scoped token)
-- Maps to canonical principal format: user:{email}, group:entra:{id}, group:sp:{name}
+- Maps to canonical principal format: user:{email}, group:entra:{id},
+  group:sp:{site_scope}:{name} (SP site groups are scoped to their site)
 
 Incremental sync:
 - Uses Graph delta queries (/drives/{id}/root/delta)
@@ -62,7 +63,11 @@ from airweave.platform.sources.retry_helpers import (
     retry_if_rate_limit_or_timeout,
     wait_rate_limit_with_backoff,
 )
-from airweave.platform.sources.sharepoint_online.acl import extract_access_control
+from airweave.platform.sources.sharepoint_online.acl import (
+    extract_access_control,
+    format_sp_group_id,
+    sp_site_scope,
+)
 from airweave.platform.sources.sharepoint_online.builders import (
     build_drive_entity,
     build_file_entity,
@@ -136,6 +141,8 @@ class SharePointOnlineBase(BaseSource):
         self._skip_encrypted_files = config.skip_encrypted_files
         self._skip_unlabeled_files = config.skip_unlabeled_files
         self._label_filter: Optional[SensitivityLabelFilter] = None
+        # drive_id -> normalized URL of its site, for paths that only know the drive.
+        self._drive_site_urls: Dict[str, str] = {}
 
     # -- Auth hooks (subclasses override) --
 
@@ -221,15 +228,15 @@ class SharePointOnlineBase(BaseSource):
         """Normalize a site URL for use as a dict key (strip trailing slash)."""
         return (site_url or "").rstrip("/")
 
-    def _track_entity_groups(self, entity: BaseEntity, site_url: str = "") -> None:
+    def _track_entity_groups(self, entity: BaseEntity, site_url: str) -> None:
         """Track Entra ID and SP site groups found in entity permissions.
 
         Args:
             entity: The entity whose access viewers to inspect.
-            site_url: The site URL this entity belongs to. SP groups are keyed
-                by site URL so multi-site syncs can expand SP groups per-site.
-                May be empty for paths that lack site context (incremental /
-                targeted single-file); those SP groups won't expand.
+            site_url: The site URL this entity belongs to (the one its viewers were
+                scoped with). SP groups are expanded per site through that site's REST
+                API, so they are tracked under it; without a site they cannot be
+                expanded and are not tracked.
         """
         if not hasattr(entity, "access") or entity.access is None:
             return
@@ -238,9 +245,33 @@ class SharePointOnlineBase(BaseSource):
             if viewer.startswith("group:entra:"):
                 group_id = viewer[len("group:") :]
                 self._item_level_entra_groups.add(group_id)
-            elif viewer.startswith("group:sp:"):
-                sp_name = viewer[len("group:") :]
-                self._item_level_sp_groups.setdefault(norm_site, set()).add(sp_name)
+            elif viewer.startswith("group:sp:") and norm_site:
+                sp_group_id = viewer[len("group:") :]
+                self._item_level_sp_groups.setdefault(norm_site, set()).add(sp_group_id)
+
+    async def _site_url_for_drive(self, graph_client: GraphClient, drive_id: str) -> str:
+        """Return the normalized URL of the site that owns a drive, cached per sync.
+
+        A failed lookup raises: building the drive's entities without their site would
+        drop every SP site group grant on them.
+        """
+        site_url = self._drive_site_urls.get(drive_id)
+        if site_url is None:
+            site_url = self._normalize_site_url(await graph_client.get_drive_site_url(drive_id))
+            self._drive_site_urls[drive_id] = site_url
+        return site_url
+
+    def _has_unscoped_sp_group_keys(self) -> bool:
+        """Return True if a tracked SP group key predates site scoping.
+
+        Entities indexed before site-scoped keys carry ``group:sp:<name>`` viewers that
+        no membership matches any more; only a full sync re-indexes them.
+        """
+        for site_url, group_ids in self._item_level_sp_groups.items():
+            prefix = f"sp:{sp_site_scope(site_url)}:"
+            if not site_url or any(not gid.startswith(prefix) for gid in group_ids):
+                return True
+        return False
 
     # -- SP site group membership parsing --
 
@@ -600,15 +631,16 @@ class SharePointOnlineBase(BaseSource):
         # tracked_sp_groups format changed from List[str] (flat names) to
         # Dict[site_url, List[str]] (site-scoped). Migrate defensively.
         tracked_sp = cursor_data.get("tracked_sp_groups")
+        legacy_sp_keys = isinstance(tracked_sp, list) and bool(tracked_sp)
         if isinstance(tracked_sp, dict):
             for site_url, names in tracked_sp.items():
                 if isinstance(names, list):
                     self._item_level_sp_groups[site_url] = set(names)
-        elif isinstance(tracked_sp, list):
-            self.logger.info(
-                "Legacy tracked_sp_groups list format detected; discarding — "
-                "will re-collect on next full sync"
-            )
+            legacy_sp_keys = self._has_unscoped_sp_group_keys()
+        if legacy_sp_keys:
+            # Discard the old keys; the full sync below re-collects site-scoped ones.
+            self.logger.info("tracked_sp_groups predate site-scoped SP group keys; discarding")
+            self._item_level_sp_groups = {}
 
         if node_selections:
             self.logger.info(f"Sync strategy: TARGETED ({len(node_selections)} node selections)")
@@ -617,6 +649,8 @@ class SharePointOnlineBase(BaseSource):
             return
 
         is_full, reason = self._should_do_full_sync(cursor)
+        if legacy_sp_keys and not is_full:
+            is_full, reason = True, "SP group keys predate site scoping; re-indexing viewers"
         self.logger.info(f"Sync strategy: {'FULL' if is_full else 'INCREMENTAL'} ({reason})")
 
         if is_full:
@@ -656,19 +690,14 @@ class SharePointOnlineBase(BaseSource):
         """Return True if any permission carries a sharing-link block."""
         return any(p.get("link") for p in (permissions or []))
 
-    def _get_label_filter(self) -> Optional[SensitivityLabelFilter]:
-        """Lazily build a Purview sensitivity-label filter from config.
+    def _get_label_filter(self) -> SensitivityLabelFilter:
+        """Lazily build the Purview sensitivity-label filter from config.
 
-        Returns None when no filtering is configured.
+        Always built: ``skip_encrypted_files`` (default true) is a policy on its own, and
+        only the per-file label read sees the 423 that marks an encrypted file.
         """
         if self._label_filter is not None:
             return self._label_filter
-        if (
-            not self._excluded_sensitivity_label_ids
-            and not self._skip_unlabeled_files
-            and self._skip_encrypted_files
-        ):
-            return None
         self._label_filter = SensitivityLabelFilter(
             excluded_label_ids=self._excluded_sensitivity_label_ids,
             skip_encrypted=self._skip_encrypted_files,
@@ -718,10 +747,10 @@ class SharePointOnlineBase(BaseSource):
             # Container-label short-circuit: if the site's backing M365 Group
             # carries a blocked Purview label, skip the whole site before we
             # walk any drives.
-            if label_filter is not None:
-                group_id = self._extract_group_id_from_drives(all_drives)
-                if await label_filter.should_skip_site(site_id=site_id, group_id=group_id):
-                    continue
+            # An unreadable container label raises here while a block list is configured.
+            group_id = self._extract_group_id_from_drives(all_drives)
+            if await label_filter.should_skip_site(site_id=site_id, group_id=group_id):
+                continue
 
             # Fetch site-level permissions from the first drive's root.
             site_access = None
@@ -730,7 +759,7 @@ class SharePointOnlineBase(BaseSource):
                     site_permissions = await graph_client.get_drive_root_permissions(
                         all_drives[0]["id"]
                     )
-                    site_access = await extract_access_control(site_permissions)
+                    site_access = await extract_access_control(site_permissions, site_url=site_url)
                 except Exception as e:
                     self.logger.warning(f"Could not fetch site-level permissions: {e}")
 
@@ -760,7 +789,9 @@ class SharePointOnlineBase(BaseSource):
                             drive_permissions = await graph_client.get_drive_root_permissions(
                                 drive_id
                             )
-                            drive_access = await extract_access_control(drive_permissions)
+                            drive_access = await extract_access_control(
+                                drive_permissions, site_url=site_url
+                            )
                         except Exception:
                             pass  # Fall back to site_access
 
@@ -785,7 +816,7 @@ class SharePointOnlineBase(BaseSource):
                             continue
 
                         if item_data.get("file"):
-                            if label_filter is not None and await label_filter.should_skip_item(
+                            if await label_filter.should_skip_item(
                                 drive_id=drive_id,
                                 item_id=item_data["id"],
                                 item_name=item_data.get("name", ""),
@@ -813,6 +844,7 @@ class SharePointOnlineBase(BaseSource):
                                     drive_breadcrumbs,
                                     permissions,
                                     sp_unique_id=sp_unique_id,
+                                    site_url=site_url,
                                 )
 
                                 await self._resolve_unresolved_viewers(file_entity, graph_client)
@@ -964,12 +996,14 @@ class SharePointOnlineBase(BaseSource):
                     continue
 
                 if item_data.get("file"):
-                    if label_filter is not None and await label_filter.should_skip_item(
+                    if await label_filter.should_skip_item(
                         drive_id=drive_id,
                         item_id=item_id,
                         item_name=item_data.get("name", ""),
                     ):
                         continue
+                    # Delta items carry no site; SP group viewers and their tracking need it.
+                    site_url = await self._site_url_for_drive(graph_client, drive_id)
                     try:
                         permissions = await graph_client.get_item_permissions(drive_id, item_id)
                         sp_unique_id = None
@@ -984,9 +1018,10 @@ class SharePointOnlineBase(BaseSource):
                             [],
                             permissions,
                             sp_unique_id=sp_unique_id,
+                            site_url=site_url,
                         )
                         await self._resolve_unresolved_viewers(file_entity, graph_client)
-                        self._track_entity_groups(file_entity)
+                        self._track_entity_groups(file_entity, site_url)
 
                         if files:
                             file_entity = await self._download_and_save_file(
@@ -1008,6 +1043,16 @@ class SharePointOnlineBase(BaseSource):
                     changes_count=changes_processed,
                 )
                 cursor.update(**cursor_schema.model_dump())
+
+        if cursor:
+            # Persist groups first seen on this run, or the next run's membership sync
+            # would not expand them and would delete their memberships as orphans.
+            cursor.update(
+                tracked_entra_groups=list(self._item_level_entra_groups),
+                tracked_sp_groups={
+                    site: sorted(names) for site, names in self._item_level_sp_groups.items()
+                },
+            )
 
         self.logger.info(f"Incremental sync complete: {changes_processed} changes processed")
 
@@ -1057,7 +1102,9 @@ class SharePointOnlineBase(BaseSource):
                 async for peek_drive in graph_client.get_drives(site_id):
                     try:
                         perms = await graph_client.get_drive_root_permissions(peek_drive["id"])
-                        targeted_site_access = await extract_access_control(perms)
+                        targeted_site_access = await extract_access_control(
+                            perms, site_url=targeted_site_url
+                        )
                     except Exception:
                         pass
                     break
@@ -1083,7 +1130,7 @@ class SharePointOnlineBase(BaseSource):
             async for drive_data in graph_client.get_drives(site_id):
                 drive_id = drive_data.get("id", "")
                 async for ent in self._sync_drive(
-                    graph_client, drive_id, site_id, site_breadcrumbs, files
+                    graph_client, drive_id, site_id, site_breadcrumbs, files, targeted_site_url
                 ):
                     yield ent
                     entity_count += 1
@@ -1096,7 +1143,10 @@ class SharePointOnlineBase(BaseSource):
                 sel_site_id = meta.get("site_id", "")
                 if not drive_id:
                     continue
-                async for ent in self._sync_drive(graph_client, drive_id, sel_site_id, [], files):
+                sel_site_url = await self._site_url_for_drive(graph_client, drive_id)
+                async for ent in self._sync_drive(
+                    graph_client, drive_id, sel_site_id, [], files, sel_site_url
+                ):
                     yield ent
                     entity_count += 1
 
@@ -1120,6 +1170,11 @@ class SharePointOnlineBase(BaseSource):
                     url = f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}"
                     item_data = await graph_client.get(url)
                     if item_data.get("file"):
+                        if await self._get_label_filter().should_skip_item(
+                            drive_id=drive_id, item_id=item_id, item_name=item_data.get("name", "")
+                        ):
+                            continue
+                        file_site_url = await self._site_url_for_drive(graph_client, drive_id)
                         permissions = await graph_client.get_item_permissions(drive_id, item_id)
                         sp_unique_id = None
                         if self._has_link_permission(permissions):
@@ -1133,9 +1188,10 @@ class SharePointOnlineBase(BaseSource):
                             [],
                             permissions,
                             sp_unique_id=sp_unique_id,
+                            site_url=file_site_url,
                         )
                         await self._resolve_unresolved_viewers(file_entity, graph_client)
-                        self._track_entity_groups(file_entity)
+                        self._track_entity_groups(file_entity, file_site_url)
                         if files:
                             file_entity = await self._download_and_save_file(
                                 file_entity, files, drive_id, item_id
@@ -1156,6 +1212,7 @@ class SharePointOnlineBase(BaseSource):
         site_id: str,
         site_breadcrumbs: List[Breadcrumb],
         files: FileService | None,
+        site_url: str,
     ) -> AsyncGenerator[BaseEntity, None]:
         """Sync all files in a single drive (used by both full and targeted sync)."""
         try:
@@ -1165,14 +1222,14 @@ class SharePointOnlineBase(BaseSource):
             drive_access = None
             try:
                 drive_permissions = await graph_client.get_drive_root_permissions(drive_id)
-                drive_access = await extract_access_control(drive_permissions)
+                drive_access = await extract_access_control(drive_permissions, site_url=site_url)
             except Exception:
                 pass
 
             drive_entity = await build_drive_entity(
                 drive_data, site_id, site_breadcrumbs, access=drive_access
             )
-            self._track_entity_groups(drive_entity)
+            self._track_entity_groups(drive_entity, site_url)
             yield drive_entity
 
             drive_breadcrumbs = site_breadcrumbs + [
@@ -1185,7 +1242,13 @@ class SharePointOnlineBase(BaseSource):
 
             item_stream = graph_client.get_drive_items_recursive(drive_id)
             async for entity in self._process_file_items(
-                graph_client, item_stream, drive_id, site_id, drive_breadcrumbs, files
+                graph_client,
+                item_stream,
+                drive_id,
+                site_id,
+                drive_breadcrumbs,
+                files,
+                site_url=site_url,
             ):
                 yield entity
         except EntityProcessingError as e:
@@ -1200,6 +1263,7 @@ class SharePointOnlineBase(BaseSource):
         files: FileService | None,
     ) -> AsyncGenerator[BaseEntity, None]:
         """Recursively sync all files under a specific folder."""
+        site_url = await self._site_url_for_drive(graph_client, drive_id)
         item_stream = graph_client.get_drive_items_recursive(drive_id, folder_id)
         async for entity in self._process_file_items(
             graph_client,
@@ -1208,6 +1272,7 @@ class SharePointOnlineBase(BaseSource):
             site_id,
             [],
             files,
+            site_url=site_url,
             resolve_viewers=True,
         ):
             yield entity
@@ -1221,6 +1286,7 @@ class SharePointOnlineBase(BaseSource):
         breadcrumbs: List[Breadcrumb],
         files: FileService | None,
         *,
+        site_url: str,
         resolve_viewers: bool = False,
     ) -> AsyncGenerator[BaseEntity, None]:
         """Iterate drive items, build file entities, and yield with batched downloads."""
@@ -1230,7 +1296,7 @@ class SharePointOnlineBase(BaseSource):
         async for item_data in item_stream:
             if item_data.get("folder") or not item_data.get("file"):
                 continue
-            if label_filter is not None and await label_filter.should_skip_item(
+            if await label_filter.should_skip_item(
                 drive_id=drive_id,
                 item_id=item_data["id"],
                 item_name=item_data.get("name", ""),
@@ -1250,10 +1316,11 @@ class SharePointOnlineBase(BaseSource):
                     breadcrumbs,
                     permissions,
                     sp_unique_id=sp_unique_id,
+                    site_url=site_url,
                 )
                 if resolve_viewers:
                     await self._resolve_unresolved_viewers(file_entity, graph_client)
-                self._track_entity_groups(file_entity)
+                self._track_entity_groups(file_entity, site_url)
 
                 if files:
                     pending_files.append(
@@ -1344,10 +1411,11 @@ class SharePointOnlineBase(BaseSource):
                 self.logger.warning(f"Failed to fetch SP groups for {site_url}: {e}")
                 continue
 
+            # Same key builder as the entity viewers, so the membership group_id matches.
             sp_name_to_id = {
-                f"sp:{g['Title'].replace(' ', '_').lower()}": g.get("Id")
+                group_key: g.get("Id")
                 for g in sp_groups
-                if g.get("Title")
+                if (group_key := format_sp_group_id(site_url, g.get("Title") or ""))
             }
 
             for sp_name in sp_group_names:
@@ -1396,6 +1464,10 @@ class SharePointOnlineBase(BaseSource):
         via Graph (``userType eq 'Member'`` filter excludes B2B guests) and
         yields one user → claim membership per user. The broker's recursive
         group expansion then chains user → claim → SP group at search time.
+
+        A failure on any ``/users`` page re-raises: completing the stream with the users
+        yielded so far would let the membership sync treat it as complete and delete the
+        rest as orphans. Raised, the pipeline keeps what was written and skips the cleanup.
         """
         graph_client = self._create_graph_client()
         count = 0
@@ -1408,13 +1480,12 @@ class SharePointOnlineBase(BaseSource):
                     group_id=EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL,
                     group_name=EVERYONE_EXCEPT_EXTERNAL_DISPLAY_NAME,
                 )
-        except SourceAuthError:
-            raise
         except Exception as e:
-            self.logger.warning(
+            self.logger.error(
                 f"Failed to enumerate internal tenant users for "
-                f"'{EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL}': {e}"
+                f"'{EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL}' after {count} users: {e}"
             )
+            raise
         self.logger.info(
             f"Populated synthetic '{EVERYONE_EXCEPT_EXTERNAL_PRINCIPAL}' group "
             f"with {count} internal tenant users"

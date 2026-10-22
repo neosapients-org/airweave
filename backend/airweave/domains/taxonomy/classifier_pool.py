@@ -264,11 +264,14 @@ class ClassifierPool:
 
     def _note_fallback(self, taxonomy: ResolvedTaxonomy, config: Dict[str, Any]) -> None:
         version = taxonomy.taxonomy_version
-        with self._note_lock:
-            if version in self._fallback_noted:
-                return
-            self._fallback_noted.add(version)
         wanted = config.get("embedding") or {}
+        # Version names are per tenant: two tenants' "v1" can embed with different models, and
+        # each must be logged and counted, so the key is the tenant's version and its model.
+        key = (taxonomy.tenant_id, version, wanted.get("model"), wanted.get("dimensions"))
+        with self._note_lock:
+            if key in self._fallback_noted:
+                return
+            self._fallback_noted.add(key)
         logger.warning(
             "taxonomy %s embeds with %s (%s dimensions) but the deployment's embedder is %s "
             "(%s dimensions): this version uses the package's own OpenAI client, outside "

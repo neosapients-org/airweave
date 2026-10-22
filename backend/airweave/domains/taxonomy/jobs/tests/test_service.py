@@ -169,7 +169,9 @@ class TestScope:
         )
         view = job_view(j)
         assert view["status"] == "completed" and view["candidate_prefix"].endswith("candidates/c/")
-        assert job_view(make_job(state="PENDING"))["status"] == "running"
+        # A job waiting for its dispatch is not reported as running.
+        assert job_view(make_job(state="PENDING"))["status"] == "pending"
+        assert job_view(make_job(state="RUNNING"))["status"] == "running"
 
 
 class TestFiniteCaps:

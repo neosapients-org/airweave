@@ -2,8 +2,16 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from airweave.core.container.factory import _create_taxonomy_processor
 from airweave.domains.taxonomy import limits
+from airweave.domains.taxonomy.tests.package_stub import stub_classifier_package
+
+
+@pytest.fixture(autouse=True)
+def _package(monkeypatch):
+    stub_classifier_package(monkeypatch)
 
 
 def _settings(enabled: bool, bucket: str = ""):

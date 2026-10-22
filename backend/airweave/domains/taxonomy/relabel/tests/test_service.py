@@ -2,6 +2,7 @@
 
 import pytest
 
+from airweave.domains.taxonomy.artifacts import TaxonomyResolutionError
 from airweave.domains.taxonomy.relabel.jobs import (
     MODE_INCREMENTAL,
     SCOPE_NOT_LABELLED,
@@ -16,7 +17,9 @@ from airweave.domains.taxonomy.relabel.tests.helpers import (
     READABLE,
     Clock,
     FakeChunkStore,
+    FakeResolver,
     chunk,
+    taxonomy,
 )
 
 
@@ -31,10 +34,47 @@ def req(**kw):
     return StartRequest(**base)
 
 
-def service(store=None, cap=10.0, rate=0.006, repo=None):
+def service(store=None, cap=10.0, rate=0.006, repo=None, resolver=None):
     store = store or FakeChunkStore([chunk(i, status="ASSIGNED", version=OLD) for i in range(5)])
     repo = repo or InMemoryJobRepository(Clock())
-    return RelabelService(repo, lambda: store, configured_cap_usd=cap, usd_per_thousand=rate), repo
+    svc = RelabelService(
+        repo,
+        lambda: store,
+        configured_cap_usd=cap,
+        usd_per_thousand=rate,
+        resolver=resolver or FakeResolver(),
+    )
+    return svc, repo
+
+
+class TestTheTargetIsTheActiveVersion:
+    async def test_a_version_that_is_not_active_is_refused_before_the_scan(self):
+        store = FakeChunkStore([chunk(i, status="ASSIGNED", version=OLD) for i in range(3)])
+        svc, repo = service(store, resolver=FakeResolver(taxonomy(OLD)))
+        with pytest.raises(RelabelRefused) as e:
+            await svc.start(req())
+        assert (e.value.status, e.value.code) == (409, "not_the_active_version")
+        assert e.value.extra["active_version"] == OLD
+        assert store.scrolls == 0 and repo.jobs == {}
+
+    async def test_a_collection_with_no_active_taxonomy_is_refused(self):
+        store = FakeChunkStore([chunk(0, status="ASSIGNED", version=OLD)])
+        svc, repo = service(store, resolver=FakeResolver("none"))
+        with pytest.raises(RelabelRefused) as e:
+            await svc.start(req())
+        assert e.value.code == "no_active_taxonomy" and store.scrolls == 0
+
+    async def test_an_unreadable_active_file_is_a_503_not_a_500(self):
+        svc, _ = service(resolver=FakeResolver(TaxonomyResolutionError("s3 down")))
+        with pytest.raises(RelabelRefused) as e:
+            await svc.start(req())
+        assert (e.value.status, e.value.code) == (503, "taxonomy_unreadable")
+
+    async def test_the_active_file_is_read_fresh(self):
+        resolver = FakeResolver()
+        svc, _ = service(resolver=resolver)
+        await svc.start(req())
+        assert resolver.calls == [(READABLE, True)]
 
 
 class TestSpendCap:
@@ -222,6 +262,7 @@ class TestFiniteCaps:
                 lambda: None,
                 configured_cap_usd=ceiling,
                 usd_per_thousand=0.006,
+                resolver=FakeResolver(),
             )
 
     @pytest.mark.parametrize(

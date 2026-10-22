@@ -105,8 +105,9 @@ class BrowseServiceProtocol(Protocol):
         ctx: ApiContext,
         readable_id: str,
         request: BrowseRequest,
+        user_principal_override: Optional[str] = None,
     ) -> BrowseResponse:
-        """Return a page of entities + total count for the collection."""
+        """Return a page of entities + total count; with a principal, only what that user sees."""
         ...
 
 

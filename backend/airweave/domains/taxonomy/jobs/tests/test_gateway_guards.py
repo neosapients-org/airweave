@@ -148,3 +148,10 @@ class TestWaveThatAddsNothing:
         package["ledger"] = None
         with pytest.raises(CostUnknown):
             self.run(tmp_path)
+
+
+def test_a_gateway_without_a_build_config_cannot_discover():
+    from airweave.domains.taxonomy.jobs.gateway import PackageGateway
+
+    assert PackageGateway({"llm": {}}).can_discover
+    assert not PackageGateway(None).can_discover

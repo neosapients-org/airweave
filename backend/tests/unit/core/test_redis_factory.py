@@ -17,19 +17,23 @@ class TestIsSentinelMode:
         ):
             assert redis_factory.is_sentinel_mode() is False
 
-    def test_returns_false_when_only_nodes_set(self):
+    def test_refuses_to_start_when_only_nodes_is_set(self):
+        """Half a Sentinel setup must not fall back to REDIS_HOST as standalone Redis."""
         with (
             patch.object(redis_factory.settings, "REDIS_NODES", '[["h", 26379]]'),
             patch.object(redis_factory.settings, "REDIS_SERVICE_NAME", None),
         ):
-            assert redis_factory.is_sentinel_mode() is False
+            with pytest.raises(ValueError, match="REDIS_SERVICE_NAME is not set"):
+                redis_factory.is_sentinel_mode()
 
-    def test_returns_false_when_only_service_name_set(self):
+    def test_refuses_to_start_when_only_service_name_is_set(self):
+        """Half a Sentinel setup must not fall back to REDIS_HOST as standalone Redis."""
         with (
             patch.object(redis_factory.settings, "REDIS_NODES", None),
             patch.object(redis_factory.settings, "REDIS_SERVICE_NAME", "mymaster"),
         ):
-            assert redis_factory.is_sentinel_mode() is False
+            with pytest.raises(ValueError, match="REDIS_NODES is not set"):
+                redis_factory.is_sentinel_mode()
 
     def test_returns_true_when_both_set(self):
         with (

@@ -4,7 +4,9 @@ A separate Deployment of the same image (see the Helm template ``taxonomy-jobs-w
 It polls the one jobs queue (``limits.JOBS_TASK_QUEUE``) only and registers only the job
 workflow and activity. It needs the full classifier install (UMAP, HDBSCAN, numba) and a role
 that may write ``taxonomy/tenants/*/candidates/*`` and read the rest of the taxonomy prefix.
-``<build.yaml>`` is the classifier package's YAML, which the chart mounts and names.
+``<build.yaml>`` is the classifier package's YAML, which the chart mounts and names when
+``taxonomyJobsWorker.buildConfig`` is set. Without it the worker still starts and runs propose
+jobs (they use the serving version's own YAML); a discover job is refused before it reads anything.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from airweave.core.logging import logger
 from airweave.domains.taxonomy import limits
 
 
-def build_runner(container: Any, build_config_path: str) -> Any:
+def build_runner(container: Any, build_config_path: Optional[str]) -> Any:
     """Assemble the runner from the container's resolver, the settings and the build YAML."""
     import yaml  # type: ignore[import-untyped]
 
@@ -34,7 +36,11 @@ def build_runner(container: Any, build_config_path: str) -> Any:
 
     if not settings.TAXONOMY_S3_BUCKET:
         raise SystemExit("TAXONOMY_S3_BUCKET is required for the taxonomy jobs worker")
-    build_config = yaml.safe_load(Path(build_config_path).read_text())
+    build_config = (
+        yaml.safe_load(Path(build_config_path).read_text()) if build_config_path else None
+    )
+    if build_config is None:
+        logger.warning("Taxonomy jobs worker has no classifier build config: discover jobs fail")
     storage = S3Backend(
         bucket=settings.TAXONOMY_S3_BUCKET,
         region=settings.STORAGE_AWS_REGION or "us-east-1",
@@ -62,16 +68,23 @@ def registrations(runner: Any) -> tuple[list, list]:
     return [TaxonomyJobWorkflow], [TaxonomyJobActivity(runner).run]
 
 
-async def main(build_config_path: str, stop: Optional[asyncio.Event] = None) -> None:
-    """Run until stopped; ``build_config_path`` is the classifier package's YAML."""
+async def main(build_config_path: Optional[str], stop: Optional[asyncio.Event] = None) -> None:
+    """Run until stopped; ``build_config_path`` is the classifier package's YAML, or None."""
     from temporalio.worker import Worker
 
     from airweave.core import container as container_mod
     from airweave.core.container import initialize_container
+    from airweave.domains.taxonomy.package import (
+        JOBS_INTERFACE,
+        SYNC_INTERFACE,
+        require_classifier_package,
+    )
     from airweave.domains.temporal.client import get_client
 
     if not settings.TAXONOMY_JOBS_ENABLED or not settings.TAXONOMY_ENABLED:
         raise SystemExit("TAXONOMY_ENABLED and TAXONOMY_JOBS_ENABLED must both be true")
+    # The jobs need the package's build extra too: refused here, not at the first job.
+    require_classifier_package(SYNC_INTERFACE, JOBS_INTERFACE)
     initialize_container(settings)
     runner = build_runner(container_mod.container, build_config_path)
     workflows, activities = registrations(runner)
@@ -108,10 +121,13 @@ async def _housekeeping(client: Any, stop: asyncio.Event) -> None:
     async def dispatch(job: Any) -> None:
         await start_job_workflow(client, limits.JOBS_TASK_QUEUE, job.id)
 
+    work_dir = limits.jobs_work_dir(settings.TAXONOMY_DATA_DIR)
+
     def cleanup(job_id: Any) -> None:
-        shutil.rmtree(
-            Path(limits.jobs_work_dir(settings.TAXONOMY_DATA_DIR)) / str(job_id), ignore_errors=True
-        )
+        # Raises on failure (the reconciler logs it); the folder is retried by purge_finished_work.
+        folder = Path(work_dir) / str(job_id)
+        if folder.exists():
+            shutil.rmtree(folder)
 
     await housekeeping_loop(
         stop,
@@ -123,16 +139,20 @@ async def _housekeeping(client: Any, stop: asyncio.Event) -> None:
         max_age_seconds=limits.JOBS_MAX_AGE_HOURS * 3600,
         cache_dir=settings.TAXONOMY_JOBS_CACHE_DIR or None,
         retention_days=limits.JOBS_CACHE_RETENTION_DAYS,
+        work_dir=work_dir,
     )
 
 
-def _build_config_argument() -> str:
-    """The classifier package's YAML, named on the command line (the chart mounts it)."""
+def _build_config_argument(argv: Optional[list[str]] = None) -> Optional[str]:
+    """The classifier package's YAML, named on the command line when the chart mounts one."""
     parser = argparse.ArgumentParser(description="The taxonomy discover and propose jobs worker")
     parser.add_argument(
-        "build_config", help="path to the classifier package's YAML (a discover job needs it)"
+        "build_config",
+        nargs="?",
+        default=None,
+        help="path to the classifier package's YAML (a discover job needs it; propose does not)",
     )
-    return parser.parse_args().build_config
+    return parser.parse_args(argv).build_config
 
 
 if __name__ == "__main__":

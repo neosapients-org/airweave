@@ -20,6 +20,7 @@ from airweave.domains.taxonomy.relabel.tests.helpers import (
     NEW,
     OLD,
     FakeChunkStore,
+    FakeResolver,
     chunk,
 )
 
@@ -55,7 +56,11 @@ class CollectionRepo:
 def service(cap=10.0, store=None):
     store = store or FakeChunkStore([chunk(i, status="ASSIGNED", version=OLD) for i in range(3)])
     return RelabelService(
-        InMemoryJobRepository(), lambda: store, configured_cap_usd=cap, usd_per_thousand=0.006
+        InMemoryJobRepository(),
+        lambda: store,
+        configured_cap_usd=cap,
+        usd_per_thousand=0.006,
+        resolver=FakeResolver(),
     )
 
 
@@ -87,12 +92,21 @@ class TestStart:
         again = await start(svc, c, key="mig-7")
         assert again["relabel_job_id"] == first["relabel_job_id"] and again["replayed"] is True
 
-    async def test_body_key_wins_over_the_header(self):
+    async def test_two_different_keys_are_refused_and_nothing_is_started(self):
         svc, c = service(), ctx()
         body = ep.RelabelRequest(taxonomy_version=NEW, idempotency_key="body-key")
-        first = await start(svc, c, body, key="header-key")
+        with pytest.raises(HTTPException) as e:
+            await start(svc, c, body, key="header-key")
+        assert e.value.status_code == 422
+        assert e.value.detail["code"] == "idempotency_key_conflict"
+        assert svc._repo.jobs == {}
+
+    async def test_the_same_key_in_both_places_is_one_key(self):
+        svc, c = service(), ctx()
+        body = ep.RelabelRequest(taxonomy_version=NEW, idempotency_key="mig-7")
+        first = await start(svc, c, body, key="mig-7")
         job = await svc.get(UUID(first["relabel_job_id"]), c.organization.id)
-        assert job.idempotency_key == "body-key"
+        assert job.idempotency_key == "mig-7"
 
     async def test_unknown_collection_is_404(self):
         with pytest.raises(HTTPException) as e:
@@ -371,9 +385,7 @@ class TestTaxonomyJobEndpoints:
         async def enqueue(job):
             return None
 
-        return TaxonomyJobService(
-            InMemoryTaxonomyJobRepository(), enqueue, cap_usd=cap
-        )
+        return TaxonomyJobService(InMemoryTaxonomyJobRepository(), enqueue, cap_usd=cap)
 
     def resolver(self, result="ok"):
         from airweave.domains.taxonomy.relabel.tests.helpers import FakeResolver

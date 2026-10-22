@@ -331,6 +331,32 @@ async def _raise_cancelled(*a, **k):
     raise asyncio.CancelledError
 
 
+class TestUnsafeOutput:
+    async def test_a_reserved_file_name_fails_the_job_at_once_instead_of_being_retried(
+        self, tmp_path
+    ):
+        gw = FakeGateway(files={"final_taxonomy.json": b"{}", REPORT: b"{}"})
+        runner, repo, _, s3, _ = make(tmp_path, gateway=gw)
+        done = await run(runner, repo)
+        assert done.state == FAILED and "reserved" in done.error
+        assert not [p for p in s3.objects if not p.endswith("_claim.json")]
+
+
+class TestNoBuildConfig:
+    async def test_discover_is_refused_before_anything_is_read_or_claimed(self, tmp_path):
+        runner, repo, store, s3, gw = make(tmp_path)
+        gw.can_discover = False
+        done = await run(runner, repo)
+        assert done.state == FAILED and "no classifier build config" in done.error
+        assert store.scrolls == 0 and gw.calls == [] and s3.objects == {}
+
+    async def test_propose_still_runs(self, tmp_path):
+        runner, repo, _, _, gw = make(tmp_path)
+        gw.can_discover = False
+        done = await run(runner, repo, kind=KIND_PROPOSE)
+        assert done.state == COMPLETED
+
+
 class TestCancel:
     async def test_cancel_before_the_build_writes_and_spends_nothing(self, tmp_path):
         runner, repo, _, s3, gw = make(tmp_path)

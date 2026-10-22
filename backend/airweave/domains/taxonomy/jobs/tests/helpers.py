@@ -60,6 +60,7 @@ class FakeGateway:
     """The package behind its interface: returns fixed files and a report, records the calls."""
 
     def __init__(self, cost: float = 0.02, files: Optional[Dict[str, bytes]] = None) -> None:
+        self.can_discover = True
         self.cost = cost
         self.files = files or {
             "final_taxonomy.json": b'{"categories": []}',

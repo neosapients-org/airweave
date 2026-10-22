@@ -12,6 +12,7 @@ from airweave.domains.taxonomy.relabel.tests.helpers import (
     OLD,
     OTHER_COLLECTION,
     FakeChunkStore,
+    FakeResolver,
     chunk,
 )
 
@@ -42,7 +43,11 @@ def world():
 def svc(store=None):
     store = store or world()
     return RelabelService(
-        InMemoryJobRepository(), lambda: store, configured_cap_usd=1.0, usd_per_thousand=0.006
+        InMemoryJobRepository(),
+        lambda: store,
+        configured_cap_usd=1.0,
+        usd_per_thousand=0.006,
+        resolver=FakeResolver(),
     )
 
 

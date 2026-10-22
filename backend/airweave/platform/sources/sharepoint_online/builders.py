@@ -97,6 +97,8 @@ async def build_file_entity(
     breadcrumbs: List[Breadcrumb],
     permissions: Optional[List[Dict[str, Any]]] = None,
     sp_unique_id: Optional[str] = None,
+    *,
+    site_url: str,
 ) -> SharePointOnlineFileEntity:
     """Build a file entity from Graph API drive item data.
 
@@ -111,6 +113,7 @@ async def build_file_entity(
             Required to translate sharing-link permissions; the caller should
             fetch it via :meth:`GraphClient.get_item_sp_unique_id` when any
             of the item's permissions has a ``link`` block.
+        site_url: URL of the site the drive belongs to; scopes SP site group viewers.
     """
     item_id = item_data.get("id")
     if not item_id:
@@ -146,7 +149,11 @@ async def build_file_entity(
     download_url = item_data.get("@microsoft.graph.downloadUrl", "")
     spo_entity_id = f"spo:file:{drive_id}:{item_id}"
 
-    access = await extract_access_control(permissions or [], sp_unique_id) if permissions else None
+    access = (
+        await extract_access_control(permissions, sp_unique_id, site_url=site_url)
+        if permissions
+        else None
+    )
 
     return SharePointOnlineFileEntity(
         url=download_url or item_data.get("webUrl", ""),

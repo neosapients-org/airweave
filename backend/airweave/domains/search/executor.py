@@ -48,6 +48,36 @@ from airweave.platform.sources._base import BaseSource
 RRF_K = 60
 
 
+async def resolve_acl_principals(
+    access_broker: AccessBrokerProtocol,
+    db: AsyncSession,
+    ctx: ApiContext,
+    user_principal: Optional[str],
+    collection_readable_id: str,
+) -> Optional[list[str]]:
+    """Resolve a user's ACL principals for a collection (search and browse share this).
+
+    Returns None if user_principal is not set or the collection has no AC sources (no filter);
+    a list of principals (possibly empty) otherwise.
+    """
+    if not user_principal:
+        return None
+
+    access_context = await access_broker.resolve_access_context_for_collection(
+        db=db,
+        user_principal=user_principal,
+        readable_collection_id=collection_readable_id,
+        organization_id=ctx.organization.id,
+    )
+
+    if access_context is None:
+        return None
+
+    principals = list(access_context.all_principals)
+    ctx.logger.info(f"[ACL] Resolved {len(principals)} principals for user '{user_principal}'")
+    return principals
+
+
 class SearchPlanExecutor(SearchPlanExecutorProtocol):
     """Executes a search plan against the vector database and federated sources.
 
@@ -214,22 +244,9 @@ class SearchPlanExecutor(SearchPlanExecutorProtocol):
         Returns None if user_principal is not set or collection has no AC sources.
         Returns a list of principals (possibly empty) otherwise.
         """
-        if not user_principal:
-            return None
-
-        access_context = await self._access_broker.resolve_access_context_for_collection(
-            db=db,
-            user_principal=user_principal,
-            readable_collection_id=collection_readable_id,
-            organization_id=ctx.organization.id,
+        return await resolve_acl_principals(
+            self._access_broker, db, ctx, user_principal, collection_readable_id
         )
-
-        if access_context is None:
-            return None
-
-        principals = list(access_context.all_principals)
-        ctx.logger.info(f"[ACL] Resolved {len(principals)} principals for user '{user_principal}'")
-        return principals
 
     @staticmethod
     def _apply_acl_in_memory(

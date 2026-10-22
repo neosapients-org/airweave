@@ -27,8 +27,21 @@ from airweave.core.config import settings
 
 
 def is_sentinel_mode() -> bool:
-    """Return True when both ``REDIS_NODES`` and ``REDIS_SERVICE_NAME`` are set."""
-    return bool(settings.REDIS_NODES) and bool(settings.REDIS_SERVICE_NAME)
+    """Return True when both ``REDIS_NODES`` and ``REDIS_SERVICE_NAME`` are set.
+
+    Raises:
+        ValueError: When only one of them is set. A half-configured Sentinel setup would
+            otherwise connect to ``REDIS_HOST`` as standalone Redis, which in an HA
+            deployment can be the wrong server; the process refuses to start instead.
+    """
+    nodes, service = bool(settings.REDIS_NODES), bool(settings.REDIS_SERVICE_NAME)
+    if nodes != service:
+        missing = "REDIS_SERVICE_NAME" if nodes else "REDIS_NODES"
+        raise ValueError(
+            f"Redis Sentinel is half configured: {missing} is not set. Set both "
+            "REDIS_NODES and REDIS_SERVICE_NAME for Sentinel, or neither for REDIS_HOST."
+        )
+    return nodes and service
 
 
 def _parse_sentinel_nodes(raw: str) -> list[tuple[str, int]]:

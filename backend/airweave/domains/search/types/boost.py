@@ -10,8 +10,10 @@ from typing import Annotated
 
 from pydantic import BaseModel, Field, StringConstraints
 
-# An additive boost on a hybrid score of about 0 to 1: above this it would decide the order alone.
-MAX_TOPIC_BOOST_WEIGHT = 2.0
+# The hybrid score is two normalized parts (keyword and semantic, each 0 to 1), so 0 to 2, and a
+# full topic match adds the weight times 1. At 0.5 a topic match is worth at most a quarter of the
+# hybrid range: it reorders close results and cannot outrank a much better match.
+MAX_TOPIC_BOOST_WEIGHT = 0.5
 
 
 # A registry id such as ``acme:credit.loan_quality``: it is placed in a tensor address.
@@ -35,7 +37,7 @@ class TopicBoost(BaseModel):
         allow_inf_nan=False,
         description=(
             "Weight of the topic match added to the hybrid score (0 to "
-            f"{MAX_TOPIC_BOOST_WEIGHT}; hybrid scores are about 0 to 1, so the boost reorders "
-            "close results and cannot bury everything else)."
+            f"{MAX_TOPIC_BOOST_WEIGHT}; hybrid scores are 0 to 2, so the boost reorders close "
+            "results and cannot bury everything else)."
         ),
     )

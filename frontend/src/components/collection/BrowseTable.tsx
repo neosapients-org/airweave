@@ -49,50 +49,25 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { getAppIconUrl } from "@/lib/utils/icons";
 import { useTheme } from "@/lib/theme-provider";
+import {
+    ALL_SOURCES_VALUE,
+    NAME_QUERY_MIN_LENGTH,
+    browseRowKey,
+    buildBrowseBody,
+    isNameQueryTooShort,
+    rowsToCsv,
+    safeExternalUrl,
+    type BrowseResponse,
+    type BrowseRow,
+} from "./browseTableUtils";
 
-// ===== Types mirroring backend SearchResult =====
-// Kept loose on purpose: Vespa returns optional/varying fields per source.
-
-interface Breadcrumb {
-    entity_id?: string;
-    name?: string;
-    entity_type?: string;
-}
-
-interface SystemMetadata {
-    source_name?: string;
-    entity_type?: string;
-    original_entity_id?: string;
-    chunk_index?: number;
-    sync_id?: string;
-    sync_job_id?: string;
-}
-
-interface BrowseRow {
-    entity_id: string;
-    name?: string | null;
-    textual_representation?: string | null;
-    breadcrumbs?: Breadcrumb[] | null;
-    created_at?: string | null;
-    updated_at?: string | null;
-    airweave_system_metadata?: SystemMetadata;
-    web_url?: string | null;
-    url?: string | null;
-    raw_source_fields?: Record<string, unknown> | null;
-}
-
-interface BrowseResponse {
-    results: BrowseRow[];
+/** A loaded page together with the filter that produced it, so totals never mix filters. */
+interface LoadedPage {
+    rows: BrowseRow[];
     total: number;
-    limit: number;
     offset: number;
-}
-
-interface BrowseRequestBody {
-    limit: number;
-    offset: number;
-    sync_ids?: string[];
-    name_query?: string;
+    syncId: string;
+    nameQuery: string;
 }
 
 interface BrowseTableProps {
@@ -110,10 +85,8 @@ const SEARCH_DEBOUNCE_MS = 250;
 const EXPORT_MAX_ROWS = 1000;
 // Backend caps `limit` at 200 (BrowseRequest in search_v2.py).
 const EXPORT_PAGE_SIZE = 200;
-// Backend requires `name_query` length >= 2 to avoid full-scan triggers on a single char.
-const NAME_QUERY_MIN_LENGTH = 2;
 
-const ALL_SOURCES_VALUE = "__all__";
+const EMPTY_ROWS: BrowseRow[] = [];
 
 const formatTimestamp = (value: string | null | undefined): string => {
     if (!value) return "—";
@@ -122,50 +95,7 @@ const formatTimestamp = (value: string | null | undefined): string => {
     return date.toLocaleString();
 };
 
-const buildBrowseBody = (
-    limit: number,
-    offset: number,
-    selectedSyncId: string,
-    nameQuery: string,
-): BrowseRequestBody => {
-    const body: BrowseRequestBody = { limit, offset };
-    if (selectedSyncId !== ALL_SOURCES_VALUE) {
-        body.sync_ids = [selectedSyncId];
-    }
-    const trimmed = nameQuery.trim();
-    if (trimmed.length >= NAME_QUERY_MIN_LENGTH) {
-        body.name_query = trimmed;
-    }
-    return body;
-};
-
-// ===== CSV / JSON helpers =====
-
-const CSV_COLUMNS: Array<{ header: string; pick: (r: BrowseRow) => unknown }> = [
-    { header: "entity_id", pick: (r) => r.entity_id },
-    { header: "name", pick: (r) => r.name ?? "" },
-    { header: "entity_type", pick: (r) => r.airweave_system_metadata?.entity_type ?? "" },
-    { header: "source_name", pick: (r) => r.airweave_system_metadata?.source_name ?? "" },
-    { header: "sync_id", pick: (r) => r.airweave_system_metadata?.sync_id ?? "" },
-    { header: "created_at", pick: (r) => r.created_at ?? "" },
-    { header: "updated_at", pick: (r) => r.updated_at ?? "" },
-    { header: "web_url", pick: (r) => r.web_url ?? "" },
-];
-
-const escapeCsv = (value: unknown): string => {
-    if (value === null || value === undefined) return "";
-    const s = typeof value === "string" ? value : JSON.stringify(value);
-    if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-    return s;
-};
-
-const rowsToCsv = (rows: BrowseRow[]): string => {
-    const head = CSV_COLUMNS.map((c) => c.header).join(",");
-    const body = rows
-        .map((r) => CSV_COLUMNS.map((c) => escapeCsv(c.pick(r))).join(","))
-        .join("\n");
-    return `${head}\n${body}\n`;
-};
+// ===== Download helper =====
 
 const triggerDownload = (filename: string, mime: string, content: string) => {
     const blob = new Blob([content], { type: mime });
@@ -183,8 +113,9 @@ const triggerDownload = (filename: string, mime: string, content: string) => {
 
 export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseTableProps) {
     const { resolvedTheme } = useTheme();
-    const [rows, setRows] = useState<BrowseRow[]>([]);
-    const [total, setTotal] = useState(0);
+    // Rows, total and the filter that produced them live together: they are replaced or
+    // cleared as one unit, so the table and export never mix data from different filters.
+    const [page, setPage] = useState<LoadedPage | null>(null);
     const [offset, setOffset] = useState(0);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -209,8 +140,18 @@ export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseT
         return () => clearTimeout(t);
     }, [searchInput]);
 
+    const debouncedTooShort = isNameQueryTooShort(debouncedSearch);
+
     // Fetch page (abortable)
     useEffect(() => {
+        // A one-character query cannot be sent (backend minimum), and dropping it would show
+        // unfiltered rows under a filled-in search box. Show nothing until the query is valid.
+        if (debouncedTooShort) {
+            setPage(null);
+            setError(null);
+            setIsLoading(false);
+            return;
+        }
         const controller = new AbortController();
         const run = async () => {
             setIsLoading(true);
@@ -228,12 +169,19 @@ export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseT
                 }
                 const data: BrowseResponse = await response.json();
                 if (!controller.signal.aborted) {
-                    setRows(data.results);
-                    setTotal(data.total);
+                    setPage({
+                        rows: data.results,
+                        total: data.total,
+                        offset,
+                        syncId: selectedSyncId,
+                        nameQuery: debouncedSearch,
+                    });
                 }
             } catch (e) {
                 if (controller.signal.aborted) return;
                 if (e instanceof Error && e.name === "AbortError") return;
+                // Drop the previous query's rows: they do not match the current filter.
+                setPage(null);
                 setError(e instanceof Error ? e.message : "Failed to load");
             } finally {
                 if (!controller.signal.aborted) setIsLoading(false);
@@ -241,7 +189,11 @@ export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseT
         };
         void run();
         return () => controller.abort();
-    }, [collectionReadableId, offset, selectedSyncId, debouncedSearch]);
+    }, [collectionReadableId, offset, selectedSyncId, debouncedSearch, debouncedTooShort]);
+
+    const rows = page?.rows ?? EMPTY_ROWS;
+    const total = page?.total ?? 0;
+    const pageOffset = page?.offset ?? offset;
 
     // sync_id → SourceConnection lookup
     const syncToConnection = useMemo(() => {
@@ -261,48 +213,56 @@ export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseT
         selectedSyncId !== ALL_SOURCES_VALUE ||
         debouncedSearch.trim().length >= NAME_QUERY_MIN_LENGTH;
 
-    const searchTrimmedLength = searchInput.trim().length;
-    const searchTooShort =
-        searchTrimmedLength > 0 && searchTrimmedLength < NAME_QUERY_MIN_LENGTH;
+    const searchTooShort = isNameQueryTooShort(searchInput);
+
+    // Export only a settled, successful page: while a request is in flight `page` may still
+    // belong to the previous filter, and after an error there is nothing valid to export.
+    const canExport = !isExporting && !isLoading && !error && !!page && page.total > 0;
 
     // ===== Export =====
 
-    const fetchAllForExport = useCallback(async (): Promise<BrowseRow[]> => {
-        // Backend caps a single page at 200, so loop in chunks until we hit the export cap.
-        const cap = Math.min(total, EXPORT_MAX_ROWS);
-        const accumulated: BrowseRow[] = [];
-        let pageOffset = 0;
-        while (accumulated.length < cap) {
-            const remaining = cap - accumulated.length;
-            const pageLimit = Math.min(EXPORT_PAGE_SIZE, remaining);
-            const body = buildBrowseBody(
-                pageLimit,
-                pageOffset,
-                selectedSyncId,
-                debouncedSearch,
-            );
-            const response = await apiClient.post(
-                `/collections/${collectionReadableId}/search/browse`,
-                body,
-            );
-            if (!response.ok) {
-                const text = await response.text();
-                throw new Error(text || `Export failed (${response.status})`);
+    const fetchAllForExport = useCallback(
+        async (source: LoadedPage): Promise<BrowseRow[]> => {
+            // Backend caps a single page at 200, so loop in chunks until we hit the export cap.
+            // Filter and total both come from `source`, so the cap always matches the query.
+            const cap = Math.min(source.total, EXPORT_MAX_ROWS);
+            const accumulated: BrowseRow[] = [];
+            let exportOffset = 0;
+            while (accumulated.length < cap) {
+                const remaining = cap - accumulated.length;
+                const pageLimit = Math.min(EXPORT_PAGE_SIZE, remaining);
+                const body = buildBrowseBody(
+                    pageLimit,
+                    exportOffset,
+                    source.syncId,
+                    source.nameQuery,
+                );
+                const response = await apiClient.post(
+                    `/collections/${collectionReadableId}/search/browse`,
+                    body,
+                );
+                if (!response.ok) {
+                    const text = await response.text();
+                    throw new Error(text || `Export failed (${response.status})`);
+                }
+                const data: BrowseResponse = await response.json();
+                if (data.results.length === 0) break;
+                accumulated.push(...data.results);
+                exportOffset += data.results.length;
+                if (data.results.length < pageLimit) break;
             }
-            const data: BrowseResponse = await response.json();
-            if (data.results.length === 0) break;
-            accumulated.push(...data.results);
-            pageOffset += data.results.length;
-            if (data.results.length < pageLimit) break;
-        }
-        return accumulated;
-    }, [collectionReadableId, selectedSyncId, debouncedSearch, total]);
+            return accumulated;
+        },
+        [collectionReadableId],
+    );
 
     const runExport = useCallback(
         async (scope: "page" | "all", format: "csv" | "json") => {
+            if (!page || !canExport) return;
+            const exportTotal = page.total;
             setIsExporting(true);
             try {
-                const data = scope === "page" ? rows : await fetchAllForExport();
+                const data = scope === "page" ? page.rows : await fetchAllForExport(page);
                 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
                 const base = `${collectionReadableId}-browse-${stamp}`;
                 if (format === "csv") {
@@ -314,9 +274,9 @@ export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseT
                         JSON.stringify(data, null, 2),
                     );
                 }
-                if (scope === "all" && total > EXPORT_MAX_ROWS) {
+                if (scope === "all" && exportTotal > EXPORT_MAX_ROWS) {
                     toast.warning(
-                        `Exported first ${EXPORT_MAX_ROWS.toLocaleString()} of ${total.toLocaleString()} rows. Narrow the filter to capture more.`,
+                        `Exported first ${EXPORT_MAX_ROWS.toLocaleString()} of ${exportTotal.toLocaleString()} rows. Narrow the filter to capture more.`,
                     );
                 } else {
                     toast.success(`Exported ${data.length.toLocaleString()} rows`);
@@ -327,7 +287,7 @@ export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseT
                 setIsExporting(false);
             }
         },
-        [collectionReadableId, rows, fetchAllForExport, total],
+        [collectionReadableId, page, canExport, fetchAllForExport],
     );
 
     return (
@@ -362,8 +322,8 @@ export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseT
                     <div className="text-xs text-muted-foreground tabular-nums">
                         {total > 0 ? (
                             <>
-                                {(offset + 1).toLocaleString()}–
-                                {Math.min(offset + PAGE_SIZE, total).toLocaleString()} of{" "}
+                                {(pageOffset + 1).toLocaleString()}–
+                                {Math.min(pageOffset + PAGE_SIZE, total).toLocaleString()} of{" "}
                                 {total.toLocaleString()}
                             </>
                         ) : isLoading ? (
@@ -378,7 +338,7 @@ export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseT
                                 variant="outline"
                                 size="sm"
                                 className="h-9"
-                                disabled={isExporting || total === 0}
+                                disabled={!canExport}
                             >
                                 {isExporting ? (
                                     <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
@@ -445,7 +405,9 @@ export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseT
                                 >
                                     {error
                                         ? `Error: ${error}`
-                                        : filteringApplied
+                                        : debouncedTooShort
+                                          ? `Type at least ${NAME_QUERY_MIN_LENGTH} characters to search by name.`
+                                          : filteringApplied
                                           ? "No entities match these filters."
                                           : "No entities to browse yet."}
                                 </TableCell>
@@ -458,19 +420,31 @@ export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseT
                                     : undefined;
                                 const sourceLabel = conn?.name ?? meta.source_name ?? "—";
                                 const shortName = conn?.short_name ?? meta.source_name;
+                                const webUrl = safeExternalUrl(row.web_url);
                                 return (
                                     <TableRow
-                                        key={row.entity_id}
+                                        key={browseRowKey(row)}
                                         className="cursor-pointer group"
                                         onClick={() => setActiveRow(row)}
                                     >
                                         <TableCell className="font-medium align-top">
-                                            <div
-                                                className="truncate max-w-[520px]"
+                                            {/* Real button so the row action is reachable by
+                                                Tab and activates with Enter/Space; the row
+                                                click stays as a mouse convenience. */}
+                                            <button
+                                                type="button"
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setActiveRow(row);
+                                                }}
+                                                className={cn(
+                                                    "block w-full truncate max-w-[520px] text-left rounded-sm",
+                                                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                                                )}
                                                 title={row.name ?? row.entity_id}
                                             >
                                                 {row.name || row.entity_id}
-                                            </div>
+                                            </button>
                                             {row.textual_representation && (
                                                 <div className="text-xs text-muted-foreground truncate max-w-[520px] mt-0.5">
                                                     {row.textual_representation}
@@ -501,9 +475,9 @@ export function BrowseTable({ collectionReadableId, sourceConnections }: BrowseT
                                             {formatTimestamp(row.updated_at ?? row.created_at)}
                                         </TableCell>
                                         <TableCell className="text-right align-top">
-                                            {row.web_url ? (
+                                            {webUrl ? (
                                                 <a
-                                                    href={row.web_url}
+                                                    href={webUrl}
                                                     target="_blank"
                                                     rel="noreferrer noopener"
                                                     onClick={(e) => e.stopPropagation()}
@@ -617,12 +591,19 @@ function RowDrawer({ row, onClose }: { row: BrowseRow | null; onClose: () => voi
         if (!row) setCopied(false);
     }, [row]);
 
-    const onCopy = useCallback((value: string) => {
-        navigator.clipboard.writeText(value).then(() => {
+    const onCopy = useCallback(async (value: string) => {
+        try {
+            // `navigator.clipboard` is undefined outside secure contexts, and writeText
+            // rejects when permission is denied; both land in the catch.
+            await navigator.clipboard.writeText(value);
             setCopied(true);
             setTimeout(() => setCopied(false), 1200);
-        });
+        } catch {
+            toast.error("Could not copy to clipboard");
+        }
     }, []);
+
+    const webUrl = safeExternalUrl(row?.web_url);
 
     return (
         <Sheet open={!!row} onOpenChange={(open) => !open && onClose()}>
@@ -639,7 +620,7 @@ function RowDrawer({ row, onClose }: { row: BrowseRow | null; onClose: () => voi
                                 </code>
                                 <button
                                     type="button"
-                                    onClick={() => onCopy(row.entity_id)}
+                                    onClick={() => void onCopy(row.entity_id)}
                                     className="shrink-0 inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground/60 hover:text-foreground hover:bg-muted"
                                     aria-label="Copy entity ID"
                                 >
@@ -660,11 +641,11 @@ function RowDrawer({ row, onClose }: { row: BrowseRow | null; onClose: () => voi
                                 />
                                 <DetailRow label="Created" value={formatTimestamp(row.created_at)} />
                                 <DetailRow label="Updated" value={formatTimestamp(row.updated_at)} />
-                                {row.web_url && (
+                                {webUrl ? (
                                     <>
                                         <div className="text-muted-foreground">Link</div>
                                         <a
-                                            href={row.web_url}
+                                            href={webUrl}
                                             target="_blank"
                                             rel="noreferrer noopener"
                                             className="text-primary hover:underline truncate"
@@ -672,6 +653,9 @@ function RowDrawer({ row, onClose }: { row: BrowseRow | null; onClose: () => voi
                                             {row.web_url}
                                         </a>
                                     </>
+                                ) : (
+                                    // Non-http(s) values are shown as inert text, never as a link.
+                                    <DetailRow label="Link" value={row.web_url} />
                                 )}
                             </div>
 

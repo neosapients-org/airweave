@@ -122,6 +122,16 @@ async def start_relabel(
 ) -> Dict[str, Any]:
     """Admin-only: start a re-label job (202), or return the one a replay refers to."""
     _require_admin_permission(ctx, FeatureFlagEnum.API_KEY_ADMIN_SYNC)
+    # The key may come in the header or the body; two different keys are refused, never one
+    # silently preferred (the job would be stored under a key the caller did not expect).
+    if idempotency_key and body.idempotency_key and idempotency_key != body.idempotency_key:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "idempotency_key_conflict",
+                "message": "the Idempotency-Key header and body.idempotency_key differ",
+            },
+        )
     collection = await _collection(db, collection_repo, readable_id, ctx)
     request = StartRequest(
         organization_id=ctx.organization.id,

@@ -143,6 +143,7 @@ from airweave.domains.taxonomy.artifacts import (
     refuse_a_retired_prefix,
 )
 from airweave.domains.taxonomy.classifier_pool import ClassifierPool
+from airweave.domains.taxonomy.package import require_classifier_package
 from airweave.domains.temporal.client import get_cached_client as get_cached_temporal_client
 from airweave.domains.temporal.schedule_service import TemporalScheduleService
 from airweave.domains.temporal.service import TemporalWorkflowService
@@ -1378,6 +1379,8 @@ def _create_search_services(
     browse_service = BrowseService(
         vector_db=vector_db,
         collection_repo=collection_repo,
+        access_broker=access_broker,
+        event_bus=event_bus,
     )
 
     return {
@@ -1400,6 +1403,9 @@ def _create_taxonomy_processor(
     """
     if not settings.TAXONOMY_ENABLED:
         return None
+    # At boot, loudly: otherwise a deployment without the package serves and fails at its first
+    # labelled chunk.
+    require_classifier_package()
     refuse_a_retired_prefix()
     storage = None
     if settings.TAXONOMY_S3_BUCKET:
@@ -1450,6 +1456,7 @@ def _create_relabel(
         VespaChunkStore,
         configured_cap_usd=settings.TAXONOMY_SPEND_CAP_USD,
         usd_per_thousand=limits.RELABEL_USD_PER_THOUSAND_CHUNKS,
+        resolver=taxonomy_processor.resolver,
     )
     runner = RelabelRunner(
         repo,

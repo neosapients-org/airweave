@@ -89,16 +89,14 @@ class OneDriveSource(BaseSource):
         instance._label_filter = None
         return instance
 
-    def _get_label_filter(self) -> Optional[SensitivityLabelFilter]:
-        """Lazily build a Purview sensitivity-label filter from config."""
+    def _get_label_filter(self) -> SensitivityLabelFilter:
+        """Lazily build the Purview sensitivity-label filter from config.
+
+        Always built: ``skip_encrypted_files`` (default true) is a policy on its own, and
+        only the per-file label read sees the 423 that marks an encrypted file.
+        """
         if self._label_filter is not None:
             return self._label_filter
-        if (
-            not self._excluded_sensitivity_label_ids
-            and not self._skip_unlabeled_files
-            and self._skip_encrypted_files
-        ):
-            return None
         self._label_filter = SensitivityLabelFilter(
             excluded_label_ids=self._excluded_sensitivity_label_ids,
             skip_encrypted=self._skip_encrypted_files,
@@ -315,9 +313,9 @@ class OneDriveSource(BaseSource):
                 continue
 
             # Run the label check outside the per-item try so that errors
-            # configured to fail loud (skip_encrypted_files=False) propagate
-            # instead of being swallowed by the broad exception handler below.
-            if label_filter is not None and await label_filter.should_skip_item(
+            # configured to fail loud (skip_encrypted_files=False, or an unreadable label
+            # under a label policy) propagate instead of being swallowed below.
+            if await label_filter.should_skip_item(
                 drive_id=drive_id,
                 item_id=item["id"],
                 item_name=item.get("name", ""),

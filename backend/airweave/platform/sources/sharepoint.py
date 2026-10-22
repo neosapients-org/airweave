@@ -107,16 +107,14 @@ class SharePointSource(BaseSource):
         instance._label_filter = None
         return instance
 
-    def _get_label_filter(self) -> Optional["SensitivityLabelFilter"]:
-        """Lazily build a Purview sensitivity-label filter from config."""
+    def _get_label_filter(self) -> SensitivityLabelFilter:
+        """Lazily build the Purview sensitivity-label filter from config.
+
+        Always built: ``skip_encrypted_files`` (default true) is a policy on its own, and
+        only the per-file label read sees the 423 that marks an encrypted file.
+        """
         if self._label_filter is not None:
             return self._label_filter
-        if (
-            not self._excluded_sensitivity_label_ids
-            and not self._skip_unlabeled_files
-            and self._skip_encrypted_files
-        ):
-            return None
         self._label_filter = SensitivityLabelFilter(
             excluded_label_ids=self._excluded_sensitivity_label_ids,
             skip_encrypted=self._skip_encrypted_files,
@@ -448,9 +446,9 @@ class SharePointSource(BaseSource):
                 continue
 
             # Run the label check outside the per-item try so that errors
-            # configured to fail loud (skip_encrypted_files=False) propagate
-            # instead of being swallowed by the broad exception handler below.
-            if label_filter is not None and await label_filter.should_skip_item(
+            # configured to fail loud (skip_encrypted_files=False, or an unreadable label
+            # under a label policy) propagate instead of being swallowed below.
+            if await label_filter.should_skip_item(
                 drive_id=drive_id,
                 item_id=item["id"],
                 item_name=item.get("name", ""),
@@ -752,9 +750,10 @@ class SharePointSource(BaseSource):
         current_count = start_count
 
         # Container-label short-circuit: skip the whole site if its backing
-        # M365 Group carries a blocked Purview sensitivity label.
+        # M365 Group carries a blocked Purview sensitivity label. Only a block list can
+        # exclude a site, so the extra drives call is made only when one is configured.
         label_filter = self._get_label_filter()
-        if label_filter is not None:
+        if label_filter.blocks_containers:
             try:
                 drives_data = await self._get(
                     f"{self.GRAPH_BASE_URL}/sites/{site_id}/drives",
@@ -764,15 +763,9 @@ class SharePointSource(BaseSource):
                 if await label_filter.should_skip_site(site_id=site_id, group_id=group_id):
                     return
             except Exception as exc:  # noqa: BLE001
-                if label_filter.blocks_containers:
-                    # A block list is configured: do not index the site on an unchecked label.
-                    self.logger.error(
-                        f"Could not check the container label of site {site_id}: {exc}"
-                    )
-                    raise
-                self.logger.warning(
-                    f"Could not pre-check container label for site {site_id}: {exc}"
-                )
+                # Do not index the site on an unchecked container label.
+                self.logger.error(f"Could not check the container label of site {site_id}: {exc}")
+                raise
 
         async for drive_entity in self._generate_drive_entities(site_id, site_name):
             current_count += 1

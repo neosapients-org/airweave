@@ -179,6 +179,7 @@ class VespaVectorDB:
         filter_groups: list,
         collection_id: str,
         name_substring: str | None = None,
+        acl_principals: Optional[list[str]] = None,
     ) -> int:
         """Count entities matching filters without retrieving content.
 
@@ -197,6 +198,11 @@ class VespaVectorDB:
 
         if name_substring:
             where_parts.append(self._build_name_substring_clause(name_substring))
+
+        # The same access clause as search: a count must not reveal rows the viewer cannot see.
+        acl_yql = self._build_acl_clause(acl_principals)
+        if acl_yql:
+            where_parts.append(f"({acl_yql})")
 
         all_schemas = ", ".join(ALL_VESPA_SCHEMAS)
         yql = f"select * from sources {all_schemas} where {' AND '.join(where_parts)}"
@@ -226,6 +232,7 @@ class VespaVectorDB:
         limit: int = 50,
         offset: int = 0,
         name_substring: str | None = None,
+        acl_principals: Optional[list[str]] = None,
     ) -> list:
         """Retrieve entities matching filters without embeddings or ranking.
 
@@ -243,6 +250,10 @@ class VespaVectorDB:
 
         if name_substring:
             where_parts.append(self._build_name_substring_clause(name_substring))
+
+        acl_yql = self._build_acl_clause(acl_principals)
+        if acl_yql:
+            where_parts.append(f"({acl_yql})")
 
         all_schemas = ", ".join(ALL_VESPA_SCHEMAS)
         # A total order, so adjacent pages of an offset walk neither repeat nor skip a row: the

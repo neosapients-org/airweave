@@ -38,6 +38,7 @@ class SearchTier(str, Enum):
     INSTANT = "instant"
     CLASSIC = "classic"
     AGENTIC = "agentic"
+    BROWSE = "browse"
 
 
 class InstantSearchRequest(BaseModel):
@@ -227,6 +228,21 @@ class BrowseRequest(BaseModel):
         min_length=2,
         max_length=200,
     )
+
+    @field_validator("name_query")
+    @classmethod
+    def _name_query_has_two_characters_once_trimmed(cls, value: Optional[str]) -> Optional[str]:
+        """Trim, then require two characters.
+
+        "  " passing as a name and then dropped would remove the scan guard and browse the
+        whole collection.
+        """
+        if value is None:
+            return None
+        trimmed = value.strip()
+        if len(trimmed) < 2:
+            raise ValueError("name_query needs at least 2 characters besides spaces")
+        return trimmed
 
 
 class BrowseResponse(BaseModel):

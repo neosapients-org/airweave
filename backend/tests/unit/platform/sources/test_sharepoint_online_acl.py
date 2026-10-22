@@ -22,17 +22,20 @@ import pytest
 
 from airweave.platform.sources.sharepoint_online.acl import (
     extract_access_control,
+    format_sp_group_id,
     link_permission_to_sp_group_viewer,
+    sp_site_scope,
 )
+
+SITE = "https://neenacorp.sharepoint.com/sites/Neena77"
+SCOPE = sp_site_scope(SITE)
 
 # ---------------------------------------------------------------------------
 # Helpers — build minimal Graph permission objects
 # ---------------------------------------------------------------------------
 
 
-def _link_perm(
-    scope: str, type_: str = "edit", roles=None, link_id: str = "link-1"
-) -> dict:
+def _link_perm(scope: str, type_: str = "edit", roles=None, link_id: str = "link-1") -> dict:
     """Sharing-link permission with the given scope (no grantedTo principal)."""
     return {
         "id": link_id,
@@ -82,7 +85,7 @@ async def test_organization_scoped_link_does_not_set_is_public():
     # Without sp_unique_id the link cannot be translated into a SharingLinks
     # site group viewer either — both halves of the fix combine to give
     # "no public access, no viewer either".
-    ac = await extract_access_control([_link_perm("organization")])
+    ac = await extract_access_control([_link_perm("organization")], site_url=SITE)
     assert ac.is_public is False
     assert ac.viewers == []
 
@@ -92,19 +95,20 @@ async def test_organization_edit_link_with_sp_unique_id_yields_per_link_viewer()
     """When the file's SP UniqueId is known, an org+edit link translates."""
     perm = _link_perm("organization", type_="edit", link_id="LINK0001")
     ac = await extract_access_control(
-        [perm], sp_unique_id="dd7691b0-3468-446f-81b0-72f3bdab7d1f"
+        [perm], sp_unique_id="dd7691b0-3468-446f-81b0-72f3bdab7d1f", site_url=SITE
     )
     assert ac.is_public is False
     assert ac.viewers == [
-        "group:sp:sharinglinks.dd7691b0-3468-446f-81b0-72f3bdab7d1f.organizationedit.link0001"
+        f"group:sp:{SCOPE}:sharinglinks.dd7691b0-3468-446f-81b0-72f3bdab7d1f"
+        ".organizationedit.link0001"
     ]
 
 
 @pytest.mark.asyncio
 async def test_organization_view_link_translates_to_organizationview_suffix():
     perm = _link_perm("organization", type_="view", link_id="LINK0002")
-    ac = await extract_access_control([perm], sp_unique_id="aaaa-bbbb")
-    assert ac.viewers == ["group:sp:sharinglinks.aaaa-bbbb.organizationview.link0002"]
+    ac = await extract_access_control([perm], sp_unique_id="aaaa-bbbb", site_url=SITE)
+    assert ac.viewers == [f"group:sp:{SCOPE}:sharinglinks.aaaa-bbbb.organizationview.link0002"]
 
 
 @pytest.mark.asyncio
@@ -112,44 +116,46 @@ async def test_users_scope_link_translates_to_flexible_suffix():
     """Empirically verified: both users+edit and users+view collapse to Flexible."""
     perm_edit = _link_perm("users", type_="edit", link_id="LINKE")
     perm_view = _link_perm("users", type_="view", link_id="LINKV")
-    ac_e = await extract_access_control([perm_edit], sp_unique_id="ITEM1")
-    ac_v = await extract_access_control([perm_view], sp_unique_id="ITEM1")
-    assert ac_e.viewers == ["group:sp:sharinglinks.item1.flexible.linke"]
-    assert ac_v.viewers == ["group:sp:sharinglinks.item1.flexible.linkv"]
+    ac_e = await extract_access_control([perm_edit], sp_unique_id="ITEM1", site_url=SITE)
+    ac_v = await extract_access_control([perm_view], sp_unique_id="ITEM1", site_url=SITE)
+    assert ac_e.viewers == [f"group:sp:{SCOPE}:sharinglinks.item1.flexible.linke"]
+    assert ac_v.viewers == [f"group:sp:{SCOPE}:sharinglinks.item1.flexible.linkv"]
 
 
 @pytest.mark.asyncio
 async def test_anonymous_link_does_not_get_translated_to_viewer():
     """Anonymous → is_public, never a SharingLinks viewer."""
     perm = _link_perm("anonymous", type_="view", link_id="LINKA")
-    ac = await extract_access_control([perm], sp_unique_id="ITEM1")
+    ac = await extract_access_control([perm], sp_unique_id="ITEM1", site_url=SITE)
     assert ac.is_public is True
     assert ac.viewers == []
 
 
 @pytest.mark.asyncio
 async def test_anonymous_link_sets_is_public():
-    ac = await extract_access_control([_link_perm("anonymous")])
+    ac = await extract_access_control([_link_perm("anonymous")], site_url=SITE)
     assert ac.is_public is True
 
 
 @pytest.mark.asyncio
 async def test_org_and_anonymous_links_together_still_public_via_anonymous():
-    ac = await extract_access_control([_link_perm("organization"), _link_perm("anonymous")])
+    ac = await extract_access_control(
+        [_link_perm("organization"), _link_perm("anonymous")], site_url=SITE
+    )
     assert ac.is_public is True
 
 
 @pytest.mark.asyncio
 async def test_users_scoped_link_does_not_set_is_public():
     """``users``-scoped links target named recipients, not the org."""
-    ac = await extract_access_control([_link_perm("users")])
+    ac = await extract_access_control([_link_perm("users")], site_url=SITE)
     assert ac.is_public is False
 
 
 @pytest.mark.asyncio
 async def test_unknown_link_scope_does_not_set_is_public():
     """Future / unrecognized scopes default to non-public."""
-    ac = await extract_access_control([_link_perm("someFutureScope")])
+    ac = await extract_access_control([_link_perm("someFutureScope")], site_url=SITE)
     assert ac.is_public is False
 
 
@@ -173,13 +179,13 @@ async def test_org_link_alongside_explicit_grants_extracts_grants_and_link_group
         _site_group_perm("Access Control Tests Members", group_id="5", roles=["write"]),
         _site_group_perm("Access Control Tests Visitors", group_id="4", roles=["read"]),
     ]
-    ac = await extract_access_control(perms, sp_unique_id="ITEM1")
+    ac = await extract_access_control(perms, sp_unique_id="ITEM1", site_url=SITE)
     assert ac.is_public is False
     assert set(ac.viewers) == {
-        "group:sp:access_control_tests_owners",
-        "group:sp:access_control_tests_members",
-        "group:sp:access_control_tests_visitors",
-        "group:sp:sharinglinks.item1.organizationedit.link0001",
+        f"group:sp:{SCOPE}:access_control_tests_owners",
+        f"group:sp:{SCOPE}:access_control_tests_members",
+        f"group:sp:{SCOPE}:access_control_tests_visitors",
+        f"group:sp:{SCOPE}:sharinglinks.item1.organizationedit.link0001",
     }
 
 
@@ -189,7 +195,7 @@ async def test_user_and_entra_group_grants_extracted():
         _user_perm("alice@example.com"),
         _entra_group_perm("11111111-2222-3333-4444-555555555555"),
     ]
-    ac = await extract_access_control(perms)
+    ac = await extract_access_control(perms, site_url=SITE)
     assert ac.is_public is False
     assert set(ac.viewers) == {
         "user:alice@example.com",
@@ -204,7 +210,7 @@ async def test_user_and_entra_group_grants_extracted():
 
 @pytest.mark.asyncio
 async def test_empty_permissions_returns_empty_access_control():
-    ac = await extract_access_control([])
+    ac = await extract_access_control([], site_url=SITE)
     assert ac.is_public is False
     assert ac.viewers == []
 
@@ -219,7 +225,7 @@ async def test_permission_without_read_role_is_ignored():
             "grantedToV2": {"user": {"email": "alice@example.com"}},
         },
     ]
-    ac = await extract_access_control(perms)
+    ac = await extract_access_control(perms, site_url=SITE)
     assert ac.is_public is False
     assert ac.viewers == []
 
@@ -234,7 +240,7 @@ async def test_org_link_without_read_role_is_ignored_entirely():
             "link": {"scope": "organization"},
         }
     ]
-    ac = await extract_access_control(perms)
+    ac = await extract_access_control(perms, site_url=SITE)
     assert ac.is_public is False
     assert ac.viewers == []
 
@@ -245,7 +251,7 @@ async def test_duplicate_principal_only_added_once():
         _user_perm("alice@example.com", roles=["read"]),
         _user_perm("alice@example.com", roles=["write"]),
     ]
-    ac = await extract_access_control(perms)
+    ac = await extract_access_control(perms, site_url=SITE)
     assert ac.viewers == ["user:alice@example.com"]
 
 
@@ -257,18 +263,18 @@ async def test_duplicate_principal_only_added_once():
 def test_link_translation_returns_none_without_sp_unique_id():
     """No SP UniqueId means we can't construct the group name — return None."""
     perm = _link_perm("organization", link_id="L1")
-    assert link_permission_to_sp_group_viewer(perm, None) is None
+    assert link_permission_to_sp_group_viewer(perm, None, SITE) is None
 
 
 def test_link_translation_returns_none_for_non_link_perm():
     """A non-link permission is not a sharing link — return None."""
     perm = {"id": "x", "roles": ["read"], "grantedToV2": {"user": {"email": "a@b.com"}}}
-    assert link_permission_to_sp_group_viewer(perm, "ITEM1") is None
+    assert link_permission_to_sp_group_viewer(perm, "ITEM1", SITE) is None
 
 
 def test_link_translation_returns_none_for_anonymous():
     perm = _link_perm("anonymous", link_id="L1")
-    assert link_permission_to_sp_group_viewer(perm, "ITEM1") is None
+    assert link_permission_to_sp_group_viewer(perm, "ITEM1", SITE) is None
 
 
 def test_link_translation_returns_none_for_unknown_scope():
@@ -278,9 +284,78 @@ def test_link_translation_returns_none_for_unknown_scope():
         "roles": ["read"],
         "link": {"scope": "future-scope", "type": "edit"},
     }
-    assert link_permission_to_sp_group_viewer(perm, "ITEM1") is None
+    assert link_permission_to_sp_group_viewer(perm, "ITEM1", SITE) is None
 
 
 def test_link_translation_returns_none_when_link_id_missing():
     perm = {"id": "", "roles": ["read"], "link": {"scope": "organization", "type": "edit"}}
-    assert link_permission_to_sp_group_viewer(perm, "ITEM1") is None
+    assert link_permission_to_sp_group_viewer(perm, "ITEM1", SITE) is None
+
+
+# ---------------------------------------------------------------------------
+# users-scoped links keep their named recipients (review 4301738212)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_users_link_keeps_explicit_recipients_and_the_sharing_links_group():
+    """An invitee who has not redeemed the link is still a viewer.
+
+    Regression: translating the link to its SharingLinks group dropped the
+    ``grantedToIdentitiesV2`` recipients, and that group only holds redeemers.
+    """
+    perm = _link_perm("users", type_="view", link_id="LINKU")
+    perm["grantedToIdentitiesV2"] = [
+        {"user": {"email": "Bob@Example.com", "displayName": "Bob"}},
+        {"siteUser": {"loginName": "i:0#.f|membership|bob@example.com"}},
+    ]
+    perm["grantedToIdentities"] = [{"user": {"email": "carol@example.com"}}]
+    ac = await extract_access_control([perm], sp_unique_id="ITEM1", site_url=SITE)
+    assert ac.viewers == [
+        f"group:sp:{SCOPE}:sharinglinks.item1.flexible.linku",
+        "user:bob@example.com",
+        "user:carol@example.com",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Site-scoped SP group keys (review 4301738218)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_same_named_sp_groups_on_two_sites_get_different_viewers():
+    """Two sites' "Members" groups are different groups with different members."""
+    perms = [_site_group_perm("Members")]
+    a = await extract_access_control(perms, site_url="https://t.sharepoint.com/sites/A")
+    b = await extract_access_control(perms, site_url="https://t.sharepoint.com/sites/B")
+    assert a.viewers != b.viewers
+    assert a.viewers == [
+        f"group:{format_sp_group_id('https://t.sharepoint.com/sites/A', 'Members')}"
+    ]
+
+
+def test_sp_site_scope_is_deterministic_across_url_spellings():
+    """Case, trailing slash, scheme and percent-encoding do not change the scope."""
+    spellings = [
+        "https://T.SharePoint.com/sites/My Site/",
+        "https://t.sharepoint.com/sites/my%20site",
+        "http://t.sharepoint.com/Sites/My Site",
+    ]
+    assert len({sp_site_scope(u) for u in spellings}) == 1
+    assert sp_site_scope("https://t.sharepoint.com/sites/other") != sp_site_scope(spellings[0])
+
+
+def test_sp_group_id_is_short_and_has_no_scope_without_a_site():
+    group_id = format_sp_group_id(SITE, "Neena Members")
+    assert group_id == f"sp:{SCOPE}:neena_members" and len(SCOPE) == 16
+    assert format_sp_group_id("", "Members") is None
+
+
+@pytest.mark.asyncio
+async def test_sp_group_grant_without_a_site_grants_nothing():
+    """A group that cannot be tied to its site never matches, so it is not emitted."""
+    ac = await extract_access_control(
+        [_site_group_perm("Members"), _user_perm("a@b.com")], site_url=""
+    )
+    assert ac.viewers == ["user:a@b.com"]

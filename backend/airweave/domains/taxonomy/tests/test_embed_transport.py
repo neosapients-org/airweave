@@ -187,10 +187,10 @@ def stand_in(monkeypatch):
         monkeypatch.setitem(sys.modules, name, mod)
 
 
-def taxonomy(model, dims, sha="a" * 64, version="acme-1"):
+def taxonomy(model, dims, sha="a" * 64, version="acme-1", tenant="t-acme"):
     return ResolvedTaxonomy(
         "neo-acme",
-        "t-acme",
+        tenant,
         version,
         sha,
         1,
@@ -272,6 +272,20 @@ class TestFallbackIsVisible:
             await pool.classify(taxonomy("other", 4, version="v1"), ROWS, 10)
             await pool.classify(taxonomy("other", 4, version="v2"), ROWS, 10)
         assert tally.embed_fallbacks() == 2
+        pool.close()
+
+    async def test_the_same_version_name_of_two_tenants_warns_and_counts_for_each(
+        self, tmp_path, stand_in, caplog
+    ):
+        tally = TaxonomyTally()
+        pool = ClassifierPool(1, tmp_path, dense_embedder=FakeDense(), tally=tally)
+        with caplog.at_level("WARNING"):
+            await pool.classify(taxonomy("other", 4, version="v1", tenant="t-acme"), ROWS, 10)
+            await pool.classify(
+                taxonomy("large", 3072, "b" * 64, version="v1", tenant="t-globex"), ROWS, 10
+            )
+        warnings = [r for r in caplog.records if "package's own OpenAI client" in r.getMessage()]
+        assert len(warnings) == 2 and tally.embed_fallbacks() == 2
         pool.close()
 
     async def test_matching_taxonomy_is_silent(self, tmp_path, stand_in, caplog):

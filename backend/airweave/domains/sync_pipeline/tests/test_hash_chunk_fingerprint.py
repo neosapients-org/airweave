@@ -123,6 +123,27 @@ class TestNeoSettings:
         monkeypatch.setattr(chunking, "SENTENCE_PACK_VERSION", "3")
         assert await computer.compute_for_entity(_pdf(tmp_path)) != before
 
+    async def test_a_moved_document_gets_its_header_again(self, tmp_path, chunk_settings):
+        """The header names the path; breadcrumbs are left out of the hash, the path is not."""
+        computer = HashComputer()
+        moved = _pdf(tmp_path)
+        moved.breadcrumbs = [Breadcrumb(entity_id="a", name="Archive", entity_type="Folder")]
+        # At the defaults (no header) a move changes nothing, as upstream.
+        assert await computer.compute_for_entity(moved) == UPSTREAM_PDF_HASH
+        chunk_settings(**NEO)
+        assert await computer.compute_for_entity(moved) != await computer.compute_for_entity(
+            _pdf(tmp_path)
+        )
+
+    async def test_the_header_budget_is_part_of_the_hash(
+        self, tmp_path, monkeypatch, chunk_settings
+    ):
+        computer = HashComputer()
+        chunk_settings(**NEO)
+        before = await computer.compute_for_entity(_pdf(tmp_path))
+        monkeypatch.setattr(chunking, "HEADER_MAX_TOKENS", 128)
+        assert await computer.compute_for_entity(_pdf(tmp_path)) != before
+
     async def test_code_files_never_fingerprinted(self, tmp_path, chunk_settings):
         computer = HashComputer()
         before = await computer.compute_for_entity(_code(tmp_path))

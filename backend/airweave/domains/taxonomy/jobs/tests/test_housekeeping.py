@@ -9,6 +9,7 @@ from airweave.domains.taxonomy.jobs import housekeeping
 from airweave.domains.taxonomy.jobs.housekeeping import (
     delete_tenant_cache,
     purge_expired_caches,
+    purge_finished_work,
     reconcile_unattended,
     tenant_cache_dir,
 )
@@ -104,6 +105,59 @@ class TestReconcile:
         assert (
             first == second == [j.id]
         )  # same id each time: Temporal's USE_EXISTING makes it a no-op
+
+
+class TestAbandonedWork:
+    async def test_a_failed_removal_is_logged_as_an_error_and_the_round_goes_on(self, monkeypatch):
+        repo, j = seeded(state=RUNNING, age=MAX_AGE + 60, lease_in=-10)
+        errors = []
+        monkeypatch.setattr(housekeeping.logger, "error", errors.append)
+
+        def refuse(_):
+            raise PermissionError("read-only file system")
+
+        out = await reconcile_unattended(
+            repo, lambda _: None, refuse, grace_seconds=GRACE, max_age_seconds=MAX_AGE
+        )
+        assert out["abandoned"] == 1 and (await repo.get(j.id)).state == FAILED
+        assert any("could not remove the work" in m for m in errors)
+
+    async def test_the_next_round_removes_the_work_of_every_job_that_is_no_longer_active(
+        self, tmp_path
+    ):
+        repo, finished = seeded(state=FAILED)
+        _, running = seeded(state=RUNNING, lease_in=200)
+        repo.jobs[running.id] = running
+        for j in (finished, running):
+            (tmp_path / str(j.id)).mkdir()
+            (tmp_path / str(j.id) / "sample.jsonl").write_text("customer text")
+        gone = UUID(int=99)  # a job whose row no longer exists
+        (tmp_path / str(gone)).mkdir()
+        (tmp_path / "not-a-job").mkdir()
+
+        removed = await purge_finished_work(repo, tmp_path)
+
+        assert sorted(removed) == sorted([str(finished.id), str(gone)])
+        assert (tmp_path / str(running.id)).is_dir() and (tmp_path / "not-a-job").is_dir()
+
+    async def test_a_folder_that_cannot_be_removed_stays_for_the_next_round(
+        self, tmp_path, monkeypatch
+    ):
+        repo, finished = seeded(state=FAILED)
+        (tmp_path / str(finished.id)).mkdir()
+        errors = []
+        monkeypatch.setattr(housekeeping.logger, "error", errors.append)
+
+        def refuse(_path):
+            raise OSError("device busy")
+
+        monkeypatch.setattr(housekeeping.shutil, "rmtree", refuse)
+        assert await purge_finished_work(repo, tmp_path) == []
+        assert (tmp_path / str(finished.id)).is_dir()
+        assert any("could not remove the work" in m for m in errors)
+
+        monkeypatch.undo()
+        assert await purge_finished_work(repo, tmp_path) == [str(finished.id)]
 
 
 class TestCaches:

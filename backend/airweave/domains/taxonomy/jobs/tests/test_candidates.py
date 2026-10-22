@@ -10,6 +10,7 @@ from airweave.domains.taxonomy.jobs.candidates import (
     CandidateConflict,
     CandidateTaken,
     CandidateWriter,
+    UnsafeCandidateFile,
 )
 from airweave.domains.taxonomy.jobs.tests.helpers import CANDIDATE, TENANT, FakeS3
 
@@ -45,6 +46,23 @@ class TestPaths:
         w, s3 = writer()
         with pytest.raises(ValueError):
             await w.publish(TENANT, CANDIDATE, "j1", {"../versions/x": b"1"}, {})
+        assert s3.objects == {}
+
+
+class TestReservedNames:
+    @pytest.mark.parametrize("reserved", [REPORT, CLAIM])
+    async def test_a_build_file_under_a_reserved_name_is_refused_before_any_write(self, reserved):
+        w, s3 = writer()
+        await w.claim(TENANT, CANDIDATE, "j1", "discover")
+        before = dict(s3.objects)
+        with pytest.raises(UnsafeCandidateFile, match="reserved|unsafe"):
+            await w.publish(TENANT, CANDIDATE, "j1", {**FILES, reserved: b"{}"}, {})
+        assert s3.objects == before  # nothing of the candidate was published
+
+    async def test_an_unsafe_name_anywhere_in_the_files_stops_the_first_write(self):
+        w, s3 = writer()
+        with pytest.raises(UnsafeCandidateFile):
+            await w.publish(TENANT, CANDIDATE, "j1", {**FILES, "zz/../x": b"1"}, {})
         assert s3.objects == {}
 
 

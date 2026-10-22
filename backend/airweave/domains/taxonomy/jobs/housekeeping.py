@@ -6,6 +6,9 @@ Two things are written outside a job's own lease and have no owner once a worker
   Temporal, the workflow ended after its retries or its ``busy`` waits, the worker died). Its
   collection stays blocked until something starts it again, so the jobs worker's reconciler does
   that, and fails a job that has been unattended for longer than any build takes;
+* a job's scratch folder (its sample of customer text), which its run removes when it ends. One
+  left behind (an abandoned job, a removal that failed, a worker that died) is removed by the
+  next round, and one that cannot be removed is logged as an error and tried again;
 * the persistent per-tenant caches (``TAXONOMY_JOBS_CACHE_DIR``), which hold customer text and the
   model's answers about it. They are removed after ``limits.JOBS_CACHE_RETENTION_DAYS`` without
   use, and a tenant's can be deleted at once with ``delete_tenant_cache`` (or the command line:
@@ -22,9 +25,10 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+from uuid import UUID
 
 from airweave.core.logging import logger
-from airweave.domains.taxonomy.jobs.records import TaxonomyJobRepository, utcnow
+from airweave.domains.taxonomy.jobs.records import ACTIVE, TaxonomyJobRepository, utcnow
 
 ABANDONED = "the job was not run for too long and was abandoned; start it again"
 
@@ -114,8 +118,15 @@ async def reconcile_unattended(
                 job.id, ABANDONED, moment - timedelta(seconds=max_age_seconds)
             )
             if failed is not None:
-                cleanup(job.id)
                 abandoned += 1
+                try:
+                    cleanup(job.id)
+                except OSError as e:
+                    # Customer text stays on disk: said as an error, and the folder is removed by
+                    # a later round's purge_finished_work.
+                    logger.error(
+                        f"[TaxonomyJob] could not remove the work of abandoned job {job.id}: {e}"
+                    )
             continue
         try:
             await dispatch(job)
@@ -123,6 +134,40 @@ async def reconcile_unattended(
         except Exception as e:  # noqa: BLE001 - Temporal is unreachable; the next round retries
             logger.warning(f"[TaxonomyJob] could not start job {job.id}: {type(e).__name__}: {e}")
     return {"started": started, "abandoned": abandoned}
+
+
+async def purge_finished_work(
+    repo: TaxonomyJobRepository, work_dir: Optional[str | Path]
+) -> List[str]:
+    """Remove the scratch folder of every job that is no longer active, or no longer exists.
+
+    A job's run removes its own folder when it ends; this removes what is left. A folder that
+    cannot be removed is logged as an error and stays for the next round.
+
+    Returns:
+        The names (job ids) of the folders removed.
+    """
+    root = Path(work_dir) if work_dir else None
+    if root is None or not root.is_dir():
+        return []
+    removed: List[str] = []
+    for folder in sorted(p for p in root.iterdir() if p.is_dir()):
+        try:
+            job_id = UUID(folder.name)
+        except ValueError:
+            continue  # not a job's folder
+        job = await repo.get(job_id)
+        if job is not None and job.state in ACTIVE:
+            continue
+        try:
+            await asyncio.to_thread(shutil.rmtree, folder)
+        except OSError as e:
+            logger.error(f"[TaxonomyJob] could not remove the work of job {folder.name}: {e}")
+            continue
+        removed.append(folder.name)
+    if removed:
+        logger.info(f"[TaxonomyJob] removed the work left by {len(removed)} finished jobs")
+    return removed
 
 
 async def housekeeping_loop(
@@ -136,8 +181,9 @@ async def housekeeping_loop(
     max_age_seconds: int,
     cache_dir: Optional[str],
     retention_days: int,
+    work_dir: Optional[str] = None,
 ) -> None:
-    """Run both tasks every ``interval_seconds`` until ``stop`` is set."""
+    """Run the tasks every ``interval_seconds`` until ``stop`` is set."""
     while not stop.is_set():
         try:
             await reconcile_unattended(
@@ -147,6 +193,7 @@ async def housekeeping_loop(
                 grace_seconds=grace_seconds,
                 max_age_seconds=max_age_seconds,
             )
+            await purge_finished_work(repo, work_dir)
             if cache_dir:
                 await asyncio.to_thread(purge_expired_caches, cache_dir, retention_days)
         except Exception as e:  # noqa: BLE001 - a failed round must not end the loop

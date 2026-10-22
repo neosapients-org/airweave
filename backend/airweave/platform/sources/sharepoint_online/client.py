@@ -162,6 +162,20 @@ class GraphClient:
         url = f"{GRAPH_BASE_URL}/drives/{drive_id}"
         return await self.get(url)
 
+    async def get_drive_site_url(self, drive_id: str) -> str:
+        """Return the URL of the SharePoint site that owns a drive.
+
+        Read from the drive root's ``sharepointIds.siteUrl``. Used where only a drive id
+        is known (delta and targeted syncs) to scope SP site group keys to their site.
+
+        Returns:
+            The site URL, or ``""`` if Graph returns none.
+        """
+        url = f"{GRAPH_BASE_URL}/drives/{drive_id}/root"
+        data = await self.get(url, {"$select": "sharepointIds"})
+        sp_ids = data.get("sharepointIds") or {}
+        return str(sp_ids.get("siteUrl") or "")
+
     # -- Drive Items --
 
     async def get_drive_items_recursive(

@@ -134,9 +134,9 @@ class TestVespaParams:
         assert rest == {k: v for k, v in plain.raw["params"].items() if k != "ranking.profile"}
 
     async def test_boost_weight_passed(self):
-        boost = TopicBoost(topic_ids=["acme:x"], weight=1.0)
+        boost = TopicBoost(topic_ids=["acme:x"], weight=0.5)
         compiled = await _client().compile_query(_plan(), EMBEDDINGS, "col-1", boost=boost)
-        assert compiled.raw["params"]["input.query(topic_weight)"] == 1.0
+        assert compiled.raw["params"]["input.query(topic_weight)"] == 0.5
 
     async def test_display_leaves_out_tensors(self):
         compiled = await _client().compile_query(_plan(), EMBEDDINGS, "col-1", boost=BOOST)
@@ -209,7 +209,7 @@ class TestPassThrough:
 
 
 class TestWeightIsBounded:
-    @pytest.mark.parametrize("weight", [float("inf"), float("nan"), -0.1, 2.5, 1e9])
+    @pytest.mark.parametrize("weight", [float("inf"), float("nan"), -0.1, 0.51, 2.0, 1e9])
     def test_a_weight_that_could_swamp_the_hybrid_score_is_refused(self, weight):
         from pydantic import ValidationError
 
@@ -218,7 +218,7 @@ class TestWeightIsBounded:
         with pytest.raises(ValidationError):
             TopicBoost(topic_ids=["acme:x"], weight=weight)
 
-    @pytest.mark.parametrize("weight", [0.0, 0.15, 2.0])
+    @pytest.mark.parametrize("weight", [0.0, 0.15, 0.5])
     def test_the_range_edges_are_allowed(self, weight):
         from airweave.domains.search.types.boost import TopicBoost
 

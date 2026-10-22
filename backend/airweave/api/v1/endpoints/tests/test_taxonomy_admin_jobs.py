@@ -116,7 +116,7 @@ class TestTenantIsNotTheCallers:
 
         out = await discover(svc, ctx(org=org))
 
-        assert out["status"] == "running" and len(enqueued) == 1
+        assert out["status"] == "pending" and len(enqueued) == 1
         assert (await svc.get(enqueued[0], org)) is not None
 
     async def test_an_organization_with_no_binding_and_no_active_file_cannot_discover(self, wired):

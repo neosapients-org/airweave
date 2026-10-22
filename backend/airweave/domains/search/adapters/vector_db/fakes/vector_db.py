@@ -24,6 +24,7 @@ class FakeVectorDB:
         self._filter_results: list[SearchResult] = []
         self._calls: list[tuple] = []
         self.boosts: list[TopicBoost | None] = []  # boost of each compile_query call
+        self.last_acl_principals: list[str] | None = None
 
         self._compile_error: Exception | None = None
         self._execute_error: Exception | None = None
@@ -96,9 +97,11 @@ class FakeVectorDB:
         filter_groups: list[FilterGroup],
         collection_id: str,
         name_substring: str | None = None,
+        acl_principals: list[str] | None = None,
     ) -> int:
         """Return seeded count, or raise seeded error."""
         self._calls.append(("count", filter_groups, collection_id, name_substring))
+        self.last_acl_principals = acl_principals
         if self._count_error:
             err = self._count_error
             self._count_error = None
@@ -112,16 +115,26 @@ class FakeVectorDB:
         limit: int = 50,
         offset: int = 0,
         name_substring: str | None = None,
+        acl_principals: list[str] | None = None,
     ) -> list[SearchResult]:
-        """Return seeded filter results, or raise seeded error."""
+        """Return seeded filter results (as Vespa's access clause would leave them)."""
         self._calls.append(
             ("filter_search", filter_groups, collection_id, limit, offset, name_substring)
         )
+        self.last_acl_principals = acl_principals
         if self._filter_error:
             err = self._filter_error
             self._filter_error = None
             raise err
-        return self._filter_results
+        if acl_principals is None:
+            return self._filter_results
+        # The access clause: public rows, or rows naming one of the viewer's principals.
+        allowed = set(acl_principals)
+        return [
+            r
+            for r in self._filter_results
+            if r.access.is_public or allowed & set(r.access.viewers or [])
+        ]
 
     async def close(self) -> None:
         """No-op cleanup."""

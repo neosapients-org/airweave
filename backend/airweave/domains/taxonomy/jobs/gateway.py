@@ -49,6 +49,9 @@ class SpendCapReached(RuntimeError):
 class EngineGateway(Protocol):
     """Blocking calls (the runner runs them on a thread)."""
 
+    #: False when the worker has no classifier build config: discover cannot run, propose can.
+    can_discover: bool
+
     def discover(
         self,
         chunks: List[Dict[str, Any]],
@@ -91,7 +94,7 @@ class PackageGateway:
 
     def __init__(
         self,
-        build_config: Mapping[str, Any],
+        build_config: Optional[Mapping[str, Any]],
         *,
         embed_transport: Optional[Callable[..., Any]] = None,
         llm_transport: Optional[Callable[..., Any]] = None,
@@ -100,9 +103,12 @@ class PackageGateway:
     ) -> None:
         """``build_config`` is the package's YAML as a dict; transports default to its own clients.
 
+        ``build_config`` None: no discover (it needs that YAML); propose uses the serving version's.
+
         ``reviewers`` (novelty, structural) replace the LLM reviewers of a wave (tests).
         """
-        self._config = copy.deepcopy(dict(build_config))
+        self._config = copy.deepcopy(dict(build_config)) if build_config is not None else None
+        self.can_discover = build_config is not None
         self._embed = embed_transport
         self._llm = llm_transport
         self._reviewers = reviewers
@@ -129,6 +135,8 @@ class PackageGateway:
             TaxonomyEngine,
         )
 
+        if self._config is None:
+            raise RuntimeError("no classifier build config: discover cannot run on this worker")
         cfg = self._job_config(work_dir, spend_cap_usd, tenant_id=tenant_id)
         if corpus_description:
             cfg["llm"]["corpus_description"] = corpus_description
@@ -247,7 +255,7 @@ class PackageGateway:
         tenant_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """The package's config with this job's paths and spend cap (local, never shipped)."""
-        cfg = copy.deepcopy(dict(base if base is not None else self._config))
+        cfg = copy.deepcopy(dict(base if base is not None else self._config or {}))
         root = work_dir
         if self._cache_dir is not None and tenant_id:
             root = tenant_cache_dir(self._cache_dir, tenant_id)

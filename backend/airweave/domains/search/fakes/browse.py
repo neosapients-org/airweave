@@ -30,6 +30,8 @@ class FakeBrowseService(BrowseServiceProtocol):
         ctx: ApiContext,
         readable_id: str,
         request: BrowseRequest,
+        user_principal_override: str | None = None,
     ) -> BrowseResponse:
         self._calls.append(("browse", readable_id, request))
+        self.last_user_principal = user_principal_override
         return self._response

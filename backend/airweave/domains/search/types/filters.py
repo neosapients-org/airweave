@@ -136,8 +136,9 @@ _LIST_OPS: frozenset[FilterOperator] = frozenset(
     }
 )
 
-# The most values one ``in`` / ``not_in`` takes on a chunk field: each becomes an OR clause in YQL.
-MAX_CHUNK_FIELD_LIST_VALUES = 100
+# The most values one ``in`` / ``not_in`` takes, on any field: each becomes its own clause in
+# YQL, so with the group and condition caps this bounds the query a request can build.
+MAX_LIST_VALUES = 100
 
 # The operators each chunk field supports (contract airweave-neo/1, section 5.1).
 _CHUNK_FIELD_OPERATORS: dict[FilterableField, frozenset[FilterOperator]] = {
@@ -291,14 +292,9 @@ class FilterCondition(BaseModel):
             raise ValueError(
                 f"Operator '{op.value}' is not supported on '{f.value}'. Use: {names}."
             )
-        if (
-            f in _CHUNK_FIELD_OPERATORS
-            and isinstance(v, list)
-            and len(v) > MAX_CHUNK_FIELD_LIST_VALUES
-        ):
+        if isinstance(v, list) and len(v) > MAX_LIST_VALUES:
             raise ValueError(
-                f"Field '{f.value}' takes at most {MAX_CHUNK_FIELD_LIST_VALUES} values in a list, "
-                f"got {len(v)}."
+                f"Field '{f.value}' takes at most {MAX_LIST_VALUES} values in a list, got {len(v)}."
             )
         if f in _INTEGER_FIELDS and (isinstance(v, bool) or not isinstance(v, int)):
             raise ValueError(f"Field '{f.value}' takes an integer value, got {v!r}.")

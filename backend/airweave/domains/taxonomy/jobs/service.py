@@ -260,9 +260,15 @@ def fingerprint(req: JobRequest) -> str:
 
 def job_view(job: TaxonomyJobRecord) -> Dict[str, Any]:
     """A job as the API reports it."""
-    status = {"COMPLETED": "completed", "FAILED": "failed", "CANCELLED": "cancelled"}.get(
-        job.state, "running"
-    )
+    # PENDING stays its own status: a job waiting for its dispatch (or the reconciler) is not
+    # running, and a client should see the delay.
+    status = {
+        "PENDING": "pending",
+        "RUNNING": "running",
+        "COMPLETED": "completed",
+        "FAILED": "failed",
+        "CANCELLED": "cancelled",
+    }.get(job.state, job.state.lower())
     return {
         "job_id": str(job.id),
         "kind": job.kind,

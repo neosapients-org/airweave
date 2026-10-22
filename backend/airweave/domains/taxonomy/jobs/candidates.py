@@ -49,9 +49,18 @@ class OnceStorage(Protocol):
         ...
 
 
+class UnsafeCandidateFile(ValueError):
+    """A file the package produced cannot be published under its name (never one a retry fixes)."""
+
+
+# Names the writer itself writes into the folder: a build file under one of them would be
+# overwritten, or conflict with the write-once report after part of the folder was published.
+RESERVED_NAMES = frozenset({CLAIM, REPORT})
+
+
 def _safe(name: str, what: str) -> str:
     if not isinstance(name, str) or not _NAME.match(name):
-        raise ValueError(f"unsafe {what} {name!r}")
+        raise UnsafeCandidateFile(f"unsafe {what} {name!r}")
     return name
 
 
@@ -132,6 +141,13 @@ class CandidateWriter:
         publish (a cancel, a lost lease), so nothing more is written once it has been seen.
         """
         folder = self.folder(tenant_id, candidate_version)
+        # Every name is checked before the first write, so a bad one leaves no partial candidate.
+        for name in files:
+            _safe(name, "file name")
+            if name in RESERVED_NAMES:
+                raise UnsafeCandidateFile(
+                    f"file name {name!r} is reserved for the candidate folder"
+                )
         checksums = []
         for name in sorted(files):
             if checkpoint is not None:
