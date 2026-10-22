@@ -152,10 +152,10 @@ taxonomyJobsWorker:
   # allowed for new topics (each taxonomy belongs to one tenant, so without it an update can
   # never add a topic). The job sets the cap, caches and paths itself.
   buildConfig: |
-    # Airweave taxonomy classifier configuration.
-    # Copy to config/taxonomy.yaml and adjust. Every value below is the setting of the verified reference build
-    # (60 regulatory filings / 20 companies / 16k taxonomy chunks) unless marked "deployment-specific".
-    # Relative paths are resolved against the current working directory.
+    # The small-corpus profile of the T1 test runs (copied from the package's example config, whose comments
+    # describe its own reference build). The content-form patterns are kept as they are: a piece is administrative
+    # only with 3+ signature, cover or exhibit matches or under 15 words; a boilerplate phrase alone changes nothing.
+    # The job sets the cap, the caches and the paths itself (see llm.max_cost_usd).
 
     run:
       seed: 42                        # calibration fold shuffling
@@ -225,7 +225,7 @@ taxonomyJobsWorker:
         input: 0.75
         cached_input: 0.075
         output: 4.50
-      max_cost_usd: 0.5               # hard cap for ALL API spend of one build / maintenance run (LLM + embeddings)
+      max_cost_usd: 0.5               # not used here: each job replaces it with its own cap (TAXONOMY_SPEND_CAP_USD)
       cache_dir: cache/llm            # responses cached by input hash; a rerun with the same inputs costs $0
       retry: {max_attempts: 4, backoff_s: 4, retry_on_http: [429, 500, 502, 503, 504]}
       invalid_response_policy: retry_once_then_mark_failed
