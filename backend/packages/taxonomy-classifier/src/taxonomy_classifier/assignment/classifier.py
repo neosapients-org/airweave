@@ -93,6 +93,10 @@ class FrozenAssigner:
         return out
 
 
+class CorpusTooSmall(ValueError):
+    """The build corpus cannot support the configured calibration: add text or use the small-corpus settings."""
+
+
 class HybridAssigner(FrozenAssigner):
     """Build-time assigner: builds prototypes from the build corpus and calibrates thresholds."""
 
@@ -103,6 +107,11 @@ class HybridAssigner(FrozenAssigner):
         self.groups = [cat_groups[i] for i in keep]
         self.rej = [g for g in reject_groups if len(g) >= 10]
         self.allg = self.groups + self.rej
+        if not self.allg:
+            largest = max((len(g) for g in cat_groups), default=0)
+            raise CorpusTooSmall(
+                f"no category has the {a['calibration']['min_members_for_prototype']} members needed to calibrate "
+                f"(the largest has {largest}); the corpus is too small for these settings")
         self.Xt, self.Bt, self.comp, self.admin = X_train, B_train, group_train, admin_train
         Dp = dense_protos(X_train, self.allg); Sp = sparse_profiles(B_train, self.allg, terms=a["profile_terms"])
         full_parent = {c: parent.get(c) for c in cat_ids}
@@ -154,6 +163,10 @@ class HybridAssigner(FrozenAssigner):
         Spc = S[:, :P]
         vals = np.unique(np.round(Spc[ok], 6))
         grid = vals if len(vals) <= 400 else np.quantile(vals, np.linspace(0, 1, 401))
+        if len(grid) == 0:
+            raise CorpusTooSmall(
+                f"no chunk passes the dense floor ({floor}); " + ("calibration had no administrative or reject pieces to set the floor from"
+                if status == "STRICT_FALLBACK" else "the categories are not separable on this corpus"))
         tau = None
         for t in grid:
             acc = ok & (Spc >= t - 1e-6)
@@ -163,7 +176,7 @@ class HybridAssigner(FrozenAssigner):
                 tau = float(t); break
         self.tau = float(grid[-1]) if tau is None else tau
         g = np.sort(Spc, 1)
-        self.delta = float(np.quantile((g[:, -1] - g[:, -2])[rows], 0.25))
+        self.delta = float(np.quantile((g[:, -1] - g[:, -2])[rows], 0.25)) if g.shape[1] >= 2 and len(rows) else 0.0
         self.calib = {"dense_floor": floor, "categories_with_raised_floor": int((fl > floor).sum()), "tau_rrf": self.tau,
                       "sibling_delta": self.delta, "positive_prototypes": P, "reject_prototypes": len(self.rej),
                       "heldout_members": int(len(rows)), "junk_pool": int(junk.sum()), "status": status, "fallback_reason": reason}

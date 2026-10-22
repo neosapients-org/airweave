@@ -20,9 +20,9 @@ from ..llm.cluster_review import representatives
 
 def residual_clusters(Xp, cfg):
     import hdbscan
-    import umap
+    from ..discovery.clustering import umap_embed
     n = cfg["novelty"]
-    emb = {s: umap.UMAP(random_state=s, **n["umap"]).fit_transform(Xp) for s in n["seeds"]}
+    emb = {s: umap_embed(Xp, s, **n["umap"]) for s in n["seeds"]}
     cands = []
     for mcs, ms in n["hdbscan_settings"]:
         runs = {s: hdbscan.HDBSCAN(min_cluster_size=mcs, min_samples=ms, cluster_selection_method="leaf").fit_predict(emb[s]) for s in n["seeds"]}
