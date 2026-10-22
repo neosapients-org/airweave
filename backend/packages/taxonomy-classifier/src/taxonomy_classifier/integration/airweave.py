@@ -38,11 +38,12 @@ class ClassificationResult:
 
 
 class TaxonomyClassifier:
-    def __init__(self, taxonomy: str | Path | Taxonomy, config: str | Path | dict, embed_transport=None):
+    def __init__(self, taxonomy: str | Path | Taxonomy, config: str | Path | dict, embed_transport=None, ledger=None):
+        """ledger: the run's CostLedger when classification is part of a paid run (a wave); None at sync time."""
         self.cfg = load_config(config) if not isinstance(config, dict) else config
         self.taxonomy = taxonomy if isinstance(taxonomy, Taxonomy) else artifacts.load(taxonomy)
         self._check_compatible()
-        self.embedder = Embedder(self.cfg, None, embed_transport)
+        self.embedder = Embedder(self.cfg, ledger, embed_transport)
         self.policy = make_policy(self.taxonomy, self.cfg)
 
     def _check_compatible(self):

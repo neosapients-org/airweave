@@ -19,11 +19,14 @@ POOL_FIELDS = ("taxonomy_chunk_id", "chunk_id", "document_id", "group", "text", 
 
 
 def run_wave(taxonomy, cfg: dict, airweave_chunks, store, wave: int, new_version: str, reviewer, structural_reviewer,
-             pool: list[dict] | None = None, embed_transport=None, log=print) -> WaveResult:
-    """One wave against taxonomy vN (`taxonomy`). Writes vN+1 into `store` only if categories were added."""
+             pool: list[dict] | None = None, embed_transport=None, log=print, ledger=None) -> WaveResult:
+    """One wave against taxonomy vN (`taxonomy`). Writes vN+1 into `store` only if categories were added.
+
+    ledger: the wave's CostLedger; the wave's embedding calls (its chunks and its pool) are checked against its cap
+    and charged to it."""
     from ..integration.airweave import TaxonomyClassifier
     chunks = parse_chunks(airweave_chunks)
-    clf = TaxonomyClassifier(taxonomy, cfg, embed_transport)
+    clf = TaxonomyClassifier(taxonomy, cfg, embed_transport, ledger=ledger)
     res = clf.classify(chunks)
     src_ingest = "LEARNED_ACCEPTANCE" if clf.policy.name == "learned" else "HYBRID_RRF"
     labels = {}

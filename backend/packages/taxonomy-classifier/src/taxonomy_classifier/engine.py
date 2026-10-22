@@ -93,7 +93,7 @@ class TaxonomyEngine:
             reviewer = reviewer or LLMNoveltyReviewer(self.cfg, run_dir, ledger, self.llm_transport)
             structural_reviewer = structural_reviewer or LLMStructuralReviewer(self.cfg, run_dir, ledger, self.llm_transport)
         res = run_wave(self.taxonomy, self.cfg, airweave_chunks, self.store, wave, new_version, reviewer, structural_reviewer,
-                       pool=pool, embed_transport=self.embed_transport, log=log)
+                       pool=pool, embed_transport=self.embed_transport, log=log, ledger=ledger)
         if res.new_taxonomy_path is not None:
             self.taxonomy, self._classifier = artifacts.load(res.new_taxonomy_path), None
         return res
