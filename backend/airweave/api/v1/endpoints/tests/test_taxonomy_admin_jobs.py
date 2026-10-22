@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 
 from airweave.api.v1.endpoints import taxonomy_admin as ep
 from airweave.api.v1.endpoints.tests.test_taxonomy_admin_relabel import CollectionRepo, ctx
+from airweave.core.config import settings
 from airweave.domains.taxonomy.jobs.records import InMemoryTaxonomyJobRepository
 from airweave.domains.taxonomy.jobs.service import (
     TaxonomyJobService,
@@ -18,6 +20,7 @@ from airweave.domains.taxonomy.jobs.service import (
 from airweave.domains.taxonomy.relabel.service import RelabelRefused
 
 ACME = neo_collection_id("t-acme", "w-default")
+NEO = uuid4()  # the organization Neo's collections live in (TAXONOMY_JOBS_ORGANIZATION_ID)
 
 
 def job_service(cap=5.0):
@@ -40,7 +43,8 @@ class Resolver:
 
 @pytest.fixture
 def wired(monkeypatch):
-    def wire(active_tenant=None):
+    def wire(active_tenant=None, organization=NEO):
+        monkeypatch.setattr(settings, "TAXONOMY_JOBS_ORGANIZATION_ID", str(organization or ""))
         monkeypatch.setattr(ep, "_serving_tenant", lambda container: Resolver(active_tenant))
 
     return wire
@@ -130,7 +134,7 @@ class TestTenantIsProvenByTheCollection:
         svc, enqueued = job_service()
 
         with pytest.raises(HTTPException) as e:
-            await discover(svc, ctx(), tenant_id="t-globex", workspace_id="w-default")
+            await discover(svc, ctx(org=NEO), tenant_id="t-globex", workspace_id="w-default")
 
         assert e.value.status_code == 403 and enqueued == []
 
@@ -138,7 +142,7 @@ class TestTenantIsProvenByTheCollection:
         self, wired
     ):
         wired()
-        c = ctx()
+        c = ctx(org=NEO)
         svc, enqueued = job_service()
 
         out = await discover(svc, c, tenant_id="t-acme", workspace_id="w-default")
@@ -151,7 +155,7 @@ class TestTenantIsProvenByTheCollection:
         svc, enqueued = job_service()
 
         with pytest.raises(HTTPException) as e:
-            await discover(svc, ctx())
+            await discover(svc, ctx(org=NEO))
 
         assert e.value.status_code == 422 and enqueued == []
 
@@ -162,8 +166,59 @@ class TestTenantIsProvenByTheCollection:
 
         with pytest.raises(HTTPException) as e:
             await discover(
-                svc, ctx(), readable_id, tenant_id="../t-globex", workspace_id="w-default"
+                svc, ctx(org=NEO), readable_id, tenant_id="../t-globex", workspace_id="w-default"
             )
 
         assert e.value.status_code == 422 and e.value.detail["code"] == "bad_tenant"
         assert enqueued == []
+
+
+class TestOnlyNeosOrganizationStartsJobs:
+    """A collection id names a tenant, it does not prove the caller owns it: anyone can create a
+    collection with any readable_id, so only Neo's organization may write into a tenant's prefix."""
+
+    async def test_another_organization_with_a_collection_named_for_a_tenant_is_refused(
+        self, wired
+    ):
+        wired()
+        svc, enqueued = job_service()
+        foreign = neo_collection_id("t-acme", "w-made-up")  # a new collection named for Acme
+
+        with pytest.raises(HTTPException) as e:
+            await discover(svc, ctx(), foreign, tenant_id="t-acme", workspace_id="w-made-up")
+
+        assert e.value.status_code == 403
+        assert e.value.detail["code"] == "organization_not_allowed" and enqueued == []
+
+    async def test_no_organization_can_start_a_job_until_one_is_named(self, wired):
+        wired(organization=None)
+        svc, enqueued = job_service()
+
+        with pytest.raises(HTTPException) as e:
+            await discover(svc, ctx(org=NEO), tenant_id="t-acme", workspace_id="w-default")
+
+        assert e.value.status_code == 403 and enqueued == []
+
+    async def test_another_organization_cannot_propose_either(self, wired):
+        wired(active_tenant="t-acme")
+        svc, enqueued = job_service()
+
+        with pytest.raises(HTTPException) as e:
+            await ep.start_taxonomy_proposal(
+                readable_id=ACME,
+                body=ep.ProposalRequest(candidate_version="acme-v2", idempotency_key="p1"),
+                db=AsyncMock(),
+                ctx=ctx(),
+                collection_repo=CollectionRepo(),
+                service=svc,
+            )
+
+        assert e.value.status_code == 403 and enqueued == []
+
+    async def test_the_configured_id_is_compared_without_case_or_spaces(self, wired):
+        wired(organization=f"  {str(NEO).upper()}  ")
+        svc, enqueued = job_service()
+
+        await discover(svc, ctx(org=NEO), tenant_id="t-acme", workspace_id="w-default")
+
+        assert len(enqueued) == 1

@@ -71,14 +71,14 @@ def resolve_tenant(
     tenant_id: Optional[str],
     workspace_id: Optional[str],
 ) -> str:
-    """The tenant whose prefix a discovery writes to, proven by the collection, not trusted.
+    """The tenant whose prefix a discovery writes to, checked against the collection.
 
     Neo names every collection after its tenant and workspace (``neo_collection_id``), so a
     caller that names both is checked against the collection itself: only the pair that derives
-    this collection's id is accepted, and an administrator of one organization cannot direct a
-    candidate (and the report's example passages from the collection) into another tenant's
-    prefix. Without them, the tenant is the collection's active taxonomy's, which an earlier
-    checked discovery wrote.
+    this collection's id is accepted. Without them, the tenant is the collection's active
+    taxonomy's, which an earlier discovery wrote. This is a consistency check, not authorization:
+    a caller can create a collection with any readable_id, so the endpoint first requires the
+    caller's organization to be Neo's (``TAXONOMY_JOBS_ORGANIZATION_ID``).
 
     Raises:
         RelabelRefused: 422 when only one of the two is given or there is nothing to go on,

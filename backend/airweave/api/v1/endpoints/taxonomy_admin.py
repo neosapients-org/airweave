@@ -18,6 +18,7 @@ from airweave.api.deps import Inject
 from airweave.api.router import TrailingSlashRouter
 from airweave.api.v1.endpoints.admin import _require_admin_permission
 from airweave.core import container as container_mod
+from airweave.core.config import settings
 from airweave.core.shared_models import FeatureFlag as FeatureFlagEnum
 from airweave.domains.collections.protocols import CollectionRepositoryProtocol
 from airweave.domains.taxonomy.relabel.jobs import (
@@ -294,6 +295,24 @@ def _serving_tenant(container: Any) -> Any:
     return processor.resolver if processor is not None else None
 
 
+def _require_taxonomy_organization(ctx: ApiContext) -> None:
+    """Only Neo's organization may start a job that writes into a tenant's taxonomy prefix.
+
+    A collection id only shows which tenant a collection is named after: any caller can create a
+    collection with any readable_id, so the tenant is trusted because the organization is.
+    """
+    allowed = settings.TAXONOMY_JOBS_ORGANIZATION_ID.strip().lower()
+    if not allowed or str(ctx.organization.id).lower() != allowed:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "organization_not_allowed",
+                "message": "this organization may not start taxonomy jobs "
+                "(TAXONOMY_JOBS_ORGANIZATION_ID)",
+            },
+        )
+
+
 async def _start_job(
     kind: str,
     readable_id: str,
@@ -309,6 +328,7 @@ async def _start_job(
     from airweave.domains.taxonomy.jobs.service import job_view as view
 
     _require_admin_permission(ctx, FeatureFlagEnum.API_KEY_ADMIN_SYNC)
+    _require_taxonomy_organization(ctx)
     collection = await _collection(db, collection_repo, readable_id, ctx)
     resolver = _serving_tenant(container_mod.container)
     try:
@@ -328,8 +348,8 @@ async def _start_job(
             },
         )
     try:
-        # Never the caller's word alone: a tenant and workspace in the body must derive this
-        # collection's id; without them the tenant is the collection's active taxonomy's.
+        # The caller is trusted (its organization is Neo's); the tenant and workspace it names must
+        # still derive this collection's id, and without them the tenant is the active taxonomy's.
         tenant_id = resolve_tenant(
             collection.readable_id,
             taxonomy.tenant_id if taxonomy is not None else None,

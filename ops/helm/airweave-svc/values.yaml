@@ -203,6 +203,9 @@ env:
   TAXONOMY_JOBS_ENABLED: 'false'
   # DISCOVER_MIN_CHUNKS: '100'           # fewer chunks of text and a discover job fails before spending
   # TAXONOMY_JOBS_CACHE_DIR: ''          # opt-in per-tenant job caches; they hold customer text
+  # The Airweave organization Neo's collections live in: the only one allowed to start discover
+  # and propose jobs (they write into a tenant's taxonomy prefix). Empty: no organization can.
+  TAXONOMY_JOBS_ORGANIZATION_ID: ''
 
   # Storage backend
   STORAGE_BACKEND: aws
