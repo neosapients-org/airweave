@@ -23,7 +23,7 @@ import pandas as pd
 from sklearn.feature_extraction.text import CountVectorizer
 
 from . import __version__
-from .assignment.classifier import HybridAssigner
+from .assignment.classifier import CorpusTooSmall, HybridAssigner
 from .assignment.sparse import BM25, sparse_profiles
 from .config import PROMPTS_DIR, public
 from .discovery import candidate_clusters, clustering
@@ -41,6 +41,20 @@ from .taxonomy.representation import category_stats, choose_k, subprotos
 
 def _terms_vectorizer():
     return CountVectorizer(stop_words="english", ngram_range=(1, 2), min_df=3, token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]+\b")
+
+
+def _fit_bm25(texts, cfg) -> BM25:
+    """The keyword half of assignment. Its vocabulary is Latin-script words that recur in at least bm25.min_df pieces; a
+    corpus with none (too few words repeat, or the texts are not in Latin script) cannot be classified, which is said
+    plainly instead of as the vectorizer's 'empty vocabulary'."""
+    try:
+        return BM25.fit(texts, cfg)
+    except ValueError as e:
+        if "empty vocabulary" in str(e) or "no terms remain" in str(e):
+            raise CorpusTooSmall(
+                f"no keyword vocabulary: no Latin-script word recurs in {cfg['assignment']['bm25']['min_df']} or more pieces "
+                "(too few documents share their wording, or the texts are not in Latin script)") from e
+        raise
 
 
 def _prompt_versions(cfg):
@@ -75,7 +89,7 @@ def build_taxonomy(airweave_chunks, cfg: dict, out_dir, log=print, embed_transpo
     runlog.to_csv(out / "intermediate" / "clustering_runs.csv", index=False)
     allc, cand = candidate_clusters.candidates(runs, X, meta, cfg)
     parent = candidate_clusters.hierarchy(cand, cfg)
-    cv = _terms_vectorizer(); TF = cv.fit_transform(meta.text)
+    cv, TF = clustering.fit_terms(_terms_vectorizer(), meta.text)
     terms = clustering.top_terms(cv, TF, dict(zip(cand.cluster_id, cand.members)), cfg["semantic_review"]["top_terms"])
     write_jsonl([{"cluster_id": r.cluster_id, "candidate_key": r.candidate_key, "min_cluster_size": r.min_cluster_size,
                   "min_samples": r.min_samples, "seed_recurrence": r.seed_recurrence, "mean_jaccard": r.mean_jaccard,
@@ -89,6 +103,9 @@ def build_taxonomy(airweave_chunks, cfg: dict, out_dir, log=print, embed_transpo
     if cand.empty:
         raise RuntimeError("no stable candidate clusters: the corpus is too small or too homogeneous for the configured screens")
 
+    # The keyword index, fitted before any paid call: a corpus with no keyword vocabulary fails here, at no cost.
+    bm = _fit_bm25(list(meta.text), cfg)
+
     # 3. LLM cluster review
     t0 = time.perf_counter()
     rv = cluster_review.review_all(cand, X, meta, terms, cfg, out, ledger, log, llm_transport)
@@ -98,7 +115,7 @@ def build_taxonomy(airweave_chunks, cfg: dict, out_dir, log=print, embed_transpo
     stage("cluster_review", t0)
 
     # 4. fine taxonomy (from logged responses only)
-    bm = BM25.fit(list(meta.text), cfg); B = bm.transform(list(meta.text))
+    B = bm.transform(list(meta.text))
 
     def sparse_profile(m):
         v = np.asarray(B[m].mean(0)).ravel(); o = np.argsort(-v)[:50]

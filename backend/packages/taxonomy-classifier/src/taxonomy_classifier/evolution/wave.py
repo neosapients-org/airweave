@@ -117,7 +117,7 @@ def _add_category(work, cfg, wave, rid, review, idx, X, B, meta):
 
 def novelty_step(work, policy, cfg, wave, pool_meta, X, B, reviewer, structural, log=print):
     """Decide every recurring residual cluster of the pool. Returns (decisions DataFrame, {pool row: (category_id, source, rid)})."""
-    from ..discovery.clustering import top_terms
+    from ..discovery.clustering import fit_terms, top_terms
     from ..llm.cluster_review import dist, representatives
     from ..novelty.maintenance import residual_clusters
     from sklearn.feature_extraction.text import CountVectorizer
@@ -130,9 +130,8 @@ def novelty_step(work, policy, cfg, wave, pool_meta, X, B, reviewer, structural,
     if len(pool_meta) < ev.get("min_pool_for_clustering", 20):
         log(f"pool {len(pool_meta)} < {ev.get('min_pool_for_clustering', 20)}: no residual clustering"); return pd.DataFrame(rows), assign
     clusters = residual_clusters(X, cfg)
-    cv = CountVectorizer(stop_words="english", ngram_range=(1, 2), min_df=min(3, max(1, len(pool_meta) // 50)),
-                         token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]+\b").fit(pool_meta.text)
-    TF = cv.transform(pool_meta.text)
+    cv, TF = fit_terms(CountVectorizer(stop_words="english", ngram_range=(1, 2), min_df=min(3, max(1, len(pool_meta) // 50)),
+                                       token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]+\b"), pool_meta.text)
     for ci, cl in enumerate(clusters):
         rid = f"W{wave}-R{ci + 1:03d}"; m = np.asarray(cl["members"]); sub = pool_meta.iloc[m]
         cen = X[m].mean(0); cen /= np.linalg.norm(cen); prof = np.asarray(B[m].mean(0)).ravel(); prof /= np.linalg.norm(prof) or 1

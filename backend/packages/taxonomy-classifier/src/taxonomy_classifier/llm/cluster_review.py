@@ -54,7 +54,7 @@ def review_all(cand: pd.DataFrame, X, meta: pd.DataFrame, terms: dict, cfg: dict
         user = cli.render(cluster_id=r.cluster_id, member_count=len(m), document_count=sub.document_id.nunique(), company_count=sub.group.nunique(),
                           company_distribution=dist(sub.group), sector_distribution=dist(sub.segment), form_distribution=dist(sub.doc_type),
                           seed_recurrence=r.seed_recurrence, n_seeds=n_seeds, mean_jaccard=r.mean_jaccard, min_cluster_size=r.min_cluster_size,
-                          min_samples=r.min_samples, top_terms=", ".join(terms[r.cluster_id][: sr["top_terms"]]), similar_categories=similar, chunks=chunks)
+                          min_samples=r.min_samples, top_terms=", ".join(terms[r.cluster_id][: sr["top_terms"]]) or "(none)", similar_categories=similar, chunks=chunks)
         rec = cli.call(user, r.cluster_id, {"representative_taxonomy_chunk_ids": [meta.taxonomy_chunk_id.iat[k] for k in central + diverse],
                                             "similar_categories_shown": [a[0] for _, a in sims]})
         p = rec["parsed"] or {}

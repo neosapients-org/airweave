@@ -18,5 +18,5 @@ def client(cfg: dict, out_dir, ledger, transport=None) -> LLMClient:
 
 def payload(cli: LLMClient, rid: str, sub, terms: list[str], candidates: list[str], name: dict, desc: dict, chunks: str) -> str:
     return cli.render(cluster_id=rid, member_count=len(sub), document_count=sub.document_id.nunique(), company_count=sub.group.nunique(),
-                      company_distribution=dist(sub.group), top_terms=", ".join(terms),
+                      company_distribution=dist(sub.group), top_terms=", ".join(terms) or "(none)",
                       candidates="\n".join(f"{c} | {name[c]} | {desc[c]}" for c in candidates), chunks=chunks)

@@ -53,8 +53,22 @@ def run_grid(X: np.ndarray, cfg: dict, log=print):
     return emb, runs, pd.DataFrame(rows)
 
 
+def fit_terms(cv, texts):
+    """Fit the term vectorizer that gives reviewers each cluster's distinctive terms: (cv, TF), or (None, None) when no
+    term survives (texts that share no words often enough, or not written in Latin script). The terms are context for
+    the reviewer, not a prerequisite for clustering, so an empty vocabulary means no terms instead of a failed build."""
+    try:
+        return cv, cv.fit_transform(texts)
+    except ValueError as e:
+        if "empty vocabulary" in str(e) or "no terms remain" in str(e):
+            return None, None
+        raise
+
+
 def top_terms(cv, TF, idx_sets: dict, n: int = 15) -> dict:
-    """c-TF-IDF style distinctive terms per group of chunk indices."""
+    """c-TF-IDF style distinctive terms per group of chunk indices (no terms when fit_terms found none)."""
+    if cv is None:
+        return {k: [] for k in idx_sets}
     bg = np.asarray(TF.sum(0)).ravel() + 1.0
     vocab = np.array(cv.get_feature_names_out())
     out = {}
