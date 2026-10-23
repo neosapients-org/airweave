@@ -24,9 +24,13 @@ def children_frame(chunks, tc: list[dict], cfg: dict) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["taxonomy_chunk_id", "chunk_id", "document_id", "group", "segment", "doc_type", "text"])
 
 
-def prepare(chunks, cfg: dict, embedder) -> tuple[list[dict], pd.DataFrame, np.ndarray, pd.DataFrame]:
+def prepare(chunks, cfg: dict, embedder, before_embedding=None) -> tuple[list[dict], pd.DataFrame, np.ndarray, pd.DataFrame]:
+    """before_embedding(meta), if given, runs once the children exist and before they are sent to the (paid) embedder:
+    a check that fails there costs nothing."""
     tc = taxonomy_chunks(chunks, cfg)
     meta = children_frame(chunks, tc, cfg)
+    if before_embedding is not None:
+        before_embedding(meta)
     X = embedder.embed(list(meta.text))
     tags = content_form.tag(list(meta.text), cfg)
     for t, (form, q) in zip(tc, zip(tags.content_form, tags.admin_quality)):

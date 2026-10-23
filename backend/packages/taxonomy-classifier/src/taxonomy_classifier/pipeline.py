@@ -76,7 +76,13 @@ def build_taxonomy(airweave_chunks, cfg: dict, out_dir, log=print, embed_transpo
     # 1. children + embeddings + content form
     t0 = time.perf_counter()
     emb = Embedder(cfg, ledger, embed_transport)
-    tc, meta, X, tags = prepare(chunks, cfg, emb)
+    keyword_index = {}
+
+    def fit_keyword_index(children):                     # before embedding: a corpus with no keyword vocabulary costs nothing
+        keyword_index["bm25"] = _fit_bm25(list(children.text), cfg)
+
+    tc, meta, X, tags = prepare(chunks, cfg, emb, before_embedding=fit_keyword_index)
+    bm = keyword_index["bm25"]
     write_jsonl(tc, out / "intermediate" / "taxonomy_chunks.jsonl")
     np.save(out / "intermediate" / "X.npy", X)
     write_json({**emb.stats, "model": emb.model, "dimensions": emb.dim}, out / "embedding_stats.json")
@@ -87,7 +93,7 @@ def build_taxonomy(airweave_chunks, cfg: dict, out_dir, log=print, embed_transpo
     t0 = time.perf_counter()
     _, runs, runlog = clustering.run_grid(X, cfg, log)
     runlog.to_csv(out / "intermediate" / "clustering_runs.csv", index=False)
-    allc, cand = candidate_clusters.candidates(runs, X, meta, cfg)
+    _, cand = candidate_clusters.candidates(runs, X, meta, cfg)       # the per-setting clusters are not needed past here
     parent = candidate_clusters.hierarchy(cand, cfg)
     cv, TF = clustering.fit_terms(_terms_vectorizer(), meta.text)
     terms = clustering.top_terms(cv, TF, dict(zip(cand.cluster_id, cand.members)), cfg["semantic_review"]["top_terms"])
@@ -102,9 +108,6 @@ def build_taxonomy(airweave_chunks, cfg: dict, out_dir, log=print, embed_transpo
     stage("discovery", t0)
     if cand.empty:
         raise RuntimeError("no stable candidate clusters: the corpus is too small or too homogeneous for the configured screens")
-
-    # The keyword index, fitted before any paid call: a corpus with no keyword vocabulary fails here, at no cost.
-    bm = _fit_bm25(list(meta.text), cfg)
 
     # 3. LLM cluster review
     t0 = time.perf_counter()

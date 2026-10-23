@@ -85,6 +85,7 @@ class TaxonomyEngine:
         if self.taxonomy is None or self.store is None:
             raise ValueError("run_wave() needs a bound taxonomy and a store")
         new_version = new_version or f"{self.taxonomy.version}+w{wave}"
+        self.store.path(self.taxonomy.taxonomy_id, new_version)   # both names are checked before any path is built from them
         # Every wave has a ledger, whichever reviewers it uses: the caller reads the wave's bill from it.
         run_dir = self.store.root / self.taxonomy.taxonomy_id / "_waves" / new_version
         run_dir.mkdir(parents=True, exist_ok=True)

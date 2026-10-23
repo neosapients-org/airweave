@@ -203,3 +203,58 @@ def test_an_acceptance_model_with_impossible_settings_is_refused_before_it_is_lo
     path.write_text(json.dumps(man))
     with pytest.raises(ValueError):
         LearnedAcceptanceModel.load(path)
+
+
+# --------------------------------------------------------------------------- zero vectors, retries, wave names
+
+def _embedder(tmp_path, transport, dim=4):
+    cfg = {"embedding": {"model": "e", "dimensions": dim, "batch_size": 8, "cache_path": str(tmp_path / "emb.sqlite")}}
+    return Embedder(cfg, None, transport)
+
+
+def test_an_all_zero_embedding_in_a_response_is_refused(tmp_path):
+    emb = _embedder(tmp_path, lambda batch: ([np.ones(4), np.zeros(4)], 4))
+    with pytest.raises(RuntimeError, match="all zeros"):
+        emb.embed(["one text", "another text"])
+
+
+def test_an_all_zero_embedding_from_the_cache_is_refused_not_turned_into_nan(tmp_path):
+    emb = _embedder(tmp_path, lambda batch: pytest.fail("the cache should answer"))
+    emb.cache.put_if_absent("cached text", np.zeros(4)); emb.cache.commit()     # e.g. written by an older version
+    with pytest.raises(RuntimeError, match="zero or non-finite norm"):
+        emb.embed(["cached text"])
+
+
+def test_a_gateway_timeout_is_retried(tmp_path, monkeypatch):
+    import io
+    import urllib.error
+
+    import taxonomy_classifier.embeddings.embedder as embedder_module
+
+    answers = [urllib.error.HTTPError("u", 504, "Gateway Timeout", {}, io.BytesIO(b"")),
+               io.BytesIO(json.dumps({"data": [{"index": 0, "embedding": [1.0, 0.0, 0.0, 0.0]}],
+                                      "usage": {"total_tokens": 3}}).encode())]
+
+    def urlopen(req, timeout=None):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setattr(embedder_module.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(embedder_module.time, "sleep", lambda s: None)
+    emb = _embedder(tmp_path, None)
+    vecs, tokens = emb._openai(["text"])
+    assert answers == [] and tokens == 3 and vecs[0].shape == (4,)
+
+
+@pytest.mark.parametrize("version", ["../../outside", "a/b", ".."])
+def test_an_unsafe_wave_version_is_refused_before_any_folder_is_made(tmp_path, version):
+    from taxonomy_classifier import LocalTaxonomyStore, TaxonomyEngine
+
+    eng = TaxonomyEngine({"llm": {"max_cost_usd": 1.0}}, store=LocalTaxonomyStore(tmp_path / "store"))
+    eng.taxonomy = SimpleNamespace(taxonomy_id="t", version="v1")
+    with pytest.raises(ValueError, match="invalid taxonomy_version"):
+        eng.run_wave([], wave=2, new_version=version)
+    assert not (tmp_path / "store").exists() and not (tmp_path / "outside").exists()

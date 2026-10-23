@@ -2,7 +2,8 @@
 
 The distinctive terms are context for the reviewer, not a prerequisite: an empty vocabulary gives no terms and the run
 goes on (it used to abort discovery and the update wave). The keyword index (BM25) does need a vocabulary: a discovery
-without one stops with a plain CorpusTooSmall before any paid call, instead of the vectorizer's error after the reviews.
+without one stops with a plain CorpusTooSmall before the pieces are embedded or reviewed (no paid call at all), instead
+of the vectorizer's error after the paid embeddings and reviews.
 """
 
 import json
@@ -51,15 +52,17 @@ def test_a_discovery_without_a_keyword_vocabulary_stops_before_any_paid_call(tmp
     cfg["clustering"]["umap"]["n_neighbors"] = 10
     cfg["assignment"]["bm25"]["min_df"] = 2
 
-    def embed(batch):                                   # the English text's vector: the clusters stay real
+    embedded = []
+
+    def embed(batch):
+        embedded.append(batch)
         return [fake_vector(t.translate(TO_LATIN)) for t in batch], sum(len(t) // 4 for t in batch)
 
     llm = FakeLLM()
     with pytest.raises(CorpusTooSmall, match="no keyword vocabulary"):
         build_taxonomy(chunks, cfg, tmp_path / "out", log=lambda m: None, embed_transport=embed, llm_transport=llm)
-    assert llm.calls == []                              # stopped before the reviews, so nothing was paid for
-    clusters = [json.loads(line) for line in open(tmp_path / "out" / "candidate_clusters.jsonl")]
-    assert clusters and all(c["top_terms"] == [] for c in clusters)     # the review terms no longer abort the run
+    assert embedded == [] and llm.calls == []          # stopped before any paid call: nothing embedded, nothing reviewed
+    assert json.loads((tmp_path / "out" / "cost_ledger.json").read_text())["total_usd"] == 0
 
 
 @pytest.mark.slow

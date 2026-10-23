@@ -41,6 +41,8 @@ class Embedder:
             a = np.asarray(v, dtype=np.float32)
             if a.shape != (self.dim,) or not np.isfinite(a).all():
                 raise RuntimeError(f"embedding {i} of the response has shape {a.shape} (expected ({self.dim},)) or a non-finite value")
+            if not np.any(a):
+                raise RuntimeError(f"embedding {i} of the response is all zeros: it has no direction to normalise")
             out.append(v)                                # validated, stored exactly as before
         return out
 
@@ -84,7 +86,11 @@ class Embedder:
         for i in todo:                                   # every uncached position (incl. duplicates) reads the canonical vector
             out[i] = self.cache.get(texts[i])
         X = np.stack(out).astype(np.float32)
-        return X / np.linalg.norm(X, axis=1, keepdims=True)
+        norms = np.linalg.norm(X, axis=1, keepdims=True)
+        bad = np.flatnonzero(~np.isfinite(norms.ravel()) | (norms.ravel() == 0))
+        if len(bad):                                     # a zero or broken vector (e.g. an old cache entry) would turn into NaN
+            raise RuntimeError(f"embedding of text {int(bad[0])} has a zero or non-finite norm ({len(bad)} such vectors)")
+        return X / norms
 
     def _openai(self, batch: list[str]):
         body = json.dumps({"model": self.model, "input": batch, "dimensions": self.dim}).encode()
@@ -94,7 +100,7 @@ class Embedder:
             try:
                 r = json.load(urllib.request.urlopen(req, timeout=300)); break
             except urllib.error.HTTPError as e:
-                if e.code in (429, 500, 502, 503) and i < 4:
+                if e.code in (429, 500, 502, 503, 504) and i < 4:
                     time.sleep(4 * 2 ** i); continue
                 raise
         data = sorted(r["data"], key=lambda d: d["index"])
