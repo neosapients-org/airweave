@@ -4,7 +4,7 @@ Wraps environment variables and provides defaults.
 """
 
 import math
-from typing import Dict, Literal, Optional
+from typing import Literal, Optional
 
 from pydantic import PostgresDsn, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings
@@ -171,10 +171,6 @@ class Settings(BaseSettings):
     # starts empty). The folders hold customer text and the model's answers about it: put them on
     # an encrypted volume and delete them with the tenant's data.
     TAXONOMY_JOBS_CACHE_DIR: str = ""
-    # Which tenant's prefix a discovery writes to, per organization: a JSON object
-    # {"<organization uuid>": "<tenant id>"}. A caller never chooses the tenant; an organization
-    # without an entry can only start discoveries for a collection that already has an active file.
-    TAXONOMY_TENANT_BY_ORGANIZATION: Dict[str, str] = {}
 
     # Search: honour OR between a request's filter groups (contract C8). False keeps the
     # upstream behaviour, where every user filter group is merged into one AND group.

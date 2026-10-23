@@ -202,9 +202,6 @@ env:
   # (the jobs worker pod sets it itself).
   TAXONOMY_JOBS_ENABLED: 'false'
   # DISCOVER_MIN_CHUNKS: '100'           # fewer chunks of text and a discover job fails before spending
-  # Which tenant's prefix a discovery writes to, per organization: JSON {"<organization uuid>":
-  # "<tenant id>"}. A caller never chooses it. Set it per environment before enabling discovery.
-  TAXONOMY_TENANT_BY_ORGANIZATION: '{}'
   # TAXONOMY_JOBS_CACHE_DIR: ''          # opt-in per-tenant job caches; they hold customer text
 
   # Storage backend
@@ -280,11 +277,9 @@ worker:
 # A SEPARATE Deployment of the same image on its own Temporal task queue
 # (a constant in the code); the sync workers never register these activities.
 #
-# IMAGE: clustering needs the full classifier install, which the runtime install leaves out:
-# the classifier package (pinned once the developer releases it), umap-learn, pynndescent,
-# numba, hdbscan, scikit-learn, scipy, pandas, pyyaml. Build the image that runs this
-# Deployment with them (`pip install "taxonomy-classifier[build]"` or the package's equivalent
-# extra); the sync workers' image can stay without them.
+# IMAGE: the backend image carries the full classifier install (backend/packages/taxonomy-
+# classifier, a path dependency in the lock file, with umap-learn, pynndescent, numba, hdbscan,
+# scikit-learn and scipy), so this Deployment and the sync workers run the same image.
 #
 # S3 (IAM): the role of THIS Deployment's service account needs s3:PutObject on
 # taxonomy/tenants/*/candidates/* and nothing more for writing (no delete, no overwrite: the

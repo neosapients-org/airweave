@@ -8,7 +8,6 @@ invented. No network and no spend.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -22,7 +21,6 @@ from airweave.domains.taxonomy.jobs.candidates import CandidateWriter  # noqa: E
 from airweave.domains.taxonomy.jobs.gateway import PackageGateway, SpendCapReached  # noqa: E402
 from airweave.domains.taxonomy.jobs.records import (  # noqa: E402
     COMPLETED,
-    KIND_DISCOVER,
     KIND_PROPOSE,
     InMemoryTaxonomyJobRepository,
 )
@@ -57,6 +55,9 @@ GARDEN = [
     "rake the autumn leaves",
 ]
 TENANT = "t-acme"
+# Admits the fake embeddings (about USD 0.0001) and refuses every review: the ledger checks a call
+# against its worst case, 3000 output tokens at USD 4.50 per million (about USD 0.0135).
+REVIEWS_REFUSED_CAP = 0.005
 
 
 def stored_chunks(vocab, n_docs=6, per_doc=4, seed=0, prefix="D"):
@@ -271,6 +272,49 @@ class TestPropose:
             "creation": {"min_documents": 2, "min_groups": 2, "scopes": ["GLOBAL", "INDUSTRY"]},
         }
 
+    @staticmethod
+    def unresolved_garden():
+        garden = stored_chunks({"garden": GARDEN}, n_docs=6, per_doc=4, seed=3, prefix="W")
+        return [
+            (
+                s,
+                i,
+                {
+                    **f,
+                    "taxonomy_status": "UNRESOLVED",
+                    "taxonomy_version": "acme-v1",
+                    "taxonomy_unresolved_pieces": 1,
+                },
+            )
+            for s, i, f in garden
+        ]
+
+    async def propose_with_cap(self, tmp_path, build_cfg, cap):
+        resolver, _ = await self.serving(tmp_path, build_cfg)
+        self.evolve_cfg((await resolver.resolve("neo-acme")).config)
+        runner, repo, s3 = runner_for(
+            tmp_path / "run",
+            build_cfg,
+            self.unresolved_garden(),
+            resolver=resolver,
+            reviewers=(NoveltyReviewer(), Structural()),
+        )
+        j = job(kind=KIND_PROPOSE, candidate_version="acme-v2", spend_cap_usd=cap, tenant_id="acme")
+        await repo.create(j)
+        await runner.run_job(j.id)
+        return await repo.get(j.id), s3
+
+    async def test_a_waves_embeddings_are_charged_to_the_job(self, tmp_path, build_cfg):
+        done, s3 = await self.propose_with_cap(tmp_path, build_cfg, 5.0)
+        assert done.state == COMPLETED, done.error
+        report = json.loads(s3.objects["taxonomy/tenants/acme/candidates/acme-v2/report.json"])
+        assert report["cost_usd"] > 0  # the reviewers are fakes: the whole bill is embeddings
+
+    async def test_a_waves_embeddings_are_held_to_the_cap(self, tmp_path, build_cfg):
+        done, s3 = await self.propose_with_cap(tmp_path, build_cfg, 1e-9)  # below any call
+        assert done.state == "FAILED" and "cap" in done.error.lower(), done.error
+        assert not [p for p in s3.objects if "/candidates/acme-v2/" in p and "_claim" not in p]
+
     async def test_a_new_topic_becomes_a_probationary_category_and_old_ids_stay_stable(
         self, tmp_path, build_cfg
     ):
@@ -384,5 +428,15 @@ class TestPropose:
 
 
 def test_discover_gateway_reports_a_refused_call_as_the_cap(build_cfg, tmp_path):
-    assert issubclass(SpendCapReached, RuntimeError)
-    assert Path(tmp_path).exists() and KIND_DISCOVER != KIND_PROPOSE
+    """The cap admits the embeddings but refuses the reviews: the package carries on without
+    them, so the gateway must fail the job instead of returning a candidate missing clusters."""
+    gw = gateway(build_cfg)
+    with pytest.raises(SpendCapReached, match="refused .* model call"):
+        gw.discover(
+            package_chunks(stored_chunks(CORPORA["acme"])),
+            tenant_id=TENANT,
+            candidate_version="acme-first",
+            work_dir=tmp_path,
+            spend_cap_usd=REVIEWS_REFUSED_CAP,
+            corpus_description=None,
+        )

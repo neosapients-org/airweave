@@ -17,8 +17,10 @@ RUN apt-get update && apt-get install -y \
 # Add Poetry to PATH
 ENV PATH="/root/.local/bin:$PATH"
 
-# Copy poetry files from current directory (backend)
+# Copy poetry files from current directory (backend); the taxonomy classifier is a path
+# dependency, so its folder is installed with the rest
 COPY pyproject.toml poetry.lock ./
+COPY packages ./packages
 
 # Configure poetry
 RUN poetry config virtualenvs.create false

@@ -46,6 +46,58 @@ class SpendCapReached(RuntimeError):
     """The package's cost ledger refused a call: the job's cap would be exceeded."""
 
 
+class CallLogDamaged(SpendCapReached):
+    """A record of the run's call log cannot be read, so a refused call may be hidden in it."""
+
+
+def refuse_if_capped(run_dir: Path, cause: Optional[BaseException] = None) -> None:
+    """Fail the job, naming the cap, when the spend cap refused any of the run's model calls.
+
+    The package records a refused call as ``BUDGET_EXCEEDED`` in the run's ``llm_calls.jsonl``
+    and goes on: a refused cluster review drops that cluster, a refused novelty review keeps its
+    chunks unresolved, and a refused consolidation fails later with another message. A
+    candidate built with refused calls is missing decisions, so it is never returned.
+
+    A record that cannot be read could be the refused one, so it fails the job too: the guard
+    never passes on a log it could not read in full.
+
+    Raises:
+        SpendCapReached: When at least one call was refused (chained to ``cause`` if given).
+        CallLogDamaged: When a record of the log cannot be read.
+    """
+    refused, damaged = _refused_calls(run_dir / "llm_calls.jsonl")
+    if damaged:
+        raise CallLogDamaged(
+            f"{damaged} record(s) of the run's call log cannot be read, so it cannot be shown "
+            "that the spend cap refused no call: start the job again"
+        ) from cause
+    if refused:
+        raise SpendCapReached(
+            f"the spend cap refused {refused} model call(s), so the candidate would be missing "
+            "decisions: raise the job's spend cap and start it again"
+        ) from cause
+
+
+def _refused_calls(path: Path) -> Tuple[int, int]:
+    """Calls in a run's ``llm_calls.jsonl`` the spend cap refused, and unreadable records."""
+    if not path.exists():
+        return 0, 0
+    refused = damaged = 0
+    for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            damaged += 1
+            continue
+        if not isinstance(record, dict):
+            damaged += 1
+        elif record.get("status") == "BUDGET_EXCEEDED":
+            refused += 1
+    return refused, damaged
+
+
 class EngineGateway(Protocol):
     """Blocking calls (the runner runs them on a thread)."""
 
@@ -144,6 +196,7 @@ class PackageGateway:
         engine = TaxonomyEngine(
             cfg, store=store, embed_transport=self._embed, llm_transport=self._llm
         )
+        build_dir = work_dir / "store" / tenant_id / candidate_version  # where the package builds
         try:
             taxonomy = engine.discover(
                 chunks,
@@ -153,14 +206,17 @@ class PackageGateway:
                 log=lambda m: logger.info(f"[Taxonomy build] {m}"),
             )
         except ValueError as e:
+            refuse_if_capped(build_dir, e)
             mapped = translate_package_error(e)
             if mapped is e:
                 raise
             raise mapped from e
         except RuntimeError as e:
+            refuse_if_capped(build_dir, e)
             if "cost cap" in str(e):
                 raise SpendCapReached(str(e)) from e
             raise
+        refuse_if_capped(build_dir)
         folder = Path(taxonomy.path)
         files = self._allowed_files(folder, taxonomy.final)
         files["taxonomy.yaml"] = self._shipped_yaml(cfg)
@@ -205,6 +261,7 @@ class PackageGateway:
             llm_transport=self._llm,
         )
         reviewer, structural = self._reviewers or (None, None)
+        wave_dir = work_dir / "store" / base.taxonomy_id / "_waves" / candidate_version
         try:
             wave = engine.run_wave(
                 chunks,
@@ -215,23 +272,18 @@ class PackageGateway:
                 log=lambda m: None,
             )
         except RuntimeError as e:
+            refuse_if_capped(wave_dir, e)
             if "cost cap" in str(e):
                 raise SpendCapReached(str(e)) from e
             raise
+        refuse_if_capped(wave_dir)
         decisions = [] if len(wave.decisions) == 0 else wave.decisions.to_dict("records")
         counts: Dict[str, int] = {}
         for d in decisions:
             counts[d["decision"]] = counts.get(d["decision"], 0) + 1
         # The wave embeds, clusters and calls reviewers whether or not it adds a category, so its
         # bill is read from its ledger on both paths.
-        cost = _ledger_total(
-            work_dir
-            / "store"
-            / base.taxonomy_id
-            / "_waves"
-            / candidate_version
-            / "cost_ledger.json"
-        )
+        cost = _ledger_total(wave_dir / "cost_ledger.json")
         if wave.new_taxonomy_path is None:
             report = self._wave_report(candidate_version, serving, None, wave, counts, chunks, cost)
             return BuildOutput({}, report, cost, 0, ["no category was added: nothing to propose"])

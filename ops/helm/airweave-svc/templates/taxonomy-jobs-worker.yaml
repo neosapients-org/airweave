@@ -2,7 +2,7 @@
 {{- /*
   Taxonomy discover (A13) and propose (A12) jobs: a SEPARATE Deployment of the same image on its
   own Temporal task queue (limits.JOBS_TASK_QUEUE). The sync workers never register these
-  activities. The image must carry the full classifier install (see taxonomyJobsWorker.* in
+  activities. The backend image carries the full classifier install (see taxonomyJobsWorker.* in
   values.yaml). Off by default; replicas default to 0.
 */ -}}
 {{- $fullname := include "airweave-svc.fullname" . }}

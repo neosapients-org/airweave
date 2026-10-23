@@ -1,0 +1,1 @@
+A previous step grouped fine-grained content categories into broad families, but some category ids were left without a family or were placed in more than one family. For each listed category choose exactly one of the existing families given. Use only the family ids given. Return only the JSON object required by the schema.

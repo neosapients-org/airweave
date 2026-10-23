@@ -81,6 +81,8 @@ pyjwt = "^2.10.1"
 mistral_common = {version = "1.8.8", extras = ["sentencepiece"]}
 google-cloud-storage = "^3.8.0"
 authlib = ">=1.6.9"
+# The taxonomy classifier, kept in this repository (topic labels, discover and propose jobs)
+airweave-taxonomy-classifier = { path = "packages/taxonomy-classifier" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
@@ -153,7 +155,7 @@ disable_error_code = ["arg-type", "method-assign", "call-arg", "assignment"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
-extend-exclude = ["alembic", "local.py", "fern/**", "tests"]
+extend-exclude = ["alembic", "local.py", "fern/**", "tests", "packages"]
 
 [tool.ruff.lint]
 select = [

@@ -12,7 +12,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 from uuid import UUID, uuid4
 
 from airweave.core.logging import logger
@@ -49,42 +49,36 @@ class JobRequest:
     corpus_description: Optional[str] = None
 
 
-def resolve_tenant(
-    organization_id: UUID,
-    bindings: Mapping[str, str],
-    active_tenant: Optional[str],
-    requested: Optional[str],
-) -> str:
-    """The tenant whose prefix a discovery writes to, from trusted state, never from the caller.
+def resolve_tenant(active_tenant: Optional[str], tenant_id: Optional[str]) -> str:
+    """The tenant whose prefix a discovery writes its candidate to.
 
-    The tenant comes from the deployment's organization binding
-    (``TAXONOMY_TENANT_BY_ORGANIZATION``) or, for a collection that already has an active file,
-    from that file. A tenant the caller names is only checked against it: an administrator of one
-    organization cannot direct a candidate (and the report's example passages from the
-    collection) into another tenant's prefix.
+    A first discovery takes the tenant the caller names (Meridian sends it); later ones take the
+    collection's active taxonomy's, and a name given then must match it. Airweave does not check
+    that the caller owns the tenant: Neo calls Airweave with one service key, and the endpoints
+    already require the admin permission. The candidate only ever goes under ``candidates/``,
+    is never written over, and Meridian registers only the candidates of jobs it started, so a
+    wrong tenant name can at most leave files nobody reads. (Writing candidates under the
+    collection instead of the tenant would remove the question entirely.)
 
     Raises:
-        RelabelRefused: 422 when no tenant can be established, 409 when the binding and the
-            active file disagree, 403 when the caller names another tenant.
+        RelabelRefused: 409 when a named tenant differs from the active taxonomy's, 422 when a
+            first discovery names no tenant.
     """
-    bound = bindings.get(str(organization_id))
-    if bound and active_tenant and bound != active_tenant:
-        raise RelabelRefused(
-            409,
-            "tenant_conflict",
-            "the organization's tenant and the collection's active taxonomy name different tenants",
-        )
-    tenant = bound or active_tenant
-    if not tenant:
-        raise RelabelRefused(
-            422,
-            "tenant_not_configured",
-            "no tenant is configured for this organization (TAXONOMY_TENANT_BY_ORGANIZATION) "
-            "and the collection has no active taxonomy to take it from",
-        )
-    if requested and requested != tenant:
-        raise RelabelRefused(403, "tenant_not_allowed", "tenant_id is not this organization's")
-    return tenant
+    if tenant_id:
+        if active_tenant and active_tenant != tenant_id:
+            raise RelabelRefused(
+                409,
+                "tenant_conflict",
+                "the collection's active taxonomy names a different tenant",
+            )
+        return tenant_id
+    if active_tenant:
+        return active_tenant
+    raise RelabelRefused(
+        422,
+        "tenant_required",
+        "a first discovery needs tenant_id: the collection has no active taxonomy to take it from",
+    )
 
 
 class TaxonomyJobService:

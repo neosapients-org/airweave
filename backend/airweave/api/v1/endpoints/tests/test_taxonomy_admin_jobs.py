@@ -2,7 +2,6 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -10,7 +9,6 @@ from pydantic import ValidationError
 
 from airweave.api.v1.endpoints import taxonomy_admin as ep
 from airweave.api.v1.endpoints.tests.test_taxonomy_admin_relabel import CollectionRepo, ctx
-from airweave.core.config import settings
 from airweave.domains.taxonomy.jobs.records import InMemoryTaxonomyJobRepository
 from airweave.domains.taxonomy.jobs.service import TaxonomyJobService, resolve_tenant
 from airweave.domains.taxonomy.relabel.service import RelabelRefused
@@ -36,8 +34,7 @@ class Resolver:
 
 @pytest.fixture
 def wired(monkeypatch):
-    def wire(tenant_bindings=None, active_tenant=None):
-        monkeypatch.setattr(settings, "TAXONOMY_TENANT_BY_ORGANIZATION", tenant_bindings or {})
+    def wire(active_tenant=None):
         monkeypatch.setattr(ep, "_serving_tenant", lambda container: Resolver(active_tenant))
 
     return wire
@@ -73,70 +70,60 @@ class TestSpendCapOnTheWire:
             )
 
 
-class TestTenantIsNotTheCallers:
-    def test_the_organizations_binding_wins_and_a_matching_request_is_accepted(self):
-        org = uuid4()
-        assert resolve_tenant(org, {str(org): "t-acme"}, None, "t-acme") == "t-acme"
-        assert resolve_tenant(org, {str(org): "t-acme"}, None, None) == "t-acme"
+class TestTheTenantOfADiscovery:
+    def test_a_first_discovery_takes_the_named_tenant(self):
+        assert resolve_tenant(None, "t-acme") == "t-acme"
 
-    def test_the_active_file_names_the_tenant_when_no_binding_is_configured(self):
-        assert resolve_tenant(uuid4(), {}, "t-acme", None) == "t-acme"
+    def test_without_a_name_the_active_taxonomy_names_the_tenant(self):
+        assert resolve_tenant("t-acme", None) == "t-acme"
 
-    def test_a_tenant_the_caller_names_must_be_the_resolved_one(self):
-        org = uuid4()
+    def test_a_name_that_matches_the_active_taxonomy_is_accepted(self):
+        assert resolve_tenant("t-acme", "t-acme") == "t-acme"
+
+    def test_a_name_that_differs_from_the_active_taxonomy_is_a_conflict(self):
         with pytest.raises(RelabelRefused) as e:
-            resolve_tenant(org, {str(org): "t-acme"}, None, "t-globex")
-        assert (e.value.status, e.value.code) == (403, "tenant_not_allowed")
+            resolve_tenant("t-acme", "t-globex")
+        assert (e.value.status, e.value.code) == (409, "tenant_conflict")
 
     def test_nothing_to_go_on_is_refused_not_guessed(self):
         with pytest.raises(RelabelRefused) as e:
-            resolve_tenant(uuid4(), {"someone-else": "t-globex"}, None, "t-globex")
-        assert (e.value.status, e.value.code) == (422, "tenant_not_configured")
+            resolve_tenant(None, None)
+        assert (e.value.status, e.value.code) == (422, "tenant_required")
 
-    def test_a_binding_that_contradicts_the_active_file_is_a_conflict(self):
-        org = uuid4()
-        with pytest.raises(RelabelRefused) as e:
-            resolve_tenant(org, {str(org): "t-acme"}, "t-globex", None)
-        assert e.value.status == 409
-
-    async def test_discovery_refuses_a_foreign_tenant_before_anything_is_created(self, wired):
-        org = uuid4()
-        wired({str(org): "t-acme"})
+    async def test_a_first_discovery_with_a_tenant_is_accepted(self, wired):
+        wired()
+        c = ctx()
         svc, enqueued = job_service()
 
-        with pytest.raises(HTTPException) as e:
-            await discover(svc, ctx(org=org), tenant_id="t-globex")
-
-        assert e.value.status_code == 403 and enqueued == []
-
-    async def test_discovery_without_a_tenant_in_the_body_uses_the_bound_one(self, wired):
-        org = uuid4()
-        wired({str(org): "t-acme"})
-        svc, enqueued = job_service()
-
-        out = await discover(svc, ctx(org=org))
+        out = await discover(svc, c, tenant_id="t-acme")
 
         assert out["status"] == "pending" and len(enqueued) == 1
-        assert (await svc.get(enqueued[0], org)) is not None
+        assert (await svc.get(enqueued[0], c.organization.id)).tenant_id == "t-acme"
 
-    async def test_an_organization_with_no_binding_and_no_active_file_cannot_discover(self, wired):
-        wired({})
+    async def test_a_first_discovery_without_a_tenant_is_refused(self, wired):
+        wired()
         svc, enqueued = job_service()
 
         with pytest.raises(HTTPException) as e:
-            await discover(svc, ctx(), tenant_id="t-anyone")
+            await discover(svc, ctx())
 
         assert e.value.status_code == 422 and enqueued == []
 
-    async def test_a_malformed_tenant_in_the_binding_is_refused_before_the_job_is_created(
-        self, wired
-    ):
-        org = uuid4()
-        wired({str(org): "../t-globex"})
+    async def test_a_tenant_that_differs_from_the_active_taxonomy_is_refused(self, wired):
+        wired(active_tenant="t-acme")
         svc, enqueued = job_service()
 
         with pytest.raises(HTTPException) as e:
-            await discover(svc, ctx(org=org))
+            await discover(svc, ctx(), tenant_id="t-globex")
+
+        assert e.value.status_code == 409 and enqueued == []
+
+    async def test_a_malformed_tenant_is_refused_before_the_job_is_created(self, wired):
+        wired()
+        svc, enqueued = job_service()
+
+        with pytest.raises(HTTPException) as e:
+            await discover(svc, ctx(), tenant_id="../t-globex")
 
         assert e.value.status_code == 422 and e.value.detail["code"] == "bad_tenant"
         assert enqueued == []

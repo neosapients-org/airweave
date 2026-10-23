@@ -162,13 +162,15 @@ class TaxonomyJobRunner:
         """What the package spent before the job failed: the cost ledgers under its work directory.
 
         A failed build loses its result but not its bill; without this the cost of a failed run is
-        only an estimate. Costs the ledgers never saw (a call that died mid-way) are not counted.
+        only an estimate. A call still in flight when the build died counts at its worst case (the
+        ledger's ``in_flight_usd``): the provider may have billed it.
         """
         total = 0.0
         for ledger in (self._work / str(job.id)).rglob("cost_ledger.json"):
             try:
-                total += float(json.loads(ledger.read_text()).get("total_usd", 0.0))
-            except (OSError, ValueError):
+                data = json.loads(ledger.read_text())
+                total += float(data.get("total_usd", 0.0)) + float(data.get("in_flight_usd", 0.0))
+            except (OSError, ValueError, TypeError, AttributeError):
                 continue
         return round(total, 6)
 

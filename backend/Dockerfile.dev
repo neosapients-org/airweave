@@ -17,8 +17,10 @@ ENV PATH="/root/.local/bin:$PATH"
 # Configure poetry
 RUN poetry config virtualenvs.create false
 
-# Copy only dependency files first for better caching
+# Copy only dependency files first for better caching; the taxonomy classifier is a path
+# dependency, so its folder is installed with the rest
 COPY pyproject.toml poetry.lock ./
+COPY packages ./packages
 
 # Install dependencies only (no root project)
 RUN poetry install --no-interaction --no-ansi --no-root

@@ -10,7 +10,6 @@ from fastapi import HTTPException
 
 from airweave.api.context import ApiContext
 from airweave.api.v1.endpoints import taxonomy_admin as ep
-from airweave.core.config import settings
 from airweave.core.logging import logger
 from airweave.core.shared_models import AuthMethod, FeatureFlag
 from airweave.domains.taxonomy.relabel.jobs import InMemoryJobRepository
@@ -366,18 +365,7 @@ class TestUnresolvedEndpoint:
         assert ("GET", "/admin/collections/{readable_id}/unresolved") in paths
 
 
-class _EveryOrganizationIsAcme(dict):
-    """The deployment's tenant binding, for tests that use a fresh organization each time."""
-
-    def get(self, key, default=None):
-        return "t-acme"
-
-
 class TestTaxonomyJobEndpoints:
-    @pytest.fixture(autouse=True)
-    def tenant_binding(self, monkeypatch):
-        monkeypatch.setattr(settings, "TAXONOMY_TENANT_BY_ORGANIZATION", _EveryOrganizationIsAcme())
-
     def svc(self, cap=5.0):
         from airweave.domains.taxonomy.jobs.records import InMemoryTaxonomyJobRepository
         from airweave.domains.taxonomy.jobs.service import TaxonomyJobService

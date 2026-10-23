@@ -26,7 +26,10 @@ from airweave.adapters.storage.filesystem import FilesystemBackend  # noqa: E402
 from airweave.core.config import settings  # noqa: E402
 from airweave.domains.converters.fakes.registry import FakeConverterRegistry  # noqa: E402
 from airweave.domains.sync_pipeline.processors.chunk_embed import ChunkEmbedProcessor  # noqa: E402
-from airweave.domains.sync_pipeline.processors.taxonomy import TaxonomyProcessor  # noqa: E402
+from airweave.domains.sync_pipeline.processors.taxonomy import (  # noqa: E402
+    TaxonomyProcessor,
+    _chunk_key,
+)
 from airweave.domains.taxonomy.artifacts import TaxonomyResolver  # noqa: E402
 from airweave.domains.taxonomy.classifier_pool import ClassifierPool  # noqa: E402
 from airweave.domains.taxonomy.metrics import TaxonomyTally  # noqa: E402
@@ -278,8 +281,8 @@ class TestIds:
         texts = {r["chunk_id"]: r["text"] for r in pool.rows}
         for c in chunks:
             body = c.textual_representation[c.chunk_body_offset:]
-            assert texts[c.entity_id] == body[c.chunk_own_start - c.chunk_char_start:]
-            assert not texts[c.entity_id].startswith("Acme report")  # no header
+            assert texts[_chunk_key(c)] == body[c.chunk_own_start - c.chunk_char_start:]
+            assert not texts[_chunk_key(c)].startswith("Acme report")  # no header
         pool.close()
 
 

@@ -7,7 +7,14 @@ from pathlib import Path
 
 import pytest
 
-from airweave.domains.taxonomy.jobs.gateway import CostUnknown, PackageGateway, _ledger_total
+from airweave.domains.taxonomy.jobs.gateway import (
+    CallLogDamaged,
+    CostUnknown,
+    PackageGateway,
+    SpendCapReached,
+    _ledger_total,
+    refuse_if_capped,
+)
 from airweave.domains.taxonomy.jobs.tests.helpers import NEW, taxonomy
 
 
@@ -41,6 +48,43 @@ class TestLedger:
         ledger = tmp_path / "cost_ledger.json"
         ledger.write_text(json.dumps({"total_usd": 0.0}))
         assert _ledger_total(ledger) == 0.0
+
+
+def _calls(tmp_path, *statuses):
+    (tmp_path / "llm_calls.jsonl").write_text(
+        "".join(json.dumps({"stage": "review", "status": s}) + "\n" for s in statuses)
+    )
+
+
+class TestRefusedCalls:
+    def test_a_run_whose_calls_were_all_answered_passes(self, tmp_path):
+        _calls(tmp_path, "OK", "OK", "FAILED")
+        refuse_if_capped(tmp_path)
+
+    def test_a_run_without_model_calls_passes(self, tmp_path):
+        refuse_if_capped(tmp_path)
+
+    def test_one_refused_call_fails_the_job_naming_the_cap(self, tmp_path):
+        _calls(tmp_path, "OK", "BUDGET_EXCEEDED", "OK", "BUDGET_EXCEEDED")
+        with pytest.raises(SpendCapReached, match="refused 2 model call"):
+            refuse_if_capped(tmp_path)
+
+    def test_the_package_error_it_explains_is_kept_as_the_cause(self, tmp_path):
+        _calls(tmp_path, "BUDGET_EXCEEDED")
+        cause = RuntimeError("consolidation failed: BUDGET_EXCEEDED")
+        with pytest.raises(SpendCapReached) as e:
+            refuse_if_capped(tmp_path, cause)
+        assert e.value.__cause__ is cause
+
+    @pytest.mark.parametrize("damaged", ['{"stage": "review", "status": "BUDG', "[1]"])
+    def test_an_unreadable_record_fails_the_job_as_it_may_hide_a_refusal(self, tmp_path, damaged):
+        (tmp_path / "llm_calls.jsonl").write_text(f'{{"status": "OK"}}\n{damaged}\n')
+        with pytest.raises(CallLogDamaged, match="1 record.*cannot be read"):
+            refuse_if_capped(tmp_path)
+
+    def test_blank_lines_are_not_records(self, tmp_path):
+        (tmp_path / "llm_calls.jsonl").write_text('{"status": "OK"}\n\n')
+        refuse_if_capped(tmp_path)
 
 
 class TestAllowedFiles:
