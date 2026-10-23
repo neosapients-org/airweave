@@ -46,6 +46,10 @@ class SpendCapReached(RuntimeError):
     """The package's cost ledger refused a call: the job's cap would be exceeded."""
 
 
+class CallLogDamaged(SpendCapReached):
+    """A record of the run's call log cannot be read, so a refused call may be hidden in it."""
+
+
 def refuse_if_capped(run_dir: Path, cause: Optional[BaseException] = None) -> None:
     """Fail the job, naming the cap, when the spend cap refused any of the run's model calls.
 
@@ -54,10 +58,19 @@ def refuse_if_capped(run_dir: Path, cause: Optional[BaseException] = None) -> No
     chunks unresolved, and a refused consolidation fails later with another message. A
     candidate built with refused calls is missing decisions, so it is never returned.
 
+    A record that cannot be read could be the refused one, so it fails the job too: the guard
+    never passes on a log it could not read in full.
+
     Raises:
         SpendCapReached: When at least one call was refused (chained to ``cause`` if given).
+        CallLogDamaged: When a record of the log cannot be read.
     """
-    refused = _refused_calls(run_dir / "llm_calls.jsonl")
+    refused, damaged = _refused_calls(run_dir / "llm_calls.jsonl")
+    if damaged:
+        raise CallLogDamaged(
+            f"{damaged} record(s) of the run's call log cannot be read, so it cannot be shown "
+            "that the spend cap refused no call: start the job again"
+        ) from cause
     if refused:
         raise SpendCapReached(
             f"the spend cap refused {refused} model call(s), so the candidate would be missing "
@@ -65,19 +78,24 @@ def refuse_if_capped(run_dir: Path, cause: Optional[BaseException] = None) -> No
         ) from cause
 
 
-def _refused_calls(path: Path) -> int:
-    """How many of the calls in a run's ``llm_calls.jsonl`` the spend cap refused."""
+def _refused_calls(path: Path) -> Tuple[int, int]:
+    """Calls in a run's ``llm_calls.jsonl`` the spend cap refused, and unreadable records."""
     if not path.exists():
-        return 0
-    refused = 0
+        return 0, 0
+    refused = damaged = 0
     for line in path.read_text().splitlines():
+        if not line.strip():
+            continue
         try:
             record = json.loads(line)
         except ValueError:
+            damaged += 1
             continue
-        if isinstance(record, dict) and record.get("status") == "BUDGET_EXCEEDED":
+        if not isinstance(record, dict):
+            damaged += 1
+        elif record.get("status") == "BUDGET_EXCEEDED":
             refused += 1
-    return refused
+    return refused, damaged
 
 
 class EngineGateway(Protocol):

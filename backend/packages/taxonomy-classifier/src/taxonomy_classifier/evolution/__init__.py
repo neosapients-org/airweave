@@ -32,8 +32,10 @@ def run_wave(taxonomy, cfg: dict, airweave_chunks, store, wave: int, new_version
     labels = {}
     for t in res.child_trace:
         if t["status"] == "ASSIGNED":
+            # every direct topic the ingest assignment gave (category_id stays the first, for the callers that read one)
             labels[t["taxonomy_chunk_id"]] = {"category_id": t["category_ids"][0], "source": src_ingest, "wave": wave,
-                                              "taxonomy_version": taxonomy.version, "prob": t["scores"][0] if t["scores"] else None}
+                                              "taxonomy_version": taxonomy.version, "prob": t["scores"][0] if t["scores"] else None,
+                                              "category_ids": list(t["category_ids"]), "scores": list(t["scores"] or [])}
     seen, pool_all = set(), []
     for r in list(pool or []) + res.unresolved_children:
         if r["taxonomy_chunk_id"] not in seen and r["taxonomy_chunk_id"] not in labels:
@@ -76,7 +78,7 @@ def run_wave(taxonomy, cfg: dict, airweave_chunks, store, wave: int, new_version
     for c in res.children:
         lab = labels.get(c["taxonomy_chunk_id"])
         st = c["status"] if c["status"] in (BYPASS, "REJECT_NONSEMANTIC") else ("ASSIGNED" if lab else "UNRESOLVED")
-        kids.append({**c, "status": st, "topics": [{"category_id": lab["category_id"], "source": lab["source"], "score": lab.get("prob")}] if lab else []})
+        kids.append({**c, "status": st, "topics": _topics(lab)})
     cfg_agg = {**cfg, "content_form": taxonomy.final.get("content_form", cfg.get("content_form", {}))}
     records = [to_contract(e, final_tax) for e in aggregate(chunks, kids, final_tax, cfg_agg)]
     sub = [c for c in res.children if c["status"] not in (BYPASS, "REJECT_NONSEMANTIC")]
@@ -88,6 +90,15 @@ def run_wave(taxonomy, cfg: dict, airweave_chunks, store, wave: int, new_version
                "acceptance": res.provenance}
     return WaveResult(taxonomy.taxonomy_id, taxonomy.version, final_tax.version if work.added else None, out_dir, labels, decisions, new_pool,
                       records, summary)
+
+
+def _topics(lab: dict | None) -> list[dict]:
+    """A child's topics in the contract records: all of its ingest topics, or the one a wave step gave it."""
+    if not lab:
+        return []
+    ids = lab.get("category_ids") or [lab["category_id"]]
+    scores = lab.get("scores") or [lab.get("prob")]
+    return [{"category_id": cid, "source": lab["source"], "score": scores[i] if i < len(scores) else None} for i, cid in enumerate(ids)]
 
 
 __all__ = ["run_wave", "WaveResult", "CalibratedAcceptance", "LearnedAcceptance"]

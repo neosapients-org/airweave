@@ -8,7 +8,7 @@ from taxonomy_classifier.llm.costs import CostLedger
 def test_a_new_ledger_is_written_at_once_with_zero(tmp_path):
     path = tmp_path / "run" / "cost_ledger.json"
     CostLedger(1.0, path)
-    assert json.loads(path.read_text()) == {"cap_usd": 1.0, "total_usd": 0.0, "stages": {}}
+    assert json.loads(path.read_text()) == {"cap_usd": 1.0, "total_usd": 0.0, "stages": {}, "in_flight_usd": 0.0}
 
 
 def test_an_existing_ledger_keeps_its_spend_and_takes_the_new_cap(tmp_path):

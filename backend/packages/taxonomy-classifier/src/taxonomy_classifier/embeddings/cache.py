@@ -28,7 +28,7 @@ def cache_key(model: str, dim: int, text: str) -> str:
 
 class EmbeddingCache:
     def __init__(self, path: str | Path, model: str, dim: int, read_only: bool = False):
-        self.model, self.dim = model, dim
+        self.model, self.dim, self.read_only = model, dim, read_only
         p = Path(path)
         if read_only:
             self.db = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
@@ -41,8 +41,18 @@ class EmbeddingCache:
         return cache_key(self.model, self.dim, text)
 
     def get(self, text: str) -> np.ndarray | None:
-        row = self.db.execute("SELECT vector FROM emb WHERE key=? AND model=? AND dim=?", (self.key(text), self.model, self.dim)).fetchone()
-        return np.frombuffer(row[0], dtype=np.float32) if row else None
+        key = self.key(text)
+        row = self.db.execute("SELECT vector FROM emb WHERE key=? AND model=? AND dim=?", (key, self.model, self.dim)).fetchone()
+        if not row:
+            return None
+        v = np.frombuffer(row[0], dtype=np.float32)
+        if v.shape == (self.dim,) and np.isfinite(v).all() and np.any(v):
+            return v
+        # A damaged row (wrong length, NaN, all zeros) is a miss: it is removed so the fresh vector can take its place
+        # (first write wins, so it would otherwise stay); a read-only cache just ignores it.
+        if not self.read_only:
+            self.db.execute("DELETE FROM emb WHERE key=?", (key,))
+        return None
 
     def put_if_absent(self, text: str, vec: np.ndarray):
         """First write wins: an existing vector for this text is never replaced."""

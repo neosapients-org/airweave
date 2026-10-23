@@ -438,3 +438,17 @@ class TestFailedRunsKeepTheirBill:
         done = await run(runner, repo)
         assert done.state == FAILED and "IndexError" in done.error
         assert done.spend_used_usd == pytest.approx(0.0283)
+
+    async def test_a_call_in_flight_when_the_build_died_counts_at_its_worst_case(self, tmp_path):
+        from airweave.domains.taxonomy.jobs.tests.helpers import FakeGateway
+
+        class Dying(FakeGateway):
+            def discover(self, chunks, *, work_dir, **kw):
+                ledger = work_dir / "store" / "t" / "cost_ledger.json"
+                ledger.parent.mkdir(parents=True)
+                ledger.write_text(json.dumps({"total_usd": 0.02, "in_flight_usd": 0.005}))
+                raise IndexError("died mid-call")
+
+        runner, repo, *_ = make(tmp_path, gateway=Dying())
+        done = await run(runner, repo)
+        assert done.state == FAILED and done.spend_used_usd == pytest.approx(0.025)

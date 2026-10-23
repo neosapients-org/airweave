@@ -17,11 +17,12 @@ import pandas as pd
 ADMIN_FORMS = ("SIGNATURE", "EXHIBIT_INDEX", "FORM_OR_METADATA", "OTHER")
 SENT = re.compile(r"[a-z0-9\)%][\.\?!](?:\s+|$)(?=[A-Z“\"(]|$)")
 NUM = re.compile(r"^[\(\-–—$]*[\d,.]+%?\)?$")
-# Words of three or more letters in any script (for ASCII text exactly [A-Za-z]{3,}).
-WORD = re.compile(r"[^\W\d_]{3,}")
-# Scripts written without spaces between words (Chinese, Japanese kana, Thai, Lao, Khmer, Myanmar): a run of them is one
-# "word" above however long it is, so their characters are counted too, two to a word.
-UNSPACED = re.compile(r"[぀-ヿ㐀-䶿一-鿿豈-﫿฀-໿ក-៿က-႟]")
+# Scripts written without spaces between words (Chinese, Japanese kana, Thai, Lao, Khmer, Myanmar): their characters are
+# counted, two to a word, and kept out of WORD so that no character is counted twice.
+_UNSPACED_CHARS = "぀-ヿ㐀-䶿一-鿿豈-﫿฀-໿ក-៿က-႟"
+UNSPACED = re.compile(f"[{_UNSPACED_CHARS}]")
+# Words of three or more letters in any other script (for ASCII text exactly [A-Za-z]{3,}).
+WORD = re.compile(rf"[^\W\d_{_UNSPACED_CHARS}]{{3,}}")
 
 
 def content_words(t: str) -> int:

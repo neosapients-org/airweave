@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -31,6 +32,15 @@ _LOCK = threading.RLock()
 
 class LLMFailure(RuntimeError):
     pass
+
+
+class _CapAfterTimeout(Exception):
+    """A timed-out attempt was counted at its worst case and left no headroom for another attempt."""
+
+
+def _file_safe(subject_id: str) -> str:
+    """A subject id fit for a file name: a reviewer-written name such as "Receivables/Payables" must not become a path."""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(subject_id))[:80] or "_"
 
 
 def api_key() -> str:
@@ -139,7 +149,7 @@ class LLMClient:
         """Returns the saved call record (with 'status' in OK / FAILED / BUDGET_EXCEEDED and 'parsed')."""
         input_hash = hashlib.sha256("\x1f".join([self.model, self.version, self.system, user, self.effort,
                                                   str(self.max_tokens), self._schema_json]).encode()).hexdigest()
-        request_id = f"{self.stage}-{subject_id}-{input_hash[:12]}"
+        request_id = f"{self.stage}-{_file_safe(subject_id)}-{input_hash[:12]}"   # also the call record's file name
         cache_file = self.cache_dir / f"{input_hash}.json"
         base = {"request_id": request_id, "stage": self.stage, "prompt_version": self.version, "subject_id": subject_id,
                 "model": self.model, "settings": {"reasoning_effort": self.effort, "max_completion_tokens": self.max_tokens,
@@ -163,7 +173,12 @@ class LLMClient:
                 break
             try:
                 try:
-                    resp, lat = self._post(user)
+                    resp, lat = self._post(user, worst)
+                except _CapAfterTimeout:
+                    rec = {**base, "status": "BUDGET_EXCEEDED", "parsed": None, "raw_response": None, "usage": None,
+                           "cost_usd": 0.0, "cache_hit": False, "attempts": attempts,
+                           "validation_errors": ["budget cap (after a timed-out attempt counted at its worst case)"]}
+                    break
                 except LLMFailure as e:                # transport failure after retries -> FAILED, never filled in
                     attempts.append({"attempt": attempt + 1, "finish_reason": None, "usage": None, "cost_usd": 0.0,
                                      "latency_s": 0.0, "validation_errors": [f"transport: {e}"], "raw_response": None})
@@ -200,7 +215,12 @@ class LLMClient:
         self._save(rec)
         return rec
 
-    def _post(self, user):
+    def _post(self, user, worst: float = 0.0):
+        """One request, with transport retries under the caller's reservation of ``worst``.
+
+        An HTTP error response carries no completion and is not billed, so it is retried as is. A timeout is
+        ambiguous: the provider may have finished and billed the request, so it is charged at its worst case before
+        the next attempt, and the call ends as over the cap when that leaves no room for the retry."""
         body = {"model": self.model, "reasoning_effort": self.effort, "max_completion_tokens": self.max_tokens,
                 "messages": [{"role": "system", "content": self.system}, {"role": "user", "content": user}],
                 "response_format": {"type": "json_schema", "json_schema": {"name": self.version, "strict": True, "schema": self.schema}}}
@@ -221,7 +241,11 @@ class LLMClient:
                 raise LLMFailure(f"HTTP {e.code}: {msg}")
             except (urllib.error.URLError, TimeoutError) as e:
                 if i < rc["max_attempts"] - 1:
+                    self.ledger.charge_unconfirmed(worst)
+                    if not self.ledger.can_spend(0.0):     # the held reservation must still fit beside the new charge
+                        raise _CapAfterTimeout() from e
                     time.sleep(rc["backoff_s"] * 2 ** i); continue
+                self.ledger.charge_unconfirmed(worst)
                 raise LLMFailure(str(e))
 
     def _save(self, rec):

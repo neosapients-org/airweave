@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from airweave.domains.taxonomy.jobs.gateway import (
+    CallLogDamaged,
     CostUnknown,
     PackageGateway,
     SpendCapReached,
@@ -75,8 +76,14 @@ class TestRefusedCalls:
             refuse_if_capped(tmp_path, cause)
         assert e.value.__cause__ is cause
 
-    def test_unreadable_lines_are_skipped(self, tmp_path):
-        (tmp_path / "llm_calls.jsonl").write_text('not json\n[1]\n{"status": "OK"}\n')
+    @pytest.mark.parametrize("damaged", ['{"stage": "review", "status": "BUDG', "[1]"])
+    def test_an_unreadable_record_fails_the_job_as_it_may_hide_a_refusal(self, tmp_path, damaged):
+        (tmp_path / "llm_calls.jsonl").write_text(f'{{"status": "OK"}}\n{damaged}\n')
+        with pytest.raises(CallLogDamaged, match="1 record.*cannot be read"):
+            refuse_if_capped(tmp_path)
+
+    def test_blank_lines_are_not_records(self, tmp_path):
+        (tmp_path / "llm_calls.jsonl").write_text('{"status": "OK"}\n\n')
         refuse_if_capped(tmp_path)
 
 

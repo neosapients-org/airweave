@@ -25,6 +25,9 @@ from __future__ import annotations
 
 import copy
 import json
+import os
+import shutil
+import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -228,7 +231,20 @@ def write_version(work, base_tax, store_or_dir, new_version: str, wave: int, dec
     fa = FrozenAssigner(pos, a["parent"], Dp, Sp, len(work.Dp_rej), [a["category_floors"][c] for c in pos], a["tau_rrf"], a["sibling_delta"],
                         a["window"], a["rrf_k"])
     body = {k: v for k, v in final.items() if k != "assignment"}
-    artifacts.save(out, body, fa, base_tax.bm25, work.rep.centroids, work.rep.sparse, work.rep.prototypes, work.rep.exemplars)
-    ev = out / "evolution"; ev.mkdir(exist_ok=True)
-    decisions.to_csv(ev / "decisions.csv", index=False)
+    # Built in a staging folder next to the version and renamed into place only when complete: a crash midway leaves
+    # no partial version that readers could load or that would block a retry as "already exists". The staging folder
+    # sits one level deeper than a version, so the store never lists it.
+    stage = out.parent / "_staging" / f"{out.name}-{uuid.uuid4().hex[:8]}"
+    stage.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        artifacts.save(stage, body, fa, base_tax.bm25, work.rep.centroids, work.rep.sparse, work.rep.prototypes, work.rep.exemplars)
+        ev = stage / "evolution"; ev.mkdir(exist_ok=True)
+        decisions.to_csv(ev / "decisions.csv", index=False)
+        try:
+            os.rename(stage, out)
+        except OSError as e:                           # another attempt published this version in the meantime
+            raise FileExistsError(f"{out} already exists; taxonomy versions are immutable") from e
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage, ignore_errors=True)
     return out

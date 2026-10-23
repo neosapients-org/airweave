@@ -218,11 +218,16 @@ def test_an_all_zero_embedding_in_a_response_is_refused(tmp_path):
         emb.embed(["one text", "another text"])
 
 
-def test_an_all_zero_embedding_from_the_cache_is_refused_not_turned_into_nan(tmp_path):
-    emb = _embedder(tmp_path, lambda batch: pytest.fail("the cache should answer"))
-    emb.cache.put_if_absent("cached text", np.zeros(4)); emb.cache.commit()     # e.g. written by an older version
-    with pytest.raises(RuntimeError, match="zero or non-finite norm"):
-        emb.embed(["cached text"])
+@pytest.mark.parametrize("bad", [np.zeros(4), np.ones(3), np.array([1.0, np.nan, 0.0, 0.0])], ids=["zeros", "short", "nan"])
+def test_a_damaged_cached_vector_is_a_miss_and_is_embedded_again(tmp_path, bad):
+    sent = []
+    emb = _embedder(tmp_path, lambda batch: (sent.append(batch) or [np.ones(4)], 4))
+    emb.cache.db.execute("INSERT INTO emb VALUES (?,?,?,?,?)",                  # e.g. written by an older version
+                         (emb.cache.key("cached text"), "e", 4, -1, np.asarray(bad, np.float32).tobytes()))
+    emb.cache.commit()
+    X = emb.embed(["cached text"])
+    assert sent == [["cached text"]] and np.allclose(X, np.full((1, 4), 0.5))
+    assert np.array_equal(emb.cache.get("cached text"), np.ones(4, np.float32))    # the damaged row was replaced
 
 
 def test_a_gateway_timeout_is_retried(tmp_path, monkeypatch):
@@ -258,3 +263,148 @@ def test_an_unsafe_wave_version_is_refused_before_any_folder_is_made(tmp_path, v
     with pytest.raises(ValueError, match="invalid taxonomy_version"):
         eng.run_wave([], wave=2, new_version=version)
     assert not (tmp_path / "store").exists() and not (tmp_path / "outside").exists()
+
+
+# --------------------------------------------------------------------------- crash-safe ledger, timeouts, names, versions
+
+def test_a_reservation_left_by_a_process_that_died_counts_as_spent(tmp_path):
+    path = tmp_path / "cost_ledger.json"
+    ledger = CostLedger(1.0, path)
+    assert ledger.reserve(0.3)
+    assert json.loads(path.read_text())["in_flight_usd"] == 0.3    # on file while the call is out
+    again = CostLedger(1.0, path)                                    # the next attempt, after a crash
+    assert again.data["total_usd"] == pytest.approx(0.3) and again.data["stages"]["unconfirmed"]["cost_usd"] == pytest.approx(0.3)
+    assert json.loads(path.read_text())["in_flight_usd"] == 0.0 and not again.reserve(0.8)
+
+
+def test_a_released_reservation_leaves_nothing_in_flight(tmp_path):
+    path = tmp_path / "cost_ledger.json"
+    ledger = CostLedger(1.0, path)
+    ledger.reserve(0.3); ledger.add("llm", 0.01); ledger.release(0.3)
+    assert json.loads(path.read_text())["in_flight_usd"] == 0.0
+    assert CostLedger(1.0, path).data["total_usd"] == pytest.approx(0.01)
+
+
+def test_an_interrupted_ledger_write_leaves_the_last_ledger_whole(tmp_path, monkeypatch):
+    import taxonomy_classifier.llm.costs as costs
+
+    path = tmp_path / "cost_ledger.json"
+    ledger = CostLedger(1.0, path); ledger.add("llm", 0.2)
+
+    def dies(data, f, **kw):
+        f.write('{"cap_usd": 1.0, "tot')
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(costs.json, "dump", dies)
+    with pytest.raises(KeyboardInterrupt):
+        ledger.add("llm", 0.1)
+    monkeypatch.undo()
+    assert json.loads(path.read_text())["total_usd"] == pytest.approx(0.2)
+
+
+def _http_llm(tmp_path, cap, attempts, monkeypatch, answers):
+    import taxonomy_classifier.llm.client as client_module
+
+    cfg = {"llm": {"model": "m", "pricing": {"input": 0.75, "cached_input": 0.075, "output": 4.5},
+                   "cache_dir": str(tmp_path / "llm_cache"), "corpus_description": "test",
+                   "retry": {"max_attempts": attempts, "backoff_s": 0, "retry_on_http": [500]}}}
+    sent = []
+
+    def urlopen(req, timeout=None):
+        sent.append(req)
+        raise answers.pop(0)
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    monkeypatch.setattr(client_module.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(client_module.time, "sleep", lambda s: None)
+    ledger = CostLedger(cap, tmp_path / "cost_ledger.json")
+    return LLMClient(cfg, tmp_path / "run", ledger, "s", "cluster_semantic_review_v2", "low", 1500), ledger, sent
+
+
+def test_each_timed_out_attempt_is_counted_at_its_worst_case(tmp_path, monkeypatch):
+    cli, ledger, sent = _http_llm(tmp_path, 5.0, 3, monkeypatch, [TimeoutError("read timed out")] * 3)
+    worst = cli._worst_case_usd(REVIEW_INPUT)
+    rec = cli.call(REVIEW_INPUT, "c1")
+    assert rec["status"] == "FAILED" and len(sent) == 3
+    assert ledger.data["total_usd"] == pytest.approx(3 * worst) and ledger._reserved == 0
+
+
+def test_an_http_error_response_is_retried_without_a_charge(tmp_path, monkeypatch):
+    import io
+    import urllib.error
+
+    errors = [urllib.error.HTTPError("u", 500, "Server Error", {}, io.BytesIO(b"")) for _ in range(2)]
+    cli, ledger, sent = _http_llm(tmp_path, 5.0, 2, monkeypatch, errors)
+    assert cli.call(REVIEW_INPUT, "c1")["status"] == "FAILED" and len(sent) == 2
+    assert ledger.data["total_usd"] == 0
+
+
+def test_a_timeout_that_leaves_no_room_for_the_retry_ends_as_over_the_cap(tmp_path, monkeypatch):
+    cli, ledger, sent = _http_llm(tmp_path, 1.0, 3, monkeypatch, [TimeoutError("read timed out")] * 3)
+    worst = cli._worst_case_usd(REVIEW_INPUT)
+    ledger.cap = 1.5 * worst                                         # one call's bound fits, two do not
+    rec = cli.call(REVIEW_INPUT, "c1")
+    assert rec["status"] == "BUDGET_EXCEEDED" and len(sent) == 1
+    assert ledger.data["total_usd"] == pytest.approx(worst) and ledger.data["total_usd"] <= ledger.cap
+
+
+def test_a_subject_with_a_slash_is_saved_as_one_flat_record(tmp_path):
+    cli, _ = _llm(tmp_path)
+    rec = cli.call(REVIEW_INPUT, "Receivables/Payables")
+    assert rec["status"] == "OK" and "/" not in rec["request_id"] and rec["subject_id"] == "Receivables/Payables"
+    assert (tmp_path / "run" / "llm_calls" / f"{rec['request_id']}.json").is_file()
+
+
+@pytest.mark.parametrize("text, words", [("経済政策の影響", 3), ("Payment 経済政策", 3), ("請求書", 1)])
+def test_unspaced_characters_are_counted_once(text, words):
+    assert content_words(text) == words
+
+
+def test_a_wave_record_keeps_every_ingest_topic():
+    from taxonomy_classifier.evolution import _topics
+
+    ingest = {"category_id": "A", "source": "HYBRID_RRF", "prob": 0.9, "category_ids": ["A", "B"], "scores": [0.9, 0.7]}
+    assert [t["category_id"] for t in _topics(ingest)] == ["A", "B"] and _topics(ingest)[1]["score"] == 0.7
+    assert _topics({"category_id": "C", "source": "WAVE_NOVELTY"}) == [{"category_id": "C", "source": "WAVE_NOVELTY", "score": None}]
+    assert _topics(None) == []
+
+
+def _write_version_inputs(tmp_path):
+    base_dir = tmp_path / "store" / "t" / "v1"; base_dir.mkdir(parents=True)
+    (base_dir / "final_taxonomy.json").write_text("{}")
+    base = SimpleNamespace(taxonomy_id="t", version="v1", path=base_dir, bm25=None)
+    one = np.ones((1, 4), np.float32)
+    work = SimpleNamespace(
+        final={"assignment": {"prototype_category_ids": ["C1"], "parent": {}, "category_floors": {"C1": 0.5}, "tau_rrf": 0.03,
+                              "sibling_delta": 0.0, "window": 3, "rrf_k": 60}},
+        added=[], Dp_pos=one, Dp_rej=one, Sp_pos=sp.csr_matrix(one), Sp_rej=sp.csr_matrix(one),
+        rep=SimpleNamespace(centroids=one, sparse=sp.csr_matrix(one), prototypes=None, exemplars=None))
+    from taxonomy_classifier import LocalTaxonomyStore
+    return work, base, LocalTaxonomyStore(tmp_path / "store")
+
+
+@pytest.mark.parametrize("dies", [False, True])
+def test_a_new_version_appears_only_when_it_is_complete(tmp_path, monkeypatch, dies):
+    import pandas as pd
+
+    import taxonomy_classifier.evolution.wave as wave
+
+    def save(out, *a, **k):
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "final_taxonomy.json").write_text("{}")
+        if dies:
+            raise KeyboardInterrupt                                  # the worker stops between two files
+
+    monkeypatch.setattr(wave.artifacts, "save", save)
+    work, base, store = _write_version_inputs(tmp_path)
+    out = store.path("t", "v2")
+    if dies:
+        with pytest.raises(KeyboardInterrupt):
+            wave.write_version(work, base, store, "v2", 2, pd.DataFrame({"decision": []}))
+        assert not out.exists()                                      # a retry can still build v2
+    else:
+        assert wave.write_version(work, base, store, "v2", 2, pd.DataFrame({"decision": []})) == out
+        assert (out / "final_taxonomy.json").is_file() and (out / "evolution" / "decisions.csv").is_file()
+    assert list((out.parent / "_staging").iterdir()) == []           # nothing staged is left behind
+    listed = {f.parent.name for f in store.root.glob("*/*/final_taxonomy.json")}   # what the store lists as versions
+    assert listed == ({"v1"} if dies else {"v1", "v2"})
