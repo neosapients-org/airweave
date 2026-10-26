@@ -388,6 +388,10 @@ class PackageGateway:
             chunk = by_id.get(str(tc).split("::", 1)[0])
             if chunk is not None and len(examples) < PASSAGES_PER_CATEGORY:
                 examples.append(passage(chunk["text"]))
+        # A category a wave created before the package wrote its counts has them in its stats only;
+        # Meridian refuses a report whose count is missing.
+        stats = category.get("stats") or {}
+        documents = category.get("document_count")
         return {
             "category_id": category["category_id"],
             "name": category.get("name"),
@@ -395,7 +399,7 @@ class PackageGateway:
             "status": category.get("status"),
             "origin": category.get("origin", "BUILD"),
             "member_count": category.get("member_count"),
-            "document_count": category.get("document_count"),
+            "document_count": documents if documents is not None else stats.get("cat_documents"),
             "top_terms": category.get("top_terms"),
             "example_passages": examples,
         }

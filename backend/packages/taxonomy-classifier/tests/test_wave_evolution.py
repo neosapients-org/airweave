@@ -88,6 +88,18 @@ def test_create_new_applies_and_starts_probationary(waved):
     assert w.summary["categorised_after_wave"] > w.summary["assigned_at_ingest"]
 
 
+def test_new_categories_carry_the_counts_a_build_category_has(waved):
+    w, store = waved["w2"], waved["store"]
+    v2 = store.load("my_custom_corpus", w.new_version)
+    new = [c for c in v2.categories if c["category_id"] in w.summary["categories_added"]]
+    assert new
+    for c in new:  # whole numbers, as builder.py writes them
+        assert c["member_count"] == len(c["created"]["member_taxonomy_chunk_ids"])
+        assert type(c["document_count"]) is int and 1 <= c["document_count"] <= c["member_count"]
+        assert c["document_count"] == c["stats"]["cat_documents"]
+        assert type(c["group_count"]) is int and c["group_count"] == c["stats"]["cat_companies"]
+
+
 def test_vN_unchanged_and_vN1_loads_with_provenance(waved):
     store = waved["store"]
     assert sha(waved["v1_file"]) == waved["v1_sha"]                      # v1 bytes untouched
