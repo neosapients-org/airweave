@@ -102,6 +102,16 @@ volumes:
     emptyDir: {}
   - name: cache
     emptyDir: {}
+  # TAXONOMY_DATA_DIR for the API pod: starting a re-label (and the taxonomy admin routes) loads
+  # the active version, which downloads its files here. The root filesystem is read-only, so
+  # without this volume every re-label request answers 503 "Read-only file system". Each version
+  # activated through this pod is downloaded once and stays until the pod restarts (nothing
+  # prunes older ones); real versions are a few MB. The API pod holds no embedding cache, unlike
+  # the workers' larger volume. 2Gi leaves room above the 1024 MB the resolver accepts for one
+  # version (ARTIFACT_TOTAL_MAX_MB): going over an emptyDir's sizeLimit evicts the pod.
+  - name: taxonomy
+    emptyDir:
+      sizeLimit: 2Gi
 
 volumeMounts:
   - name: tmp
@@ -110,6 +120,8 @@ volumeMounts:
     mountPath: /data/airweave-storage
   - name: cache
     mountPath: /.cache
+  - name: taxonomy
+    mountPath: /data/airweave-taxonomy
 
 nodeSelector:
   karpenter.sh/nodepool: dev-use1-shared1-generic-arm64-w50

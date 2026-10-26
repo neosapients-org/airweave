@@ -102,6 +102,19 @@ class TestValues:
         assert values["env"]["TAXONOMY_DATA_DIR"] == "/data/airweave-taxonomy"
         assert "mountPath: /data/airweave-taxonomy" in template
 
+    def test_the_api_pod_can_write_the_taxonomy_folder(self, values):
+        """Starting a re-label loads the active version into TAXONOMY_DATA_DIR in the API pod.
+
+        The root filesystem stays read-only, so the folder must be its own writable volume:
+        without it every re-label request answered 503 "Read-only file system".
+        """
+        assert values["securityContext"]["readOnlyRootFilesystem"] is True
+        mounts = {m["mountPath"]: m["name"] for m in values["volumeMounts"]}
+        name = mounts.get(values["env"]["TAXONOMY_DATA_DIR"])
+        assert name, "no volume is mounted at TAXONOMY_DATA_DIR in the API pod"
+        volume = next(v for v in values["volumes"] if v["name"] == name)
+        assert "sizeLimit" in volume["emptyDir"]
+
 
 class TestEnvExample:
     def test_every_job_setting_is_listed_with_the_code_default(self, monkeypatch):
@@ -243,3 +256,28 @@ class TestBuildConfigRollsThePod:
         assert template.index("mountPath: /data/airweave-taxonomy\n") < template.index(
             "mountPath: /data/airweave-taxonomy/jobs"
         )
+
+
+def test_the_rendered_api_deployment_mounts_the_taxonomy_folder():
+    import shutil
+    import subprocess
+
+    if shutil.which("helm") is None:
+        pytest.skip("helm is not installed")
+    for env in ("dev-use1-shared1", "staging-use1-shared1"):
+        out = subprocess.run(
+            ["helm", "template", "t", str(HELM), "-f", str(HELM / f"{env}.yaml")],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        api = next(
+            d
+            for d in yaml.safe_load_all(out)
+            if d and d["kind"] == "Deployment" and d["metadata"]["name"] == "t-airweave-svc"
+        )
+        container = api["spec"]["template"]["spec"]["containers"][0]
+        assert {"name": "taxonomy", "mountPath": "/data/airweave-taxonomy"} in container[
+            "volumeMounts"
+        ], env
+        assert container["securityContext"]["readOnlyRootFilesystem"] is True, env
