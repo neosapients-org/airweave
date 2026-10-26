@@ -101,6 +101,8 @@ def _add_category(work, cfg, wave, rid, review, idx, X, B, meta):
     cat = {"category_id": cid, "name": review["new_category_name"], "description": review.get("description"), "scope": review.get("scope"),
            "industry": None, "company": None, "parent_category_id": None, "broad_family_id": None, "broad_family": None,
            "status": status, "is_sink": False, "stats": stats, "origin": f"WAVE_{wave}", "member_count": int(len(idx)),
+           # the counts a build category carries (builder.py); Airweave's propose report needs them
+           "document_count": stats["cat_documents"], "group_count": stats["cat_companies"],
            "created": {"wave": wave, "source_residual_cluster": rid, "source_review_call_id": review.get("call_id"),
                        "member_taxonomy_chunk_ids": list(meta.taxonomy_chunk_id.iloc[idx])}}
     r = work.rep

@@ -194,6 +194,24 @@ class TestWaveThatAddsNothing:
             self.run(tmp_path)
 
 
+class TestReportCategory:
+    """A report category carries the counts Meridian requires, whoever created the category."""
+
+    def entry(self, **category):
+        return PackageGateway._category_entry({"category_id": "CAT_NEW_001", **category}, {})
+
+    def test_a_build_category_reports_its_own_counts(self):
+        out = self.entry(member_count=12, document_count=4, stats={"cat_documents": 9})
+        assert (out["member_count"], out["document_count"]) == (12, 4)
+
+    def test_a_wave_category_without_a_document_count_reports_the_one_in_its_stats(self):
+        out = self.entry(member_count=12, stats={"cat_members": 12, "cat_documents": 3})
+        assert out["document_count"] == 3
+
+    def test_a_count_of_zero_is_kept_not_replaced(self):
+        assert self.entry(document_count=0, stats={"cat_documents": 3})["document_count"] == 0
+
+
 def test_a_gateway_without_a_build_config_cannot_discover():
     from airweave.domains.taxonomy.jobs.gateway import PackageGateway
 
