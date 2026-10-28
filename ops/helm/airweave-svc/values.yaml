@@ -289,9 +289,11 @@ worker:
 # A SEPARATE Deployment of the same image on its own Temporal task queue
 # (a constant in the code); the sync workers never register these activities.
 #
-# IMAGE: the backend image carries the full classifier install (backend/packages/taxonomy-
-# classifier, a path dependency in the lock file, with umap-learn, pynndescent, numba, hdbscan,
-# scikit-learn and scipy), so this Deployment and the sync workers run the same image.
+# IMAGE: the backend image carries the full classifier install, so this Deployment and the sync
+# workers run the same image. The package comes from a private repository: ops/build-and-push.sh
+# fetches the commit named in ops/classifier-ref and passes it to backend/Dockerfile as the build
+# context "classifier"; its dependencies (umap-learn, pynndescent, numba, hdbscan, scikit-learn,
+# scipy, skops) are locked in backend/poetry.lock. The image label neo.classifier.ref shows the commit.
 #
 # S3 (IAM): the role of THIS Deployment's service account needs s3:PutObject on
 # taxonomy/tenants/*/candidates/* and nothing more for writing (no delete, no overwrite: the

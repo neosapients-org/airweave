@@ -293,6 +293,20 @@ class TestLearnedPolicyWithPackage:
         )
         assert Path(acc["model_manifest"]).is_file()
 
+    @pytest.mark.parametrize("fmt", [None, "pickle"])
+    async def test_a_model_in_another_format_is_refused_before_download(self, tmp_path, s3, fmt):
+        self._learned(tmp_path, s3)
+        man = s3 / "taxonomy/models/acme_hgb/manifest.json"
+        data = json.loads(man.read_text())
+        data.pop("model_format")
+        if fmt:
+            data["model_format"] = fmt
+        man.write_text(json.dumps(data))
+        resolver, _ = _resolver(tmp_path, s3)
+        with pytest.raises(TaxonomyResolutionError, match="convert_acceptance_model"):
+            await resolver.resolve(READABLE)
+        assert not (tmp_path / "local/models").exists()
+
     async def test_model_file_missing(self, tmp_path, s3):
         self._learned(tmp_path, s3)
         (s3 / "taxonomy/models/acme_hgb/frozen_model.skops").unlink()

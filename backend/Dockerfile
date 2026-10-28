@@ -33,11 +33,15 @@ COPY pyproject.toml poetry.lock ./
 RUN --mount=type=cache,target=/opt/poetry-cache \
     poetry install --only=main --no-interaction --no-ansi --no-root
 
-# The taxonomy classifier with its build extra (the discover and propose jobs run this image too).
+# The taxonomy classifier (the discover and propose jobs run this image too). Its dependencies, including the
+# build extra's, are locked in poetry.lock; the package goes in with --no-deps, and the requirements check fails the
+# build if the lock and the package's ranges disagree.
 # Mounted, not copied, so its source never becomes a layer; skipped when no classifier was given.
 RUN --mount=type=bind,from=classifier,target=/tmp/neo-taxonomy-classifier,rw \
+    --mount=type=bind,source=scripts/check_classifier_requirements.py,target=/tmp/check_classifier_requirements.py \
     if [ -f /tmp/neo-taxonomy-classifier/pyproject.toml ]; then \
-      pip install --no-cache-dir "/tmp/neo-taxonomy-classifier[build]"; \
+      pip install --no-cache-dir --no-deps /tmp/neo-taxonomy-classifier \
+      && python /tmp/check_classifier_requirements.py; \
     fi
 
 # Copy entrypoint script with proper permissions

@@ -420,11 +420,17 @@ class TaxonomyResolver:
 
 
 def _check_feature_schema(model_id: str, manifest: Dict[str, Any]) -> None:
-    """Refuse a model built for another feature schema, before it is ever loaded."""
+    """Refuse a model in another format or feature schema, before it is ever loaded."""
     try:
         from taxonomy_classifier.assignment import learned  # type: ignore[import-not-found]
     except ImportError as e:
         raise TaxonomyResolutionError(f"the classifier package is not installed: {e}") from e
+    if manifest.get("model_format") != learned.MODEL_FORMAT:
+        raise TaxonomyResolutionError(
+            f"model {model_id}: model_format {manifest.get('model_format')!r}; the classifier "
+            f"loads only {learned.MODEL_FORMAT!r} models. Convert an older model with "
+            f"scripts/convert_acceptance_model.py in the classifier package"
+        )
     if manifest.get("feature_schema_version") != learned.FEATURE_SCHEMA_VERSION or tuple(
         manifest.get("feature_names") or ()
     ) != tuple(learned.FEATURE_NAMES):

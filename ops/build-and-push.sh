@@ -16,7 +16,7 @@ set -e
 #   --no-cache        Build without Docker cache
 #   --classifier-ref REF
 #                     neo-platform branch or full commit to take the taxonomy classifier
-#                     from (default: develop for dev-* suffixes, main otherwise)
+#                     from (default: the commit in ops/classifier-ref)
 #   --help            Show this help message
 #
 # Examples:
@@ -60,11 +60,13 @@ done
 ECR_REPO="airweave-svc-${ECR_SUFFIX}"
 IMAGE="${ECR_REGISTRY}/${ECR_REPO}:${ECR_TAG}"
 K8S_DEPLOY="airweave-svc-${ECR_SUFFIX}"
-# Dev follows neo-platform's develop; staging and production follow its main, as neo-platform does.
-case "${ECR_SUFFIX}" in
-  dev-*) CLASSIFIER_REF="${CLASSIFIER_REF:-develop}" ;;
-  *)     CLASSIFIER_REF="${CLASSIFIER_REF:-main}" ;;
-esac
+# The classifier commit this repository was tested with lives in ops/classifier-ref; bump it in a PR.
+# An older Airweave commit therefore rebuilds with the classifier it was released with.
+CLASSIFIER_REF="${CLASSIFIER_REF:-$(grep -v '^#' "${SCRIPT_DIR}/classifier-ref" | tr -d '[:space:]')}"
+if [ -z "${CLASSIFIER_REF}" ]; then
+  echo "No classifier ref: ops/classifier-ref is empty and --classifier-ref was not given"
+  exit 1
+fi
 
 # Fetch the classifier: only its folder, at one commit, into a folder deleted on exit
 CLASSIFIER_SRC="$(mktemp -d)"

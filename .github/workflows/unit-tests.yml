@@ -53,6 +53,30 @@ jobs:
       - name: Install project
         run: poetry install --no-interaction
 
+      # The classifier lives in a private repository. At the commit pinned in ops/classifier-ref it is installed
+      # (its dependencies are already locked) so the tests that exercise the contract with it run here instead of
+      # skipping. Needs a read-only token for that repository in NEO_PLATFORM_READ_TOKEN; without it the step warns
+      # and those tests skip.
+      - name: Install the taxonomy classifier (pinned commit)
+        env:
+          NEO_PLATFORM_READ_TOKEN: ${{ secrets.NEO_PLATFORM_READ_TOKEN }}
+        run: |
+          if [ -z "${NEO_PLATFORM_READ_TOKEN}" ]; then
+            echo "::warning::NEO_PLATFORM_READ_TOKEN is not set: the classifier contract tests will skip"
+            exit 0
+          fi
+          ref="$(grep -v '^#' ../ops/classifier-ref | tr -d '[:space:]')"
+          src="$(mktemp -d)"
+          auth="$(printf 'x-access-token:%s' "${NEO_PLATFORM_READ_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${auth}"
+          git -C "${src}" init -q
+          git -C "${src}" remote add origin https://github.com/neosapients-org/neo-platform.git
+          git -C "${src}" sparse-checkout set --no-cone "/packages/python/neo-taxonomy-classifier/"
+          git -C "${src}" -c "http.extraheader=Authorization: Basic ${auth}" fetch -q --depth 1 --filter=blob:none origin "${ref}"
+          git -C "${src}" checkout -q FETCH_HEAD
+          poetry run pip install --no-deps "${src}/packages/python/neo-taxonomy-classifier"
+          poetry run pip check
+
       - name: Write coverage config
         run: |
           cat > .coveragerc << 'EOF'

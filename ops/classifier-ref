@@ -1,0 +1,4 @@
+# neo-platform commit of packages/python/neo-taxonomy-classifier that this repository is built and tested with.
+# ops/build-and-push.sh reads it; --classifier-ref (or CLASSIFIER_REF) overrides it for one build.
+# To take a new classifier: change this line in a PR, after its tests pass against that commit.
+e3ed12cacdec47d4c10ce40f8af39a5adeb26260
