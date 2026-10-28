@@ -83,7 +83,8 @@ google-cloud-storage = "^3.8.0"
 authlib = ">=1.6.9"
 # The taxonomy classifier's dependencies (the package itself is installed by backend/Dockerfile with
 # --no-deps from ops/classifier-ref, so these are what lock it). Keep them inside the ranges in the
-# classifier's pyproject.toml: "pip check" in the Dockerfile fails the build if they drift apart.
+# classifier's pyproject.toml: scripts/check_classifier_requirements.py (run by the Dockerfile, and by CI when the
+# classifier is installed there) fails if they drift apart.
 numpy = ">=2.4.2,<3"
 pandas = ">=3.0.0,<4"
 scipy = ">=1.18.1,<2"
