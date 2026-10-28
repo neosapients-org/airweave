@@ -13,7 +13,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import pickle
 import re
 import shutil
 import time
@@ -130,14 +129,11 @@ def corpus(vocab: Dict[str, List[str]], n_docs: int = 6, chunks_per_doc: int = 4
     return out
 
 
-def package_root() -> Path:
-    """The classifier package's folder in this repository (its config/ is not installed)."""
-    return Path(__file__).resolve().parents[4] / "packages" / "taxonomy-classifier"
-
-
 def build_config(tmp: Path, description: str) -> dict:
-    """The package's example config with the offline test overrides of its own tests."""
-    c = copy.deepcopy(yaml.safe_load((package_root() / "config" / "taxonomy.example.yaml").read_text()))
+    """The package's small-corpus profile with the offline test overrides of its own tests."""
+    from taxonomy_classifier import profiles
+
+    c = copy.deepcopy(yaml.safe_load(profiles.path("small-corpus").read_text()))
     c["input"]["fields"] = {"group": "site"}
     c["content_form"]["patterns"] = {}
     c["embedding"].update({"model": "fake-bow", "dimensions": DIM,
@@ -166,6 +162,7 @@ def write_model(directory: Path, p: float, schema: Optional[str] = None,
                 names: Optional[Iterable[str]] = None, model_id: Optional[str] = None) -> tuple[Path, Path]:
     """A constant-probability acceptance model and its manifest (the package's test pattern)."""
     import pandas as pd
+    import skops.io as sio
     from sklearn.dummy import DummyClassifier
     from taxonomy_classifier.assignment import learned as L
 
@@ -173,10 +170,10 @@ def write_model(directory: Path, p: float, schema: Optional[str] = None,
     y = np.array([1] * int(round(p * 100)) + [0] * (100 - int(round(p * 100))))
     model = DummyClassifier(strategy="prior").fit(
         pd.DataFrame(np.zeros((100, len(L.FEATURE_NAMES))), columns=list(L.FEATURE_NAMES)), y)
-    f = directory / "frozen_model.pkl"
-    pickle.dump({"model": model, "features": list(L.FEATURE_NAMES)}, open(f, "wb"))
+    f = directory / "frozen_model.skops"
+    sio.dump(model, f)                                   # skops: the package refuses pickle
     man = {"model_id": model_id or f"const_{p}", "feature_schema_version": schema or L.FEATURE_SCHEMA_VERSION,
-           "feature_names": list(names or L.FEATURE_NAMES), "model_type": "dummy",
+           "feature_names": list(names or L.FEATURE_NAMES), "model_type": "dummy", "model_format": L.MODEL_FORMAT,
            "model_file": f.name, "model_sha256": hashlib.sha256(f.read_bytes()).hexdigest(),
            "threshold": 0.80, "max_labels_per_child": 1}
     mp = directory / "manifest.json"
@@ -236,11 +233,11 @@ def publish(s3_root: Path, built: Path, cfg: dict, tenant: str, version: str,
         mid = model_id or "acme_test_model"
         manifest["acceptance_model_id"] = mid
         if model_dir is not None:
-            pkl = model_dir / "frozen_model.pkl"
+            pkl = model_dir / "frozen_model.skops"
             manifest["acceptance_model_sha256"] = hashlib.sha256(pkl.read_bytes()).hexdigest()
             dest = s3_root / "taxonomy" / "models" / mid
             dest.mkdir(parents=True, exist_ok=True)
-            for f in ("manifest.json", "frozen_model.pkl"):
+            for f in ("manifest.json", "frozen_model.skops"):
                 shutil.copy(model_dir / f, dest / f)
     raw = json.dumps(manifest, indent=2).encode()
     (folder / "manifest.json").write_bytes(raw)

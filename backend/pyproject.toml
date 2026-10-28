@@ -81,8 +81,6 @@ pyjwt = "^2.10.1"
 mistral_common = {version = "1.8.8", extras = ["sentencepiece"]}
 google-cloud-storage = "^3.8.0"
 authlib = ">=1.6.9"
-# The taxonomy classifier, kept in this repository (topic labels, discover and propose jobs)
-airweave-taxonomy-classifier = { path = "packages/taxonomy-classifier" }
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

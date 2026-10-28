@@ -1,8 +1,0 @@
-{"type": "object", "additionalProperties": false,
- "required": ["coherent", "fits_existing", "existing_category_id", "new_category_name", "description", "scope", "confidence", "reason"],
- "properties": {
-  "coherent": {"type": "boolean"}, "fits_existing": {"type": "boolean"},
-  "existing_category_id": {"type": ["string", "null"]}, "new_category_name": {"type": ["string", "null"]},
-  "description": {"type": "string"},
-  "scope": {"type": "string", "enum": ["GLOBAL", "INDUSTRY", "COMPANY", "NONE"]},
-  "confidence": {"type": "number"}, "reason": {"type": "string"}}}

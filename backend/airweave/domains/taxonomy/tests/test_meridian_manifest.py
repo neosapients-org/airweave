@@ -168,9 +168,9 @@ class TestLearned:
         write_model(source, 0.9, model_id="sec_b_hgb_d3")
         dest = tmp_path / "s3/taxonomy/models/sec_b_hgb_d3"  # operator-managed, outside versions
         dest.mkdir(parents=True)
-        for name in ("manifest.json", "frozen_model.pkl"):
+        for name in ("manifest.json", "frozen_model.skops"):
             shutil.copy(source / name, dest / name)
-        return sha((source / "frozen_model.pkl").read_bytes())
+        return sha((source / "frozen_model.skops").read_bytes())
 
     async def test_read_correctly(self, tmp_path, model):
         manifest_sha = meridian_publish(tmp_path / "s3", "learned", "sec_b_hgb_d3", model)

@@ -250,6 +250,17 @@ class TestBuildConfigRollsThePod:
         assert _build_config_argument(args("taxonomyJobsWorker.buildConfig=a: 1")) == (
             "/etc/airweave/taxonomy-build.yaml"
         )
+        profile = "taxonomyJobsWorker.buildProfile=small-corpus"
+        assert _build_config_argument(args(profile)) == "small-corpus"
+        # an inline buildConfig wins over a profile
+        assert _build_config_argument(args(profile, "taxonomyJobsWorker.buildConfig=a: 1")) == (
+            "/etc/airweave/taxonomy-build.yaml"
+        )
+
+    def test_dev_names_a_shipped_profile_and_carries_no_build_settings(self):
+        dev = yaml.safe_load((HELM / "dev-use1-shared1.yaml").read_text())["taxonomyJobsWorker"]
+        assert dev["buildProfile"] == "small-corpus"
+        assert "buildConfig" not in dev
 
     def test_the_scratch_volume_is_mounted_inside_the_taxonomy_volume(self, template):
         assert "TAXONOMY_JOBS_WORK_DIR" not in template

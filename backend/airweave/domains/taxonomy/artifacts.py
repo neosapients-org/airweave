@@ -7,8 +7,8 @@ prefix and that folder's ``manifest.json`` checksum. Everything is verified befo
 - the active file names the same collection, and its version folder lies under its tenant;
 - ``manifest.json`` matches ``manifest_sha256``, and every file it lists matches its sha256;
 - a version whose ``taxonomy.yaml`` names the learned policy gets its model from
-  ``models/<acceptance_model_id>/``, and ``frozen_model.pkl`` must match both the version's
-  ``acceptance_model_sha256`` and the model manifest before anything unpickles it.
+  ``models/<acceptance_model_id>/``, and ``frozen_model.skops`` must match both the version's
+  ``acceptance_model_sha256`` and the model manifest before anything loads it.
 
 Any failure raises :class:`TaxonomyResolutionError`: every chunk of the batch is then ``ERROR``,
 and a learned-policy version is never classified with the calibrated policy instead (C20).
@@ -395,7 +395,7 @@ class TaxonomyResolver:
         except StorageNotFoundError:
             raise TaxonomyResolutionError(f"learned policy, but {base}manifest.json is missing")
         manifest = json.loads(man_raw)
-        model_name = _safe(manifest.get("model_file", "frozen_model.pkl"), "model_file")
+        model_name = _safe(manifest.get("model_file", "frozen_model.skops"), "model_file")
         if manifest.get("model_sha256") != expected_sha:
             raise TaxonomyResolutionError(
                 f"model {model_id}: its manifest's model_sha256 differs from the version's"

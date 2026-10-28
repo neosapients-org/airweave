@@ -1,6 +1,0 @@
-Proposed category: {name}
-Proposed description: {description}
-Distinctive terms of the source cluster: {terms}
-
-Representative member chunks:
-{chunks}

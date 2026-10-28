@@ -320,9 +320,11 @@ taxonomyJobsWorker:
     create: false
     annotations: {}
       # eks.amazonaws.com/role-arn: <role with write on taxonomy/tenants/*/candidates/*>
-  # The classifier package's YAML for discover (taxonomy.example.yaml with the embedding model,
-  # the content-form patterns for the corpus and the reviewer model). Empty: the Deployment
-  # does not start a discover job without it.
+  # The classifier's build settings for discover, as the name of a profile the package ships
+  # (e.g. small-corpus). Empty, with no buildConfig either: the Deployment does not start a
+  # discover job.
+  buildProfile: ''
+  # Or the package's whole YAML, for settings no shipped profile has; it wins over buildProfile.
   buildConfig: ''
   # Extra environment for the pod only
   extraEnv: {}

@@ -236,7 +236,7 @@ class TestLearnedPolicyWithoutPackage:
     async def test_model_manifest_missing(self, tmp_path, s3):
         model = tmp_path / "model"
         model.mkdir()
-        (model / "frozen_model.pkl").write_bytes(b"not a model")
+        (model / "frozen_model.skops").write_bytes(b"not a model")
         (model / "manifest.json").write_text("{}")
         self._learned(tmp_path, s3, model)
         (s3 / "taxonomy/models/acme_hgb/manifest.json").unlink()
@@ -247,7 +247,7 @@ class TestLearnedPolicyWithoutPackage:
     async def test_model_manifest_names_another_file_hash(self, tmp_path, s3):
         model = tmp_path / "model"
         model.mkdir()
-        (model / "frozen_model.pkl").write_bytes(b"not a model")
+        (model / "frozen_model.skops").write_bytes(b"not a model")
         (model / "manifest.json").write_text(json.dumps({"model_sha256": "1" * 64}))
         self._learned(tmp_path, s3, model)
         resolver, _ = _resolver(tmp_path, s3)
@@ -289,25 +289,25 @@ class TestLearnedPolicyWithPackage:
         assert acc["policy"] == "learned"
         assert (
             Path(acc["model_path"]).read_bytes()
-            == (tmp_path / "model/frozen_model.pkl").read_bytes()
+            == (tmp_path / "model/frozen_model.skops").read_bytes()
         )
         assert Path(acc["model_manifest"]).is_file()
 
     async def test_model_file_missing(self, tmp_path, s3):
         self._learned(tmp_path, s3)
-        (s3 / "taxonomy/models/acme_hgb/frozen_model.pkl").unlink()
+        (s3 / "taxonomy/models/acme_hgb/frozen_model.skops").unlink()
         resolver, _ = _resolver(tmp_path, s3)
-        with pytest.raises(TaxonomyResolutionError, match="frozen_model.pkl is missing"):
+        with pytest.raises(TaxonomyResolutionError, match="frozen_model.skops is missing"):
             await resolver.resolve(READABLE)
 
     async def test_model_file_tampered(self, tmp_path, s3):
         self._learned(tmp_path, s3)
-        (s3 / "taxonomy/models/acme_hgb/frozen_model.pkl").write_bytes(b"swapped pickle")
+        (s3 / "taxonomy/models/acme_hgb/frozen_model.skops").write_bytes(b"swapped model")
         resolver, _ = _resolver(tmp_path, s3)
         with pytest.raises(TaxonomyResolutionError, match="does not match its sha256"):
             await resolver.resolve(READABLE)
         assert not (tmp_path / "local/models").exists() or not any(
-            (tmp_path / "local/models").rglob("*.pkl")
+            (tmp_path / "local/models").rglob("*.skops")
         )
 
     async def test_other_feature_schema(self, tmp_path, s3):
