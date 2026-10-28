@@ -1,3 +1,0 @@
-{"type": "object", "additionalProperties": false, "required": ["assignments"],
- "properties": {"assignments": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["category_id", "family_id", "reason"],
-   "properties": {"category_id": {"type": "string"}, "family_id": {"type": "string"}, "reason": {"type": "string"}}}}}}

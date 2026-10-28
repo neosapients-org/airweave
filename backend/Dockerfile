@@ -1,3 +1,8 @@
+# The taxonomy classifier is not part of this repository. ops/build-and-push.sh fetches it and
+# passes it as the `classifier` build context; a build without one uses this empty stage and
+# produces an image with no classifier (TAXONOMY_ENABLED=true then refuses to start).
+FROM scratch AS classifier
+
 FROM python:3.13.12-slim@sha256:8bc60ca09afaa8ea0d6d1220bde073bacfedd66a4bf8129cbdc8ef0e16c8a952
 
 WORKDIR /app
@@ -21,14 +26,23 @@ RUN poetry config virtualenvs.create false \
     && poetry config virtualenvs.in-project false \
     && poetry config cache-dir /opt/poetry-cache
 
-# Copy poetry files first for better layer caching; the taxonomy classifier is a path
-# dependency, so its folder is installed with the rest
+# Copy poetry files first for better layer caching
 COPY pyproject.toml poetry.lock ./
-COPY packages ./packages
 
 # Install dependencies with cache mount
 RUN --mount=type=cache,target=/opt/poetry-cache \
     poetry install --only=main --no-interaction --no-ansi --no-root
+
+# The taxonomy classifier (the discover and propose jobs run this image too). Its dependencies, including the
+# build extra's, are locked in poetry.lock; the package goes in with --no-deps, and the requirements check fails the
+# build if the lock and the package's ranges disagree.
+# Mounted, not copied, so its source never becomes a layer; skipped when no classifier was given.
+RUN --mount=type=bind,from=classifier,target=/tmp/neo-taxonomy-classifier,rw \
+    --mount=type=bind,source=scripts/check_classifier_requirements.py,target=/tmp/check_classifier_requirements.py \
+    if [ -f /tmp/neo-taxonomy-classifier/pyproject.toml ]; then \
+      pip install --no-cache-dir --no-deps /tmp/neo-taxonomy-classifier \
+      && python /tmp/check_classifier_requirements.py; \
+    fi
 
 # Copy entrypoint script with proper permissions
 COPY --chmod=755 entrypoint.sh /app/entrypoint.sh

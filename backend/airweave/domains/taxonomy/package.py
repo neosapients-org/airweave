@@ -1,10 +1,10 @@
 """The classifier package Airweave calls, checked when a process starts, not at its first sync.
 
-``taxonomy_classifier`` (distribution ``airweave-taxonomy-classifier``) lives in
-``backend/packages/taxonomy-classifier`` and is a path dependency in the lock file, so the image
-always has it; every import of it is lazy. The check still guards a process installed some other
-way: without it, ``TAXONOMY_ENABLED=true`` and no package would boot and serve, and fail only at
-its first labelled chunk. These lists are the interface Airweave uses, by module and name.
+``taxonomy_classifier`` (distribution ``neo-taxonomy-classifier``) is proprietary and not part of
+this repository: ``ops/build-and-push.sh`` installs it into the image from a private source, and
+an image built without it has no classifier. Every import of it is lazy. Without this check,
+``TAXONOMY_ENABLED=true`` and no package would boot and serve, and fail only at its first
+labelled chunk. These lists are the interface Airweave uses, by module and name.
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ SYNC_INTERFACE: Mapping[str, Sequence[str]] = {
 JOBS_INTERFACE: Mapping[str, Sequence[str]] = {
     "taxonomy_classifier": ("TaxonomyEngine", "LocalTaxonomyStore"),
     "taxonomy_classifier.taxonomy.artifacts": ("load",),
+    "taxonomy_classifier.profiles": ("path",),
 }
 
 
@@ -50,5 +51,5 @@ def require_classifier_package(*interfaces: Mapping[str, Sequence[str]]) -> None
     if missing:
         raise ClassifierPackageMissing(
             "TAXONOMY_ENABLED is true but the taxonomy classifier package "
-            "(airweave-taxonomy-classifier) is not installed or lacks: " + ", ".join(missing)
+            "(neo-taxonomy-classifier) is not installed or lacks: " + ", ".join(missing)
         )

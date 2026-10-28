@@ -87,6 +87,8 @@ spec:
           command: ["python", "-m", "airweave.domains.taxonomy.jobs.worker"]
           {{- if .Values.taxonomyJobsWorker.buildConfig }}
           args: ["/etc/airweave/taxonomy-build.yaml"]
+          {{- else if .Values.taxonomyJobsWorker.buildProfile }}
+          args: [{{ .Values.taxonomyJobsWorker.buildProfile | quote }}]
           {{- end }}
           envFrom:
             - configMapRef:

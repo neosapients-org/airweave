@@ -1,9 +1,0 @@
-Residual cluster: {cluster_id}
-Members: {member_count} chunks from {document_count} documents of {company_count} source groups ({company_distribution})
-Most distinctive terms: {top_terms}
-
-Most similar existing categories (id | name | description):
-{candidates}
-
-Representative chunks:
-{chunks}

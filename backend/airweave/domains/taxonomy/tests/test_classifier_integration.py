@@ -83,8 +83,8 @@ def world(tmp_path_factory):
     first = sorted(pub["neo-acme"].registry["categories"])[0]
     pub["neo-acme-partial"] = publish(s3, acme, acme_cfg, "acme", "acme-2026.10-p", ["neo-acme-partial"],
                                       drop_categories=[first])
-    (s3 / "taxonomy/models/acme_gone/frozen_model.pkl").unlink()
-    (s3 / "taxonomy/models/acme_swapped/frozen_model.pkl").write_bytes(b"not the verified model")
+    (s3 / "taxonomy/models/acme_gone/frozen_model.skops").unlink()
+    (s3 / "taxonomy/models/acme_swapped/frozen_model.skops").write_bytes(b"not the verified model")
     return {"tmp": tmp, "s3": s3, "pub": pub, "dropped": first}
 
 

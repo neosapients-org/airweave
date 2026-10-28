@@ -5,11 +5,13 @@ on:
     branches: ["main"]
     paths:
       - "backend/**"
+      - "ops/classifier-ref"
       - ".github/workflows/unit-tests.yml"
   pull_request:
     branches: ["main"]
     paths:
       - "backend/**"
+      - "ops/classifier-ref"
       - ".github/workflows/unit-tests.yml"
 
 permissions:
@@ -52,6 +54,40 @@ jobs:
 
       - name: Install project
         run: poetry install --no-interaction
+
+      # The classifier lives in a private repository. At the commit pinned in ops/classifier-ref it is installed
+      # (its dependencies are already locked) so the tests that exercise the contract with it run here instead of
+      # skipping. It goes into the runner's temp folder, never into backend/.venv, because that folder is saved by
+      # the venv cache step and the cache must only ever hold the locked public dependencies.
+      # Needs a read-only token for that repository in NEO_PLATFORM_READ_TOKEN; without it the step warns and
+      # those tests skip. The unit-test step runs with --tb=line and no live log while the classifier is installed, so a red
+      # build does not print the private package's source into a public log.
+      - name: Install the taxonomy classifier (pinned commit)
+        env:
+          NEO_PLATFORM_READ_TOKEN: ${{ secrets.NEO_PLATFORM_READ_TOKEN }}
+        run: |
+          if [ -z "${NEO_PLATFORM_READ_TOKEN}" ]; then
+            echo "::warning::NEO_PLATFORM_READ_TOKEN is not set: the classifier contract tests will skip"
+            exit 0
+          fi
+          ref="$(grep -v '^#' ../ops/classifier-ref | tr -d '[:space:]')"
+          src="$(mktemp -d)"
+          auth="$(printf 'x-access-token:%s' "${NEO_PLATFORM_READ_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${auth}"
+          git -C "${src}" init -q
+          git -C "${src}" remote add origin https://github.com/neosapients-org/neo-platform.git
+          git -C "${src}" sparse-checkout set --no-cone "/packages/python/neo-taxonomy-classifier/"
+          git -C "${src}" -c "http.extraheader=Authorization: Basic ${auth}" fetch -q --depth 1 --filter=blob:none origin "${ref}"
+          git -C "${src}" checkout -q FETCH_HEAD
+          target="${RUNNER_TEMP}/classifier"
+          poetry run pip install --no-deps --target "${target}" "${src}/packages/python/neo-taxonomy-classifier"
+          echo "PYTHONPATH=${target}" >> "${GITHUB_ENV}"
+          # This repository's Actions logs are public: a failure inside the package must not print its source.
+          # --tb=line shows only file, line and message; log_cli=false stops the live log, whose formatter prints
+          # a logged exception's traceback with source lines. Applies to the unit-test step below (the live
+          # storage step sets its own options and never imports the classifier).
+          echo "PYTEST_ADDOPTS=--tb=line -o log_cli=false" >> "${GITHUB_ENV}"
+          PYTHONPATH="${target}" poetry run python scripts/check_classifier_requirements.py
 
       - name: Write coverage config
         run: |

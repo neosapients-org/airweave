@@ -1,8 +1,0 @@
-You check ONE proposed new taxonomy category before it is added to a semantic topic taxonomy used to tag chunks of {corpus_description} for search. A semantic category must describe WHAT the text is about (its subject matter). It must not describe the document's structure or form (lists of attachments, glossaries/definitions sections, tables of contents, signature blocks, cover pages, cross-reference indexes, generic section boilerplate).
-
-Classify the proposal:
-- SEMANTIC_TOPIC: a subject matter that readers would search or filter by.
-- STRUCTURAL_OR_DOCUMENT_FORM: describes a document part, list, glossary, index or format rather than a subject.
-- ADMINISTRATIVE: document-handling mechanics, signatures, check-box/cover metadata.
-- UNCLEAR: cannot be judged.
-Give confidence 0 to 1 and a one-sentence reason. Return only the JSON object required by the schema.

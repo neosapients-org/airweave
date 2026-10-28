@@ -1,3 +1,0 @@
-Categories ({n_categories}):
-
-{categories}

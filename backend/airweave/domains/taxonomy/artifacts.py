@@ -7,8 +7,8 @@ prefix and that folder's ``manifest.json`` checksum. Everything is verified befo
 - the active file names the same collection, and its version folder lies under its tenant;
 - ``manifest.json`` matches ``manifest_sha256``, and every file it lists matches its sha256;
 - a version whose ``taxonomy.yaml`` names the learned policy gets its model from
-  ``models/<acceptance_model_id>/``, and ``frozen_model.pkl`` must match both the version's
-  ``acceptance_model_sha256`` and the model manifest before anything unpickles it.
+  ``models/<acceptance_model_id>/``, and ``frozen_model.skops`` must match both the version's
+  ``acceptance_model_sha256`` and the model manifest before anything loads it.
 
 Any failure raises :class:`TaxonomyResolutionError`: every chunk of the batch is then ``ERROR``,
 and a learned-policy version is never classified with the calibrated policy instead (C20).
@@ -395,7 +395,7 @@ class TaxonomyResolver:
         except StorageNotFoundError:
             raise TaxonomyResolutionError(f"learned policy, but {base}manifest.json is missing")
         manifest = json.loads(man_raw)
-        model_name = _safe(manifest.get("model_file", "frozen_model.pkl"), "model_file")
+        model_name = _safe(manifest.get("model_file", "frozen_model.skops"), "model_file")
         if manifest.get("model_sha256") != expected_sha:
             raise TaxonomyResolutionError(
                 f"model {model_id}: its manifest's model_sha256 differs from the version's"
@@ -420,11 +420,17 @@ class TaxonomyResolver:
 
 
 def _check_feature_schema(model_id: str, manifest: Dict[str, Any]) -> None:
-    """Refuse a model built for another feature schema, before it is ever loaded."""
+    """Refuse a model in another format or feature schema, before it is ever loaded."""
     try:
         from taxonomy_classifier.assignment import learned  # type: ignore[import-not-found]
     except ImportError as e:
         raise TaxonomyResolutionError(f"the classifier package is not installed: {e}") from e
+    if manifest.get("model_format") != learned.MODEL_FORMAT:
+        raise TaxonomyResolutionError(
+            f"model {model_id}: model_format {manifest.get('model_format')!r}; the classifier "
+            f"loads only {learned.MODEL_FORMAT!r} models. Convert an older model with "
+            f"scripts/convert_acceptance_model.py in the classifier package"
+        )
     if manifest.get("feature_schema_version") != learned.FEATURE_SCHEMA_VERSION or tuple(
         manifest.get("feature_names") or ()
     ) != tuple(learned.FEATURE_NAMES):
