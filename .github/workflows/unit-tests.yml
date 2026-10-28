@@ -60,8 +60,8 @@ jobs:
       # skipping. It goes into the runner's temp folder, never into backend/.venv, because that folder is saved by
       # the venv cache step and the cache must only ever hold the locked public dependencies.
       # Needs a read-only token for that repository in NEO_PLATFORM_READ_TOKEN; without it the step warns and
-      # those tests skip. The pytest steps run with --tb=line while the classifier is installed, so a red build does not
-      # print the private package's source into a public log.
+      # those tests skip. The unit-test step runs with --tb=line and no live log while the classifier is installed, so a red
+      # build does not print the private package's source into a public log.
       - name: Install the taxonomy classifier (pinned commit)
         env:
           NEO_PLATFORM_READ_TOKEN: ${{ secrets.NEO_PLATFORM_READ_TOKEN }}
@@ -82,9 +82,11 @@ jobs:
           target="${RUNNER_TEMP}/classifier"
           poetry run pip install --no-deps --target "${target}" "${src}/packages/python/neo-taxonomy-classifier"
           echo "PYTHONPATH=${target}" >> "${GITHUB_ENV}"
-          # This repository's Actions logs are public: a failure inside the package must not print its source
-          # (--tb=line shows only file, line and message), here and in the pytest steps below.
-          echo "PYTEST_ADDOPTS=--tb=line" >> "${GITHUB_ENV}"
+          # This repository's Actions logs are public: a failure inside the package must not print its source.
+          # --tb=line shows only file, line and message; log_cli=false stops the live log, whose formatter prints
+          # a logged exception's traceback with source lines. Applies to the unit-test step below (the live
+          # storage step sets its own options and never imports the classifier).
+          echo "PYTEST_ADDOPTS=--tb=line -o log_cli=false" >> "${GITHUB_ENV}"
           PYTHONPATH="${target}" poetry run python scripts/check_classifier_requirements.py
 
       - name: Write coverage config
