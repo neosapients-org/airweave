@@ -15,15 +15,6 @@ from airweave.domains.taxonomy.tests.test_artifacts import Clock, CountingBacken
 A, B, WS_A, WS_B, VERSION = "t-acme", "t-other", "ws-a", "ws-b", "v1"
 
 
-def test_derivation_matches_the_typescript_original():
-
-    import hashlib
-
-    want = "neo-" + hashlib.sha256(b"6:t-acme:4:ws-a").hexdigest()[:48]
-    assert derive_collection_id(A, WS_A) == want
-    assert derive_collection_id("a:b", "c") != derive_collection_id("a", "b:c")
-
-
 def _resolver(tmp_path, s3, require=False):
     return TaxonomyResolver(CountingBackend(s3), "taxonomy/", tmp_path / "local", 300, Clock(),
                             require_collection_binding=require)
@@ -44,7 +35,6 @@ def s3(tmp_path):
     for tenant in (A, B):
         built, cfg = _fake_build(tmp_path / tenant)
         pub = publish(root, built, cfg, tenant, VERSION)
-        setattr(root, "_x", None) if False else None
         (tmp_path / f"sha-{tenant}").write_text(pub.manifest_sha256)
     (root / "taxonomy" / "active").mkdir(parents=True, exist_ok=True)
     return root
@@ -68,19 +58,14 @@ class TestBinding:
             await _resolver(tmp_path, s3).resolve(rid)
         assert not (tmp_path / "local" / B).exists()   # nothing of B was downloaded
 
-    async def test_t2_consistent_replacement_is_refused_even_when_hashes_agree(self, tmp_path, s3):
-        rid = derive_collection_id(A, WS_A)
-        _pointer(s3, rid, B, VERSION, _sha(tmp_path, B), WS_A)   # B's folder, B's manifest hash, A's workspace
-        with pytest.raises(TaxonomyResolutionError):
-            await _resolver(tmp_path, s3, require=True).resolve(rid)
-
-    async def test_t3_identical_readable_ids_cannot_select_another_tenant(self, tmp_path, s3):
-        # two (tenant, workspace) pairs never share a derived id, so a shared id can only name one tenant
-        assert derive_collection_id(A, WS_A) != derive_collection_id(B, WS_A)
+    @pytest.mark.parametrize("require", [False, True])
+    async def test_t2_t3_consistent_replacement_is_refused_with_or_without_strict_binding(self, tmp_path, s3, require):
+        # B's folder, B's manifest hash, A's workspace: internally consistent, but not A's collection
+        assert derive_collection_id(A, WS_A) != derive_collection_id(B, WS_A)      # two tenants never share a derived id
         rid = derive_collection_id(A, WS_A)
         _pointer(s3, rid, B, VERSION, _sha(tmp_path, B), WS_A)
-        with pytest.raises(TaxonomyResolutionError):
-            await _resolver(tmp_path, s3).resolve(rid)
+        with pytest.raises(TaxonomyResolutionError, match="do not derive"):
+            await _resolver(tmp_path, s3, require=require).resolve(rid)
 
     async def test_t4_missing_tenant_fails_closed(self, tmp_path, s3):
         rid = derive_collection_id(A, WS_A)
@@ -171,4 +156,45 @@ class TestIdentifierShapes:
         body.pop(drop)
         (s3 / "taxonomy" / "active" / f"{rid}.json").write_text(json.dumps(body))
         with pytest.raises(TaxonomyResolutionError):
+            await _resolver(tmp_path, s3, require=True).resolve(rid)
+
+
+class TestMissingWorkspaceWarning:
+    LOGGER = "airweave.domains.taxonomy.artifacts"
+
+    async def test_a_pointer_without_workspace_id_is_accepted_and_reported_once_per_collection(self, tmp_path, s3, caplog):
+        rid = "neo-legacy-1"
+        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A))
+        r = _resolver(tmp_path, s3)
+        with caplog.at_level("WARNING", logger=self.LOGGER):
+            assert (await r.resolve(rid)).tenant_id == A                      # behaviour unchanged: still accepted
+            assert (await r.resolve(rid, fresh=True)).tenant_id == A          # a second read does not log again
+        warned = [m for m in caplog.records if m.name == self.LOGGER and m.levelname == "WARNING"]
+        assert len(warned) == 1 and rid in warned[0].getMessage() and "no workspace_id" in warned[0].getMessage()
+        assert "ws" not in warned[0].getMessage().replace("workspace_id", "")    # nothing but the collection id and the explanation
+
+    async def test_no_warning_when_the_pointer_carries_workspace_id_or_binding_is_required(self, tmp_path, s3, caplog):
+        good = derive_collection_id(A, WS_A)
+        _pointer(s3, good, A, VERSION, _sha(tmp_path, A), WS_A)
+        _pointer(s3, "neo-legacy-2", A, VERSION, _sha(tmp_path, A))
+        with caplog.at_level("WARNING", logger=self.LOGGER):
+            await _resolver(tmp_path, s3).resolve(good)
+            with pytest.raises(TaxonomyResolutionError, match="no workspace_id"):
+                await _resolver(tmp_path, s3, require=True).resolve("neo-legacy-2")
+        assert not [m for m in caplog.records if m.name == self.LOGGER]
+
+
+class TestLegacyCollectionIds:
+    @pytest.mark.parametrize("require", [False, True])
+    async def test_a_neo_meridian_prefix_is_not_an_exemption_from_the_binding_check(self, tmp_path, s3, require):
+        rid = f"neo-meridian-{A}"                                         # legacy per-tenant collection id
+        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), WS_A)           # a pointer that claims a workspace for it
+        with pytest.raises(TaxonomyResolutionError, match="do not derive"):
+            await _resolver(tmp_path, s3, require=require).resolve(rid)
+
+    async def test_a_legacy_collection_without_workspace_id_follows_the_documented_flag_behaviour(self, tmp_path, s3):
+        rid = f"neo-meridian-{A}"
+        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A))
+        assert (await _resolver(tmp_path, s3).resolve(rid)).tenant_id == A
+        with pytest.raises(TaxonomyResolutionError, match="no workspace_id"):
             await _resolver(tmp_path, s3, require=True).resolve(rid)

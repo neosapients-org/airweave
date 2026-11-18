@@ -21,6 +21,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -35,6 +36,8 @@ import yaml  # type: ignore[import-untyped]
 from airweave.domains.storage.exceptions import StorageNotFoundError
 from airweave.domains.storage.protocols import StorageBackend
 from airweave.domains.taxonomy.mapping import RegistryMap, RegistryMapError
+
+logger = logging.getLogger(__name__)
 
 CALIBRATED, LEARNED = "calibrated", "learned"
 
@@ -184,6 +187,8 @@ class TaxonomyResolver:
         written before the field existed working.
         """
         self._require_binding = require_collection_binding
+        # collections already reported as lacking workspace_id (one warning per process)
+        self._warned_unbound: set[str] = set()
         self._max_file = max_file_bytes
         self._max_total = max_total_bytes
         self._storage = storage
@@ -283,8 +288,23 @@ class TaxonomyResolver:
         Runs before anything is loaded. ``readable_id`` is Airweave's own record; the pointer's
         tenant is only a claim. Because the id is a hash of (tenant, workspace), a pointer that
         names another tenant cannot reproduce it.
+
+        Only collections whose id comes from ``deriveCollectionId`` can pass. In Neo Platform's
+        Meridian write paths, taxonomy bindings (and so active pointers) are created only for
+        derived ids: activation targets and the bootstrap check both require them. A legacy
+        ``neo-meridian-<tenantId>`` collection is therefore not expected to have a taxonomy
+        binding or a pointer with a ``workspace_id``; a pointer that carries one for any other
+        collection id is refused, and a ``neo-meridian-`` prefix is not an exemption.
         """
         if workspace is None:
+            if not self._require_binding and readable_id not in self._warned_unbound:
+                self._warned_unbound.add(readable_id)
+                logger.warning(
+                    "taxonomy active pointer for collection %r has no workspace_id: its "
+                    "tenant and workspace could not be checked against the collection id "
+                    "(TAXONOMY_REQUIRE_COLLECTION_BINDING is off, so it is accepted)",
+                    readable_id,
+                )
             if self._require_binding:
                 raise TaxonomyResolutionError(
                     f"active file for {readable_id!r} has no workspace_id: "
