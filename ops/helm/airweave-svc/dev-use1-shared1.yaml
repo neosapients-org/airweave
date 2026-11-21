@@ -124,13 +124,17 @@ vespa:
 
 worker:
   replicaCount: 1
+  # OOM-killed at 3Gi (9 restarts by 2026-11-21): idle ~770Mi, but one large document peaks
+  # near 3Gi while it is chunked and embedded, and every in-flight sync dies with the pod and
+  # is later cancelled as stuck. The request reserves most of that peak, so the scheduler does
+  # not overcommit the node beneath it; the limit leaves headroom above it.
   resources:
     limits:
       cpu: '2'
-      memory: 3Gi
+      memory: 4Gi
     requests:
       cpu: 500m
-      memory: 1Gi
+      memory: 2Gi
 
 # Discover and propose jobs (see values.yaml). Dev runs them under the main service account,
 # whose role already has read and write on the dev bucket; production uses a separate account
