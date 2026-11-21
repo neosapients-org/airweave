@@ -171,7 +171,8 @@ class ConfluencePageEntity(FileEntity):
     body: Optional[str] = AirweaveField(
         None,
         description="Raw HTML body of the page; used to build the downloadable "
-        "file that is converted to markdown for indexing (not embedded directly).",
+        "file that is converted to markdown for indexing (not embedded directly). "
+        "Cleared once that file is saved, so it never travels with the entity's chunks.",
         embeddable=False,
     )
     version: Optional[int] = AirweaveField(
