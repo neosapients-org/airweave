@@ -245,6 +245,12 @@ class ConfluenceSource(BaseSource):
                                 f"Save failed - no local path set for {file_entity.name}"
                             )
 
+                        # The page's content now lives in the saved file, which is what gets
+                        # chunked. Left on the entity, the raw HTML was deep-copied into every
+                        # chunk, so it reached each chunk's sparse embedding, Vespa payload and
+                        # raw-data copy: one large page held ~74 MB in the sync worker.
+                        file_entity.body = None
+
                         self.logger.debug(f"Successfully saved page HTML: {file_entity.name}")
                         yield file_entity
 
