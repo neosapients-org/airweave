@@ -54,9 +54,13 @@ class TestBinding:
     async def test_t1_cross_tenant_pointer_is_refused(self, tmp_path, s3):
         rid = derive_collection_id(A, WS_A)           # tenant A's collection
         _pointer(s3, rid, B, VERSION, _sha(tmp_path, B), WS_B)   # points at tenant B's valid artifacts
+        backend = CountingBackend(s3)
+        r = TaxonomyResolver(backend, "taxonomy/", tmp_path / "local", 300, Clock())
         with pytest.raises(TaxonomyResolutionError, match="do not derive"):
-            await _resolver(tmp_path, s3).resolve(rid)
-        assert not (tmp_path / "local" / B).exists()   # nothing of B was downloaded
+            await r.resolve(rid)
+        # only the pointer was read: no manifest, no artifact, and no local artifact directory
+        assert backend.reads == [f"taxonomy/active/{rid}.json"]
+        assert not (tmp_path / "local").exists()
 
     @pytest.mark.parametrize("require", [False, True])
     async def test_t2_t3_consistent_replacement_is_refused_with_or_without_strict_binding(self, tmp_path, s3, require):
@@ -82,6 +86,21 @@ class TestBinding:
         with pytest.raises(TaxonomyResolutionError, match="no workspace_id"):
             await _resolver(tmp_path, s3, require=True).resolve(rid)
 
+    async def test_strict_mode_rejects_a_missing_workspace_before_reading_anything_else(
+        self, tmp_path, s3
+    ):
+        rid = "neo-legacy-1"
+        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A))
+        backend = CountingBackend(s3)
+        r = TaxonomyResolver(
+            backend, "taxonomy/", tmp_path / "local", 300, Clock(), require_collection_binding=True
+        )
+        with pytest.raises(TaxonomyResolutionError, match="no workspace_id"):
+            await r.resolve(rid)
+        # only the pointer was read: no manifest, no artifact, and no local artifact directory
+        assert backend.reads == [f"taxonomy/active/{rid}.json"]
+        assert not (tmp_path / "local").exists()
+
     async def test_unsafe_workspace_and_stale_cache(self, tmp_path, s3):
         rid = derive_collection_id(A, WS_A)
         _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), "../x")
@@ -92,6 +111,22 @@ class TestBinding:
         with pytest.raises(TaxonomyResolutionError):          # the refusal is cached until the TTL, as other failures are
             await r.resolve(rid)
         assert (await r.resolve(rid, fresh=True)).tenant_id == A
+
+    async def test_a_refusal_clears_after_the_cache_ttl_without_fresh(self, tmp_path, s3):
+        rid = derive_collection_id(A, WS_A)
+        clock = Clock()
+        r = TaxonomyResolver(CountingBackend(s3), "taxonomy/", tmp_path / "local", 300, clock)
+        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), "../x")
+        with pytest.raises(TaxonomyResolutionError):
+            await r.resolve(rid)
+        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), WS_A)
+        clock.now += 299
+        # still inside the TTL: the documented behaviour for any failure
+        with pytest.raises(TaxonomyResolutionError):
+            await r.resolve(rid)
+        clock.now += 2
+        # recovered on the next sync after the TTL
+        assert (await r.resolve(rid)).tenant_id == A
 
 
 class TestMoreCases:
@@ -129,15 +164,49 @@ class TestMoreCases:
 
 
 class TestIdentifierShapes:
-    """Malformed or unexpected identifier values are refused with the resolver's own error, whether or not strict binding is on."""
+    """Identifier values outside the resolver's path-safe contract are refused with its own error, with or without strict binding.
+
+    Two groups, kept apart: malformed values (wrong type, empty, path-unsafe) and valid but
+    unusual ones. The contract is ``is_safe_name`` (ASCII letters, digits, ``._+-``, starting
+    with a letter or digit): a value outside it is refused even though it could be hashed,
+    because tenant ids form storage paths. Production workspace ids are UUIDs or ObjectIds.
+    """
 
     @pytest.mark.parametrize("require", [False, True])
-    @pytest.mark.parametrize("workspace", [5, True, ["ws-a"], {"id": "ws-a"}, "", "wörkspace", "日本", "ws a", "../x", "ws/a"])
-    async def test_unexpected_workspace_values_are_refused(self, tmp_path, s3, workspace, require):
+    @pytest.mark.parametrize(
+        "workspace", [5, True, ["ws-a"], {"id": "ws-a"}, "", "../x", "ws/a", ".hidden"]
+    )
+    async def test_malformed_or_path_unsafe_workspace_values_are_refused(
+        self, tmp_path, s3, workspace, require
+    ):
         rid = derive_collection_id(A, WS_A)
         _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), workspace)
         with pytest.raises(TaxonomyResolutionError):
             await _resolver(tmp_path, s3, require=require).resolve(rid)
+
+    @pytest.mark.parametrize("require", [False, True])
+    @pytest.mark.parametrize("workspace", ["wörkspace", "日本", "ws a", " ws-a"])
+    async def test_valid_but_unusual_workspace_values_outside_the_contract_are_refused(
+        self, tmp_path, s3, workspace, require
+    ):
+        # the id could be derived: refusal is the contract, not a hashing failure
+        rid = derive_collection_id(A, workspace)
+        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), workspace)
+        with pytest.raises(TaxonomyResolutionError, match="unsafe workspace_id"):
+            await _resolver(tmp_path, s3, require=require).resolve(rid)
+
+    @pytest.mark.parametrize("require", [False, True])
+    @pytest.mark.parametrize(
+        "workspace",
+        ["123e4567-e89b-12d3-a456-426614174000", "507F1F77BCF86CD799439011", "ws.a+b_1-2"],
+    )
+    async def test_unusual_but_path_safe_workspace_values_resolve(
+        self, tmp_path, s3, workspace, require
+    ):
+        # UUID, upper-case ObjectId, punctuation
+        rid = derive_collection_id(A, workspace)
+        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), workspace)
+        assert (await _resolver(tmp_path, s3, require=require).resolve(rid)).tenant_id == A
 
     @pytest.mark.parametrize("tenant", ["t-é", "租户", "", 7, None])
     async def test_unexpected_tenant_values_are_refused(self, tmp_path, s3, tenant):
@@ -171,7 +240,9 @@ class TestMissingWorkspaceWarning:
             assert (await r.resolve(rid, fresh=True)).tenant_id == A          # a second read does not log again
         warned = [m for m in caplog.records if m.name == self.LOGGER and m.levelname == "WARNING"]
         assert len(warned) == 1 and rid in warned[0].getMessage() and "no workspace_id" in warned[0].getMessage()
-        assert "ws" not in warned[0].getMessage().replace("workspace_id", "")    # nothing but the collection id and the explanation
+        message = warned[0].getMessage()
+        # no workspace value is logged
+        assert WS_A not in message and WS_B not in message
 
     async def test_no_warning_when_the_pointer_carries_workspace_id_or_binding_is_required(self, tmp_path, s3, caplog):
         good = derive_collection_id(A, WS_A)

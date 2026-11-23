@@ -149,15 +149,23 @@ def derive_collection_id(tenant_id: str, workspace_id: str) -> str:
     sha256 over ``<len>:<tenant>:<len>:<workspace>``, first 48 hex characters, prefixed
     ``neo-``. ``len`` is JavaScript's ``String.length``, UTF-16 code units, so a character
     outside the Basic Multilingual Plane counts 2. Nothing is trimmed, case-folded or
-    normalized. Empty ids raise, as the original does.
+    normalized. An isolated UTF-16 surrogate is hashed as U+FFFD, as Node's encoder does. Empty ids
+    raise, as the original does.
     """
     if not tenant_id or not workspace_id:
         raise ValueError("derive_collection_id requires both tenant_id and workspace_id")
 
     def js_len(value: str) -> int:
-        return len(value.encode("utf-16-le")) // 2
+        # surrogatepass: an isolated surrogate is one UTF-16 code unit, as in JavaScript
+        return len(value.encode("utf-16-le", "surrogatepass")) // 2
 
-    canonical = f"{js_len(tenant_id)}:{tenant_id}:{js_len(workspace_id)}:{workspace_id}"
+    def utf8_text(value: str) -> str:
+        # Node's UTF-8 encoder writes an isolated surrogate as U+FFFD; Python would raise
+        return re.sub("[\ud800-\udfff]", "\ufffd", value)
+
+    tenant_part = f"{js_len(tenant_id)}:{utf8_text(tenant_id)}"
+    workspace_part = f"{js_len(workspace_id)}:{utf8_text(workspace_id)}"
+    canonical = f"{tenant_part}:{workspace_part}"
     return "neo-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:48]
 
 

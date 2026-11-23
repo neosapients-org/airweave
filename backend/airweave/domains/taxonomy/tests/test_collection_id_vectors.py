@@ -45,3 +45,19 @@ def test_matches_the_typescript_original(tenant, workspace, expected):
 
 def test_composed_and_decomposed_characters_are_different_ids():
     assert derive_collection_id("\u00e9", "ws") != derive_collection_id("e\u0301", "ws")
+
+
+@pytest.mark.parametrize(
+    "tenant, workspace, expected",
+    [
+        ("t\ud800", "w", "neo-2ac8df3f0185a41df5edbadd6106c3cf966c35834ddbbdc4"),
+        ("t", "w\udc00", "neo-b2e2263776ff0f4a8d6b342f00f0f3cefb401b025d49e78a"),
+    ],
+)
+def test_an_isolated_surrogate_matches_node(tenant, workspace, expected):
+    """Values produced by the TypeScript original under Node (isolated surrogate hashed as U+FFFD, length 1)."""
+    assert derive_collection_id(tenant, workspace) == expected
+
+
+def test_an_isolated_surrogate_is_the_same_id_as_the_replacement_character():
+    assert derive_collection_id("t\ud800", "w") == derive_collection_id("t\ufffd", "w")
