@@ -11,13 +11,15 @@ image:
   pullPolicy: Always
   tag: "latest"
 
+# Measured 2026-11-23 (kernel memory.peak since 2026-11-21): the API peaks at 765Mi and idles
+# around 650Mi, so a 256Mi request under-reserved it by ~500Mi on an overcommitted node.
 resources:
   limits:
     cpu: 500m
-    memory: 2Gi
+    memory: 1536Mi
   requests:
     cpu: 100m
-    memory: 256Mi
+    memory: 768Mi
 
 autoscaling:
   enabled: false
@@ -124,10 +126,14 @@ vespa:
 
 worker:
   replicaCount: 1
+  # Peak 912Mi (kernel memory.peak, 2026-11-21 to 2026-11-23), across a full re-chunk of every
+  # Confluence connection. It was OOM-killed at 3Gi until Confluence chunks stopped carrying the
+  # page's raw HTML body (#19). 2Gi keeps ~2x headroom for a large Drive file, which that window
+  # did not include.
   resources:
     limits:
       cpu: '2'
-      memory: 3Gi
+      memory: 2Gi
     requests:
       cpu: 500m
       memory: 1Gi
