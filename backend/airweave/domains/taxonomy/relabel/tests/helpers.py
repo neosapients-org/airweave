@@ -36,7 +36,6 @@ REGISTRY = RegistryMap(
     {"CAT001": "acme:credit.loan_quality", "CAT002": "acme:revenue.growth"},
     {"BF01": "acme:credit"},
 )
-from airweave.domains.taxonomy.tests.taxonomy_fixtures import collection_id
 
 
 def taxonomy(version: str = NEW) -> ResolvedTaxonomy:

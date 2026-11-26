@@ -21,7 +21,6 @@ import asyncio
 import copy
 import hashlib
 import json
-import logging
 import os
 import re
 import shutil
@@ -36,8 +35,6 @@ import yaml  # type: ignore[import-untyped]
 from airweave.domains.storage.exceptions import StorageNotFoundError
 from airweave.domains.storage.protocols import StorageBackend
 from airweave.domains.taxonomy.mapping import RegistryMap, RegistryMapError
-
-logger = logging.getLogger(__name__)
 
 CALIBRATED, LEARNED = "calibrated", "learned"
 
@@ -302,7 +299,9 @@ class TaxonomyResolver:
         ``neo-meridian-<tenantId>`` id is refused like any other id that is not derived, and a
         ``neo-meridian-`` prefix is not an exemption.
         """
-        workspace = _safe(workspace, "workspace_id")  # absent, null, empty or malformed: refused
+        if workspace is None:  # absent or explicit null
+            raise TaxonomyResolutionError(f"active file for {readable_id!r}: missing workspace_id")
+        workspace = _safe(workspace, "workspace_id")  # empty or malformed: refused
         if derive_collection_id(tenant, workspace) != readable_id:
             raise TaxonomyResolutionError(
                 f"active file for {readable_id!r}: "

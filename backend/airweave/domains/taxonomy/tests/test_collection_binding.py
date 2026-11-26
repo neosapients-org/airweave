@@ -4,13 +4,17 @@ import json
 
 import pytest
 
+from airweave.core.config import settings
+from airweave.domains.sync_pipeline.processors.taxonomy import TaxonomyProcessor
 from airweave.domains.taxonomy.artifacts import (
     TaxonomyResolutionError,
     TaxonomyResolver,
     derive_collection_id,
 )
+from airweave.domains.taxonomy.metrics import TaxonomyTally
 from airweave.domains.taxonomy.tests.taxonomy_fixtures import publish
 from airweave.domains.taxonomy.tests.test_artifacts import Clock, CountingBackend, _fake_build
+from airweave.domains.taxonomy.tests.test_taxonomy_processor import FakePool, chunks, sync_context
 
 A, B, WS_A, WS_B, VERSION = "t-acme", "t-other", "ws-a", "ws-b", "v1"
 
@@ -100,7 +104,7 @@ class TestBinding:
         _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), workspace)
         backend = CountingBackend(s3)
         r = TaxonomyResolver(backend, "taxonomy/", tmp_path / "local", 300, Clock())
-        with pytest.raises(TaxonomyResolutionError, match="unsafe workspace_id"):
+        with pytest.raises(TaxonomyResolutionError, match="missing workspace_id"):
             await r.resolve(rid)
         # only the pointer was read: no manifest, no artifact, and no local artifact directory
         assert backend.reads == [f"taxonomy/active/{rid}.json"]
@@ -255,3 +259,40 @@ class TestBoundaryValidation:
     def test_derive_collection_id_rejects_non_string_ids_with_value_error(self, tenant, workspace):
         with pytest.raises(ValueError, match="strings"):
             derive_collection_id(tenant, workspace)
+
+
+class TestProcessorOnARefusedPointer:
+    """Rollout behaviour (review of #21): a refused pointer does not fail the sync."""
+
+    @pytest.mark.parametrize("workspace", ["__absent__", None])
+    async def test_chunks_are_written_as_error_and_stay_so_after_the_pointer_is_fixed(
+        self, tmp_path, s3, monkeypatch, workspace
+    ):
+        monkeypatch.setattr(settings, "TAXONOMY_ENABLED", True)
+        rid = derive_collection_id(A, WS_A)
+        sha = _sha(tmp_path, A)
+        _pointer(s3, rid, A, VERSION, sha, workspace)  # a pointer written before workspace_id
+        batch, ctx = chunks(), sync_context(readable=rid)
+        out = await TaxonomyProcessor(_resolver(tmp_path, s3), FakePool(), 5.0, TaxonomyTally()).process(
+            batch, ctx
+        )
+        assert out is batch  # the sync carries on with the chunks
+        assert [c.taxonomy_status for c in batch] == ["ERROR"] * 3
+        errors = [call.args[0] for call in ctx.logger.error.call_args_list]
+        assert any("taxonomy unusable" in m and "missing workspace_id" in m for m in errors)
+        assert any("ERROR passed 1%" in m for m in errors)  # the sync's only visible alarm
+
+        # Rewriting the pointer repairs later reads only: the processor keeps no state, so chunks
+        # already persisted as ERROR change only when their documents sync again or a re-label runs.
+        _pointer(s3, rid, A, VERSION, sha, WS_A)
+        assert (await _resolver(tmp_path, s3).resolve(rid)).tenant_id == A
+        assert [c.taxonomy_status for c in batch] == ["ERROR"] * 3
+
+    async def test_an_absent_pointer_is_not_an_error(self, tmp_path, s3, monkeypatch):
+        monkeypatch.setattr(settings, "TAXONOMY_ENABLED", True)
+        rid = derive_collection_id(A, WS_A)  # no pointer written
+        batch = chunks()
+        await TaxonomyProcessor(_resolver(tmp_path, s3), FakePool(), 5.0, TaxonomyTally()).process(
+            batch, sync_context(readable=rid)
+        )
+        assert [c.taxonomy_status for c in batch] == ["NOT_LABELLED"] * 3

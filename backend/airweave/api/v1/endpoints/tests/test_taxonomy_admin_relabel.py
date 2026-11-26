@@ -454,6 +454,72 @@ class TestTaxonomyJobEndpoints:
             await self.propose(self.svc())
         assert e.value.status_code == 409 and "checksum mismatch" in e.value.detail["message"]
 
+    async def test_discover_of_a_first_version_takes_the_named_tenant(self, monkeypatch):
+        # No active pointer at all: the established first-discovery fallback.
+        self.container(monkeypatch, self.resolver("none"))
+        out = await self.discover(self.svc(), tenant_id="t-first")
+        assert out["kind"] == "discover" and out["state"] == "PENDING"
+
+    async def test_discover_with_a_valid_pointer_refuses_another_tenant(self, monkeypatch):
+        self.container(monkeypatch, self.resolver())  # the pointer names t-acme
+        with pytest.raises(HTTPException) as e:
+            await self.discover(self.svc(), tenant_id="t-other")
+        assert e.value.status_code == 409 and e.value.detail["code"] == "tenant_conflict"
+        out = await self.discover(self.svc(), tenant_id="t-acme")
+        assert out["state"] == "PENDING"
+
+    @pytest.mark.parametrize(
+        "why",
+        [
+            "active file for 'neo-x': missing workspace_id",
+            "active file for 'neo-x': tenant and workspace do not derive this collection",
+            "checksum mismatch",
+        ],
+    )
+    async def test_discover_with_an_unusable_pointer_is_409_not_a_first_version(
+        self, monkeypatch, why
+    ):
+        from airweave.domains.taxonomy.artifacts import TaxonomyResolutionError
+
+        self.container(monkeypatch, self.resolver(TaxonomyResolutionError(why)))
+        svc = self.svc()
+        with pytest.raises(HTTPException) as e:
+            await self.discover(svc, tenant_id="t-caller-chosen")
+        assert e.value.status_code == 409
+        assert e.value.detail["code"] == "taxonomy_unusable" and why in e.value.detail["message"]
+        assert svc._repo.jobs == {}  # no job was created
+
+    @pytest.mark.parametrize("workspace", ["__absent__", None, "ws-other"])
+    async def test_discover_over_a_real_binding_failure_never_reaches_the_tenant_choice(
+        self, monkeypatch, tmp_path, workspace
+    ):
+        # The real resolver reading a stored pointer that is not bound to this collection.
+        import json
+
+        from airweave.domains.taxonomy.artifacts import TaxonomyResolver
+        from airweave.domains.taxonomy.tests.test_artifacts import Clock, CountingBackend
+
+        root = tmp_path / "s3"
+        (root / "taxonomy" / "active").mkdir(parents=True)
+        body = {
+            "collection_readable_id": "neo-acme",
+            "tenant_id": "t-acme",
+            "taxonomy_version": "v1",
+            "version_prefix": "taxonomy/tenants/t-acme/versions/v1/",
+            "manifest_sha256": "a" * 64,
+            "generation": 1,
+        }
+        if workspace != "__absent__":
+            body["workspace_id"] = workspace
+        (root / "taxonomy" / "active" / "neo-acme.json").write_text(json.dumps(body))
+        resolver = TaxonomyResolver(
+            CountingBackend(root), "taxonomy/", tmp_path / "local", 300, Clock()
+        )
+        self.container(monkeypatch, resolver)
+        with pytest.raises(HTTPException) as e:
+            await self.discover(self.svc(), tenant_id="t-caller-chosen")
+        assert e.value.status_code == 409 and e.value.detail["code"] == "taxonomy_unusable"
+
     @pytest.mark.parametrize("call", ["discover", "propose", "get", "cancel"])
     async def test_admin_permission_is_required(self, call, monkeypatch):
         self.container(monkeypatch, self.resolver())
