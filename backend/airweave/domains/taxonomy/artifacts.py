@@ -21,6 +21,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -35,6 +36,8 @@ import yaml  # type: ignore[import-untyped]
 from airweave.domains.storage.exceptions import StorageNotFoundError
 from airweave.domains.storage.protocols import StorageBackend
 from airweave.domains.taxonomy.mapping import RegistryMap, RegistryMapError
+
+logger = logging.getLogger(__name__)
 
 CALIBRATED, LEARNED = "calibrated", "learned"
 
@@ -139,6 +142,33 @@ def _safe(name: Any, what: str) -> str:
     return name
 
 
+def derive_collection_id(tenant_id: str, workspace_id: str) -> str:
+    """Neo's collection ``readable_id`` for a tenant and workspace.
+
+    Reproduces ``deriveCollectionId`` (packages/backend/security/src/collection-id.ts) exactly:
+    sha256 over ``<len>:<tenant>:<len>:<workspace>``, first 48 hex characters, prefixed
+    ``neo-``. ``len`` is JavaScript's ``String.length``, UTF-16 code units, so a character
+    outside the Basic Multilingual Plane counts 2. Nothing is trimmed, case-folded or
+    normalized. An isolated UTF-16 surrogate is hashed as U+FFFD, as Node's encoder does. Empty ids
+    raise, as the original does.
+    """
+    if not tenant_id or not workspace_id:
+        raise ValueError("derive_collection_id requires both tenant_id and workspace_id")
+
+    def js_len(value: str) -> int:
+        # surrogatepass: an isolated surrogate is one UTF-16 code unit, as in JavaScript
+        return len(value.encode("utf-16-le", "surrogatepass")) // 2
+
+    def utf8_text(value: str) -> str:
+        # Node's UTF-8 encoder writes an isolated surrogate as U+FFFD; Python would raise
+        return re.sub("[\ud800-\udfff]", "\ufffd", value)
+
+    tenant_part = f"{js_len(tenant_id)}:{utf8_text(tenant_id)}"
+    workspace_part = f"{js_len(workspace_id)}:{utf8_text(workspace_id)}"
+    canonical = f"{tenant_part}:{workspace_part}"
+    return "neo-" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:48]
+
+
 class TaxonomyResolver:
     """Reads active files and version folders from the taxonomy bucket, verified and cached."""
 
@@ -151,12 +181,22 @@ class TaxonomyResolver:
         clock: Callable[[], float] = time.monotonic,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
         max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
+        require_collection_binding: bool = False,
     ) -> None:
         """Initialize with the bucket's storage (None: no bucket configured) and local paths.
 
         ``max_file_bytes`` and ``max_total_bytes`` bound one artifact file and one version's
         files together (a manifest that declares more is refused before any download).
+
+        ``require_collection_binding``: an active file that carries ``workspace_id`` is always
+        checked (``derive_collection_id(tenant_id, workspace_id)`` must equal the collection's
+        ``readable_id``, which comes from Airweave's own database and commits to the tenant).
+        True also refuses an active file without ``workspace_id``; False (default) keeps pointers
+        written before the field existed working.
         """
+        self._require_binding = require_collection_binding
+        # collections already reported as lacking workspace_id (one warning per process)
+        self._warned_unbound: set[str] = set()
         self._max_file = max_file_bytes
         self._max_total = max_total_bytes
         self._storage = storage
@@ -216,6 +256,7 @@ class TaxonomyResolver:
                 f"{active.get('collection_readable_id')!r}"
             )
         tenant = _safe(active.get("tenant_id"), "tenant_id")
+        self._check_collection_binding(readable_id, tenant, active.get("workspace_id"))
         version = self._labelling_version(active)
         serving = active.get("serving_version")
         serving = _safe(serving, "serving_version") if serving is not None else None
@@ -248,6 +289,42 @@ class TaxonomyResolver:
             serving_version=serving,
             migration_id=migration_id,
         )
+
+    def _check_collection_binding(self, readable_id: str, tenant: str, workspace: Any) -> None:
+        """Require the pointer's tenant to be the one the collection's id was derived from.
+
+        Runs before anything is loaded. ``readable_id`` is Airweave's own record; the pointer's
+        tenant is only a claim. Because the id is a hash of (tenant, workspace), a pointer that
+        names another tenant cannot reproduce it.
+
+        Only collections whose id comes from ``deriveCollectionId`` can pass. In Neo Platform's
+        Meridian write paths, taxonomy bindings (and so active pointers) are created only for
+        derived ids: activation targets and the bootstrap check both require them. A legacy
+        ``neo-meridian-<tenantId>`` collection is therefore not expected to have a taxonomy
+        binding or a pointer with a ``workspace_id``; a pointer that carries one for any other
+        collection id is refused, and a ``neo-meridian-`` prefix is not an exemption.
+        """
+        if workspace is None:
+            if not self._require_binding and readable_id not in self._warned_unbound:
+                self._warned_unbound.add(readable_id)
+                logger.warning(
+                    "taxonomy active pointer for collection %r has no workspace_id: its "
+                    "tenant and workspace could not be checked against the collection id "
+                    "(TAXONOMY_REQUIRE_COLLECTION_BINDING is off, so it is accepted)",
+                    readable_id,
+                )
+            if self._require_binding:
+                raise TaxonomyResolutionError(
+                    f"active file for {readable_id!r} has no workspace_id: "
+                    "its tenant cannot be bound to the collection"
+                )
+            return
+        workspace = _safe(workspace, "workspace_id")
+        if derive_collection_id(tenant, workspace) != readable_id:
+            raise TaxonomyResolutionError(
+                f"active file for {readable_id!r}: "
+                "tenant and workspace do not derive this collection"
+            )
 
     @staticmethod
     def _labelling_version(active: Dict[str, Any]) -> str:

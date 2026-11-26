@@ -14,12 +14,13 @@ def _package(monkeypatch):
     stub_classifier_package(monkeypatch)
 
 
-def _settings(enabled: bool, bucket: str = ""):
+def _settings(enabled: bool, bucket: str = "", require_binding: bool = False):
     return SimpleNamespace(
         TAXONOMY_ENABLED=enabled,
         TAXONOMY_S3_BUCKET=bucket,
         TAXONOMY_DATA_DIR="/tmp/none",
         TAXONOMY_CLASSIFY_THREADS=2,
+        TAXONOMY_REQUIRE_COLLECTION_BINDING=require_binding,
     )
 
 
@@ -56,3 +57,8 @@ def test_processor_close_closes_the_pool():
     processor._pool.close = lambda: closed.append(True)
     processor.close()
     assert closed == [True]
+
+
+def test_collection_binding_follows_the_setting():
+    assert _create_taxonomy_processor(_settings(True)).resolver._require_binding is False
+    assert _create_taxonomy_processor(_settings(True, require_binding=True)).resolver._require_binding is True

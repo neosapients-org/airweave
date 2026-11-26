@@ -1423,6 +1423,7 @@ def _create_taxonomy_processor(
         active_cache_seconds=limits.ACTIVE_CACHE_SECONDS,
         max_file_bytes=limits.ARTIFACT_MAX_MB * 1024 * 1024,
         max_total_bytes=limits.ARTIFACT_TOTAL_MAX_MB * 1024 * 1024,
+        require_collection_binding=settings.TAXONOMY_REQUIRE_COLLECTION_BINDING,
     )
     pool = ClassifierPool(
         threads=settings.TAXONOMY_CLASSIFY_THREADS,
