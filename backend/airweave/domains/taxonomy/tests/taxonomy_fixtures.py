@@ -23,6 +23,8 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 import yaml
 
+from airweave.domains.taxonomy.artifacts import derive_collection_id
+
 DIM = 64
 
 # Two invented tenants with three topics each
@@ -247,13 +249,29 @@ def publish(s3_root: Path, built: Path, cfg: dict, tenant: str, version: str,
     return Published(tenant, version, sha, registry)
 
 
+WORKSPACE = "ws-1"  # the workspace a fixture pointer names unless the collection came from collection_id()
+_WORKSPACE_OF: dict = {}
+
+
+def collection_id(name: str) -> str:
+    """A derived collection id for a logical test name such as ``neo-acme-learned``.
+
+    The tenant is the name's second word and the workspace is the name itself, so every named
+    collection has its own id that the resolver's tenant binding accepts.
+    """
+    rid = derive_collection_id(name.split("-")[1], name)
+    _WORKSPACE_OF[rid] = name
+    return rid
+
+
 def activate(s3_root: Path, readable_id: str, tenant: str, version: str, manifest_sha: str,
-             generation: int = 1) -> None:
+             generation: int = 1, workspace_id: Optional[str] = None) -> None:
     """Write a collection's active-version file (contract 8)."""
+    workspace_id = workspace_id or _WORKSPACE_OF.get(readable_id, WORKSPACE)
     active = s3_root / "taxonomy" / "active"
     active.mkdir(parents=True, exist_ok=True)
     (active / f"{readable_id}.json").write_text(json.dumps({
-        "collection_readable_id": readable_id, "tenant_id": tenant, "taxonomy_version": version,
-        "version_prefix": f"taxonomy/tenants/{tenant}/versions/{version}/",
+        "collection_readable_id": readable_id, "tenant_id": tenant, "workspace_id": workspace_id,
+        "taxonomy_version": version, "version_prefix": f"taxonomy/tenants/{tenant}/versions/{version}/",
         "manifest_sha256": manifest_sha, "generation": generation,
         "updated_at": "2026-10-15T00:00:00Z"}))

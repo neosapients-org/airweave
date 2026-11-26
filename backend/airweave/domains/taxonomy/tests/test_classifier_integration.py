@@ -34,6 +34,7 @@ from airweave.domains.taxonomy.artifacts import TaxonomyResolver  # noqa: E402
 from airweave.domains.taxonomy.classifier_pool import ClassifierPool  # noqa: E402
 from airweave.domains.taxonomy.metrics import TaxonomyTally  # noqa: E402
 from airweave.domains.taxonomy.tests.taxonomy_fixtures import (  # noqa: E402
+    collection_id,
     CORPORA,
     DIM,
     BowEmbeddings,
@@ -67,21 +68,21 @@ def world(tmp_path_factory):
     write_model(strict, 0.75, model_id="acme_strict")
     write_model(tmp / "model-schema", 0.9, schema="learned-acceptance-features/0", model_id="old")
     pub = {
-        "neo-acme": publish(s3, acme, acme_cfg, "acme", "acme-2026.10", ["neo-acme"]),
-        "neo-globex": publish(s3, globex, globex_cfg, "globex", "globex-2026.10", ["neo-globex"]),
-        "neo-acme-learned": publish(s3, acme, acme_cfg, "acme", "acme-2026.10-l", ["neo-acme-learned"],
+        collection_id("neo-acme"): publish(s3, acme, acme_cfg, "acme", "acme-2026.10", [collection_id("neo-acme")]),
+        collection_id("neo-globex"): publish(s3, globex, globex_cfg, "globex", "globex-2026.10", [collection_id("neo-globex")]),
+        collection_id("neo-acme-learned"): publish(s3, acme, acme_cfg, "acme", "acme-2026.10-l", [collection_id("neo-acme-learned")],
                                     policy="learned", model_dir=good, model_id="acme_hgb"),
-        "neo-acme-strict": publish(s3, acme, acme_cfg, "acme", "acme-2026.10-s", ["neo-acme-strict"],
+        collection_id("neo-acme-strict"): publish(s3, acme, acme_cfg, "acme", "acme-2026.10-s", [collection_id("neo-acme-strict")],
                                    policy="learned", model_dir=strict, model_id="acme_strict"),
-        "neo-acme-schema": publish(s3, acme, acme_cfg, "acme", "acme-2026.10-x", ["neo-acme-schema"],
+        collection_id("neo-acme-schema"): publish(s3, acme, acme_cfg, "acme", "acme-2026.10-x", [collection_id("neo-acme-schema")],
                                    policy="learned", model_dir=tmp / "model-schema", model_id="old"),
-        "neo-acme-nomodel": publish(s3, acme, acme_cfg, "acme", "acme-2026.10-n", ["neo-acme-nomodel"],
+        collection_id("neo-acme-nomodel"): publish(s3, acme, acme_cfg, "acme", "acme-2026.10-n", [collection_id("neo-acme-nomodel")],
                                     policy="learned", model_dir=good, model_id="acme_gone"),
-        "neo-acme-badsha": publish(s3, acme, acme_cfg, "acme", "acme-2026.10-b", ["neo-acme-badsha"],
+        collection_id("neo-acme-badsha"): publish(s3, acme, acme_cfg, "acme", "acme-2026.10-b", [collection_id("neo-acme-badsha")],
                                    policy="learned", model_dir=good, model_id="acme_swapped"),
     }
-    first = sorted(pub["neo-acme"].registry["categories"])[0]
-    pub["neo-acme-partial"] = publish(s3, acme, acme_cfg, "acme", "acme-2026.10-p", ["neo-acme-partial"],
+    first = sorted(pub[collection_id("neo-acme")].registry["categories"])[0]
+    pub[collection_id("neo-acme-partial")] = publish(s3, acme, acme_cfg, "acme", "acme-2026.10-p", [collection_id("neo-acme-partial")],
                                       drop_categories=[first])
     (s3 / "taxonomy/models/acme_gone/frozen_model.skops").unlink()
     (s3 / "taxonomy/models/acme_swapped/frozen_model.skops").write_bytes(b"not the verified model")
@@ -170,7 +171,7 @@ class TestPolicies:
     async def test_calibrated(self, world, tmp_path, enabled):
         proc, pool = make_processor(world, tmp_path)
         chunks = await make_chunks("acme")
-        await proc.process(chunks, ctx_for("neo-acme"))
+        await proc.process(chunks, ctx_for(collection_id("neo-acme")))
         statuses = [c.taxonomy_status for c in chunks]
         assert sum(s in LABELLED for s in statuses) >= len(chunks) - 2, statuses
         for c in chunks:
@@ -180,7 +181,7 @@ class TestPolicies:
     async def test_learned_with_a_test_trained_model(self, world, tmp_path, enabled):
         proc, pool = make_processor(world, tmp_path)
         chunks = await make_chunks("acme")
-        await proc.process(chunks, ctx_for("neo-acme-learned"))
+        await proc.process(chunks, ctx_for(collection_id("neo-acme-learned")))
         assert sum(c.taxonomy_status in LABELLED for c in chunks) >= len(chunks) - 2
         for c in chunks:
             assert_contract_fields(c, "acme", "acme-2026.10-l")
@@ -190,12 +191,12 @@ class TestPolicies:
         """A model whose P stays under its 0.80 threshold labels nothing (calibrated would)."""
         proc, pool = make_processor(world, tmp_path)
         chunks = await make_chunks("acme")
-        await proc.process(chunks, ctx_for("neo-acme-strict"))
+        await proc.process(chunks, ctx_for(collection_id("neo-acme-strict")))
         assert not any(c.taxonomy_status in LABELLED for c in chunks)
         assert all(c.topic_ids == {} for c in chunks)
         pool.close()
 
-    @pytest.mark.parametrize("readable", ["neo-acme-nomodel", "neo-acme-badsha", "neo-acme-schema"])
+    @pytest.mark.parametrize("readable", [collection_id("neo-acme-nomodel"), collection_id("neo-acme-badsha"), collection_id("neo-acme-schema")])
     async def test_model_problems_are_errors_never_calibrated(self, world, tmp_path, enabled,
                                                               readable):
         proc, pool = make_processor(world, tmp_path)
@@ -232,10 +233,10 @@ class TestAirweaveEmbedder:
         pool = ClassifierPool(2, tmp_path / "via-airweave", dense_embedder=dense)
         proc = TaxonomyProcessor(resolver, pool, 60.0, TaxonomyTally())
         via = await make_chunks("acme")
-        await proc.process(via, ctx_for("neo-acme"))
+        await proc.process(via, ctx_for(collection_id("neo-acme")))
         direct_proc, direct_pool = make_processor(world, tmp_path / "direct")
         direct = await make_chunks("acme")
-        await direct_proc.process(direct, ctx_for("neo-acme"))
+        await direct_proc.process(direct, ctx_for(collection_id("neo-acme")))
         assert dense.texts, "the classifier never used Airweave's embedder"
         assert dense.thread == threading.get_ident(), "the embedder must run on the event loop"
         assert [c.taxonomy_status for c in via] == [c.taxonomy_status for c in direct]
@@ -256,7 +257,7 @@ class TestAirweaveEmbedder:
         tally = TaxonomyTally()
         proc = TaxonomyProcessor(resolver, pool, 60.0, tally)
         chunks = await make_chunks("acme")
-        out = await proc.process(chunks, ctx_for("neo-acme"))
+        out = await proc.process(chunks, ctx_for(collection_id("neo-acme")))
         assert out is chunks
         assert {c.taxonomy_status for c in chunks} == {"ERROR"}
         pool.close()
@@ -266,7 +267,7 @@ class TestIds:
     async def test_untranslated_category_dropped(self, world, tmp_path, enabled):
         proc, pool = make_processor(world, tmp_path)
         chunks = await make_chunks("acme")
-        await proc.process(chunks, ctx_for("neo-acme-partial"))
+        await proc.process(chunks, ctx_for(collection_id("neo-acme-partial")))
         dropped = world["dropped"]
         written = json.dumps([[c.topic_ids, c.taxonomy_spans] for c in chunks])
         assert dropped not in written and not BUILD_ID.search(written)
@@ -277,7 +278,7 @@ class TestIds:
         proc, pool = make_processor(world, tmp_path)
         chunks = await make_chunks("acme", n_docs=1)
         assert any(c.chunk_own_start > c.chunk_char_start for c in chunks)  # overlap exists
-        await proc.process(chunks, ctx_for("neo-acme"))
+        await proc.process(chunks, ctx_for(collection_id("neo-acme")))
         texts = {r["chunk_id"]: r["text"] for r in pool.rows}
         for c in chunks:
             body = c.textual_representation[c.chunk_body_offset:]
@@ -291,7 +292,7 @@ class TestOneWorker:
         proc, pool = make_processor(world, tmp_path, threads=2)
         acme = [await make_chunks("acme", seed=200 + i) for i in range(3)]
         globex = [await make_chunks("globex", seed=300 + i) for i in range(3)]
-        ctx_a, ctx_g = ctx_for("neo-acme"), ctx_for("neo-globex")
+        ctx_a, ctx_g = ctx_for(collection_id("neo-acme")), ctx_for(collection_id("neo-globex"))
         jobs = []
         for a, g in zip(acme, globex):
             jobs += [proc.process(a, ctx_a), proc.process(g, ctx_g)]
@@ -311,7 +312,7 @@ class TestOneWorker:
         """Concurrent batches from several tasks: no ProgrammingError, nothing ERROR."""
         proc, pool = make_processor(world, tmp_path, threads=2)
         batches = [await make_chunks(t, seed=400 + i) for i in range(4) for t in ("acme", "globex")]
-        ctxs = {"acme": ctx_for("neo-acme"), "globex": ctx_for("neo-globex")}
+        ctxs = {"acme": ctx_for(collection_id("neo-acme")), "globex": ctx_for(collection_id("neo-globex"))}
 
         async def worker(mine):
             for b in mine:
@@ -330,7 +331,7 @@ class TestOneWorker:
         from taxonomy_classifier.integration.airweave import TaxonomyClassifier
 
         resolver = TaxonomyResolver(FilesystemBackend(world["s3"]), "taxonomy/", tmp_path / "l", 300)
-        t = await resolver.resolve("neo-acme")
+        t = await resolver.resolve(collection_id("neo-acme"))
         cfg = {**t.config, "embedding": {**t.config["embedding"],
                                           "cache_path": str(tmp_path / "shared.sqlite")}}
         clf = TaxonomyClassifier(t.local_path, cfg, BowEmbeddings())
@@ -353,12 +354,12 @@ class TestTimeout:
     async def test_timeout_is_error_counted_and_sync_goes_on(self, world, tmp_path, enabled):
         proc, pool = make_processor(world, tmp_path, threads=1, delay=1.5, timeout=0.3)
         first = await make_chunks("acme", seed=500)
-        await proc.process(first, ctx_for("neo-acme"))
+        await proc.process(first, ctx_for(collection_id("neo-acme")))
         assert {c.taxonomy_status for c in first} == {"ERROR"}
         assert proc._tally.totals()["ERROR"] == len(first)
         proc._timeout = 60.0
         second = await make_chunks("acme", seed=501)
-        await proc.process(second, ctx_for("neo-acme"))  # queued behind the timed-out batch
+        await proc.process(second, ctx_for(collection_id("neo-acme")))  # queued behind the timed-out batch
         assert "ERROR" not in {c.taxonomy_status for c in second}
         pool.close()
 
@@ -372,11 +373,11 @@ class TestCacheRotationOnDisk:
         pool = ClassifierPool(1, cache, embed_transport=BowEmbeddings(), max_cache_mb=0.01)
         proc = TaxonomyProcessor(resolver, pool, 60.0, TaxonomyTally())
         first = await make_chunks("acme", n_docs=3, seed=300)
-        await proc.process(first, ctx_for("neo-acme"))
+        await proc.process(first, ctx_for(collection_id("neo-acme")))
         grown = sorted(cache.glob("*.sqlite"))
         assert grown and grown[0].stat().st_size > 0.01 * 1024 * 1024
         second = await make_chunks("acme", n_docs=3, seed=300)
-        await proc.process(second, ctx_for("neo-acme"))
+        await proc.process(second, ctx_for(collection_id("neo-acme")))
         files = sorted(p.name for p in cache.glob("*.sqlite"))
         assert len(files) == 1 and "-g1" in files[0], files  # the full file was deleted
         assert [c.topic_ids for c in second] == [c.topic_ids for c in first]

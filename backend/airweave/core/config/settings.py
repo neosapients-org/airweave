@@ -150,10 +150,6 @@ class Settings(BaseSettings):
     # ``airweave.domains.taxonomy.limits``; only what a deployment decides is here.
     TAXONOMY_ENABLED: bool = False
     TAXONOMY_S3_BUCKET: Optional[str] = None
-    # True refuses an active-taxonomy pointer that cannot be tied to the collection (no
-    # ``workspace_id``). Off while pointers written before the field existed are still in use;
-    # a pointer that has the field is always checked.
-    TAXONOMY_REQUIRE_COLLECTION_BINDING: bool = False
     # One folder for everything the taxonomy keeps on disk: ``versions/`` (verified versions),
     # ``embed-cache/`` (one SQLite file per classifier thread) and ``jobs/`` (the jobs worker's
     # scratch, which holds customer text). In Kubernetes it is the worker's taxonomy volume.

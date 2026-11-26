@@ -11,10 +11,15 @@ from pathlib import Path
 import pytest
 
 from airweave.adapters.storage.filesystem import FilesystemBackend
-from airweave.domains.taxonomy.artifacts import TaxonomyResolutionError, TaxonomyResolver
-from airweave.domains.taxonomy.tests.taxonomy_fixtures import activate, publish
+from airweave.domains.taxonomy.artifacts import (
+    TaxonomyResolutionError,
+    TaxonomyResolver,
+    derive_collection_id,
+)
+from airweave.domains.taxonomy.tests.taxonomy_fixtures import WORKSPACE, activate, publish
 
-TENANT, VERSION, READABLE = "t-acme", "acme-2026.10", "neo-acme-1"
+TENANT, VERSION = "t-acme", "acme-2026.10"
+READABLE = derive_collection_id(TENANT, WORKSPACE)
 
 
 class CountingBackend(FilesystemBackend):
@@ -153,11 +158,14 @@ class TestRefused:
         await self._refused(tmp_path, s3, "names collection")
 
     async def test_version_folder_of_another_tenant(self, tmp_path, s3, published):
-        active = s3 / f"taxonomy/active/{READABLE}.json"
-        data = json.loads(active.read_text())
-        data["tenant_id"] = "t-globex"
-        active.write_text(json.dumps(data))
-        await self._refused(tmp_path, s3, "not the tenant's version folder")
+        # a pointer for another tenant's own (derived) collection, but naming acme's version folder
+        other = derive_collection_id("t-globex", WORKSPACE)
+        data = json.loads((s3 / f"taxonomy/active/{READABLE}.json").read_text())
+        data.update(tenant_id="t-globex", collection_readable_id=other)
+        (s3 / f"taxonomy/active/{other}.json").write_text(json.dumps(data))
+        resolver, _ = _resolver(tmp_path, s3)
+        with pytest.raises(TaxonomyResolutionError, match="not the tenant's version folder"):
+            await resolver.resolve(other)
 
     async def test_unsafe_names(self, tmp_path, s3, published):
         active = s3 / f"taxonomy/active/{READABLE}.json"

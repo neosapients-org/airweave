@@ -149,9 +149,11 @@ def derive_collection_id(tenant_id: str, workspace_id: str) -> str:
     sha256 over ``<len>:<tenant>:<len>:<workspace>``, first 48 hex characters, prefixed
     ``neo-``. ``len`` is JavaScript's ``String.length``, UTF-16 code units, so a character
     outside the Basic Multilingual Plane counts 2. Nothing is trimmed, case-folded or
-    normalized. An isolated UTF-16 surrogate is hashed as U+FFFD, as Node's encoder does. Empty ids
-    raise, as the original does.
+    normalized. An isolated UTF-16 surrogate is hashed as U+FFFD, as Node's encoder does.
+    Empty or non-string ids raise ``ValueError``; the original raises on empty ids.
     """
+    if not isinstance(tenant_id, str) or not isinstance(workspace_id, str):
+        raise ValueError("derive_collection_id requires tenant_id and workspace_id to be strings")
     if not tenant_id or not workspace_id:
         raise ValueError("derive_collection_id requires both tenant_id and workspace_id")
 
@@ -181,22 +183,19 @@ class TaxonomyResolver:
         clock: Callable[[], float] = time.monotonic,
         max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
         max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
-        require_collection_binding: bool = False,
     ) -> None:
         """Initialize with the bucket's storage (None: no bucket configured) and local paths.
 
         ``max_file_bytes`` and ``max_total_bytes`` bound one artifact file and one version's
         files together (a manifest that declares more is refused before any download).
 
-        ``require_collection_binding``: an active file that carries ``workspace_id`` is always
-        checked (``derive_collection_id(tenant_id, workspace_id)`` must equal the collection's
-        ``readable_id``, which comes from Airweave's own database and commits to the tenant).
-        True also refuses an active file without ``workspace_id``; False (default) keeps pointers
-        written before the field existed working.
+        Every active file must carry a valid ``tenant_id`` and ``workspace_id``, and
+        ``derive_collection_id(tenant_id, workspace_id)`` must equal the collection's
+        ``readable_id``. That is a consistency check between the pointer's claimed tenant and
+        workspace and the id; it does not establish who owns the collection or authorize the
+        caller (``readable_id`` is caller-supplied at creation; ownership is a separate
+        follow-up). A missing, null or malformed ``workspace_id`` is refused.
         """
-        self._require_binding = require_collection_binding
-        # collections already reported as lacking workspace_id (one warning per process)
-        self._warned_unbound: set[str] = set()
         self._max_file = max_file_bytes
         self._max_total = max_total_bytes
         self._storage = storage
@@ -300,26 +299,10 @@ class TaxonomyResolver:
         Only collections whose id comes from ``deriveCollectionId`` can pass. In Neo Platform's
         Meridian write paths, taxonomy bindings (and so active pointers) are created only for
         derived ids: activation targets and the bootstrap check both require them. A legacy
-        ``neo-meridian-<tenantId>`` collection is therefore not expected to have a taxonomy
-        binding or a pointer with a ``workspace_id``; a pointer that carries one for any other
-        collection id is refused, and a ``neo-meridian-`` prefix is not an exemption.
+        ``neo-meridian-<tenantId>`` id is refused like any other id that is not derived, and a
+        ``neo-meridian-`` prefix is not an exemption.
         """
-        if workspace is None:
-            if not self._require_binding and readable_id not in self._warned_unbound:
-                self._warned_unbound.add(readable_id)
-                logger.warning(
-                    "taxonomy active pointer for collection %r has no workspace_id: its "
-                    "tenant and workspace could not be checked against the collection id "
-                    "(TAXONOMY_REQUIRE_COLLECTION_BINDING is off, so it is accepted)",
-                    readable_id,
-                )
-            if self._require_binding:
-                raise TaxonomyResolutionError(
-                    f"active file for {readable_id!r} has no workspace_id: "
-                    "its tenant cannot be bound to the collection"
-                )
-            return
-        workspace = _safe(workspace, "workspace_id")
+        workspace = _safe(workspace, "workspace_id")  # absent, null, empty or malformed: refused
         if derive_collection_id(tenant, workspace) != readable_id:
             raise TaxonomyResolutionError(
                 f"active file for {readable_id!r}: "
