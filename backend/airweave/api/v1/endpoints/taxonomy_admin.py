@@ -310,11 +310,12 @@ async def _start_job(
     try:
         taxonomy = await resolver.resolve(collection.readable_id, fresh=True) if resolver else None
     except TaxonomyResolutionError as e:
-        if kind == KIND_PROPOSE:
-            raise HTTPException(
-                status_code=409, detail={"code": "taxonomy_unusable", "message": str(e)}
-            ) from e
-        taxonomy = None  # a first version has no usable active file yet
+        # An active file that exists but is refused (binding, checksum, unsafe field) is not "no
+        # taxonomy yet": only an absent pointer (None, below) is a first version. Taking the
+        # tenant from the request here would skip the tenant check the pointer would give.
+        raise HTTPException(
+            status_code=409, detail={"code": "taxonomy_unusable", "message": str(e)}
+        ) from e
     if kind == KIND_PROPOSE and taxonomy is None:
         raise HTTPException(
             status_code=409,

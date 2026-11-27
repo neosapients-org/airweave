@@ -17,9 +17,15 @@ from pathlib import Path
 import pytest
 
 from airweave.adapters.storage.filesystem import FilesystemBackend
-from airweave.domains.taxonomy.artifacts import TaxonomyResolutionError, TaxonomyResolver
+from airweave.domains.taxonomy.artifacts import (
+    TaxonomyResolutionError,
+    TaxonomyResolver,
+    derive_collection_id,
+)
+from airweave.domains.taxonomy.tests.taxonomy_fixtures import WORKSPACE
 
-TENANT, VERSION, READABLE = "t-3f9a21c0", "acme-2026.10", "neo-acme-7d41"
+TENANT, VERSION = "t-3f9a21c0", "acme-2026.10"
+READABLE = derive_collection_id(TENANT, WORKSPACE)
 BUILD_FILES = {
     "final_taxonomy.json": b'{"categories": []}',
     "dense_prototypes.npy": b"stand-in prototypes",
@@ -90,6 +96,7 @@ def meridian_publish(
             {
                 "collection_readable_id": READABLE,
                 "tenant_id": TENANT,
+                "workspace_id": WORKSPACE,
                 "taxonomy_version": VERSION,
                 "version_prefix": prefix,
                 "manifest_sha256": sha(manifest),

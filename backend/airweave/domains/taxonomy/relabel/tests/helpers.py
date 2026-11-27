@@ -22,11 +22,12 @@ from airweave.domains.taxonomy.relabel.chunk_store import (
     encode_token,
 )
 from airweave.domains.taxonomy.relabel.chunks import F_DOCUMENT, F_HASH, F_SOURCE, ChunkRow
+from airweave.domains.taxonomy.tests.taxonomy_fixtures import collection_id
 
 COLLECTION = UUID(int=11)
 OTHER_COLLECTION = UUID(int=12)
 ORG = UUID(int=1)
-READABLE = "neo-acme"
+READABLE = collection_id("neo-acme")  # a derived id, as the resolver's tenant binding requires
 OLD, NEW = "acme-2026.10", "acme-2026.11"
 HEADER = "Acme Q3.pdf · google_drive"
 

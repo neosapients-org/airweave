@@ -70,7 +70,6 @@ class TestDefaults:
         assert s.TAXONOMY_S3_BUCKET is None
         assert s.TAXONOMY_DATA_DIR == "/tmp/airweave/taxonomy"
         assert s.TAXONOMY_CLASSIFY_THREADS == 2
-        assert s.TAXONOMY_REQUIRE_COLLECTION_BINDING is False
         assert s.TAXONOMY_JOBS_ENABLED is False
         assert s.DISCOVER_MIN_CHUNKS == 100
         assert s.TAXONOMY_JOBS_CACHE_DIR == ""

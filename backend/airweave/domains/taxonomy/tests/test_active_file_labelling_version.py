@@ -13,12 +13,17 @@ from pathlib import Path
 import pytest
 
 from airweave.adapters.storage.filesystem import FilesystemBackend
-from airweave.domains.taxonomy.artifacts import TaxonomyResolutionError, TaxonomyResolver
+from airweave.domains.taxonomy.artifacts import (
+    TaxonomyResolutionError,
+    TaxonomyResolver,
+    derive_collection_id,
+)
 from airweave.domains.taxonomy.metrics import TaxonomyTally, log_sync_summary
-from airweave.domains.taxonomy.tests.taxonomy_fixtures import publish
+from airweave.domains.taxonomy.tests.taxonomy_fixtures import WORKSPACE, publish
 from airweave.domains.taxonomy.tests.test_artifacts import _fake_build
 
-TENANT, READABLE = "t-acme", "neo-acme-1"
+TENANT = "t-acme"
+READABLE = derive_collection_id(TENANT, WORKSPACE)
 SOURCE, TARGET = "acme-2026.10", "acme-2026.11"
 
 
@@ -27,6 +32,7 @@ def write_active(s3: Path, version: str, sha: str, **fields) -> None:
     body = {
         "collection_readable_id": READABLE,
         "tenant_id": TENANT,
+        "workspace_id": WORKSPACE,
         "taxonomy_version": version,
         "version_prefix": f"taxonomy/tenants/{TENANT}/versions/{version}/",
         "manifest_sha256": sha,

@@ -4,20 +4,23 @@ import json
 
 import pytest
 
+from airweave.core.config import settings
+from airweave.domains.sync_pipeline.processors.taxonomy import TaxonomyProcessor
 from airweave.domains.taxonomy.artifacts import (
     TaxonomyResolutionError,
     TaxonomyResolver,
     derive_collection_id,
 )
+from airweave.domains.taxonomy.metrics import TaxonomyTally
 from airweave.domains.taxonomy.tests.taxonomy_fixtures import publish
 from airweave.domains.taxonomy.tests.test_artifacts import Clock, CountingBackend, _fake_build
+from airweave.domains.taxonomy.tests.test_taxonomy_processor import FakePool, chunks, sync_context
 
 A, B, WS_A, WS_B, VERSION = "t-acme", "t-other", "ws-a", "ws-b", "v1"
 
 
-def _resolver(tmp_path, s3, require=False):
-    return TaxonomyResolver(CountingBackend(s3), "taxonomy/", tmp_path / "local", 300, Clock(),
-                            require_collection_binding=require)
+def _resolver(tmp_path, s3):
+    return TaxonomyResolver(CountingBackend(s3), "taxonomy/", tmp_path / "local", 300, Clock())
 
 
 def _pointer(s3, readable_id, tenant, version, sha, workspace="__absent__"):
@@ -48,7 +51,7 @@ class TestBinding:
     async def test_t5_legitimate_taxonomy_resolves(self, tmp_path, s3):
         rid = derive_collection_id(A, WS_A)
         _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), WS_A)
-        t = await _resolver(tmp_path, s3, require=True).resolve(rid)
+        t = await _resolver(tmp_path, s3).resolve(rid)
         assert t is not None and t.tenant_id == A
 
     async def test_t1_cross_tenant_pointer_is_refused(self, tmp_path, s3):
@@ -62,71 +65,78 @@ class TestBinding:
         assert backend.reads == [f"taxonomy/active/{rid}.json"]
         assert not (tmp_path / "local").exists()
 
-    @pytest.mark.parametrize("require", [False, True])
-    async def test_t2_t3_consistent_replacement_is_refused_with_or_without_strict_binding(self, tmp_path, s3, require):
+    async def test_t2_t3_consistent_replacement_is_refused(self, tmp_path, s3):
         # B's folder, B's manifest hash, A's workspace: internally consistent, but not A's collection
         assert derive_collection_id(A, WS_A) != derive_collection_id(B, WS_A)      # two tenants never share a derived id
         rid = derive_collection_id(A, WS_A)
         _pointer(s3, rid, B, VERSION, _sha(tmp_path, B), WS_A)
         with pytest.raises(TaxonomyResolutionError, match="do not derive"):
-            await _resolver(tmp_path, s3, require=require).resolve(rid)
-
-    async def test_t4_missing_tenant_fails_closed(self, tmp_path, s3):
-        rid = derive_collection_id(A, WS_A)
-        body = {"collection_readable_id": rid, "taxonomy_version": VERSION, "manifest_sha256": _sha(tmp_path, A),
-                "version_prefix": f"taxonomy/tenants/{A}/versions/{VERSION}/", "workspace_id": WS_A}
-        (s3 / "taxonomy" / "active" / f"{rid}.json").write_text(json.dumps(body))
-        with pytest.raises(TaxonomyResolutionError, match="tenant_id"):
             await _resolver(tmp_path, s3).resolve(rid)
 
-    async def test_missing_workspace_is_refused_only_when_binding_is_required(self, tmp_path, s3):
-        rid = "neo-legacy-1"
-        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A))
-        assert (await _resolver(tmp_path, s3).resolve(rid)).tenant_id == A          # legacy pointer keeps working
-        with pytest.raises(TaxonomyResolutionError, match="no workspace_id"):
-            await _resolver(tmp_path, s3, require=True).resolve(rid)
-
-    async def test_strict_mode_rejects_a_missing_workspace_before_reading_anything_else(
-        self, tmp_path, s3
+    @pytest.mark.parametrize("workspace", [WS_A, None, "__absent__"])
+    async def test_t4_missing_tenant_fails_closed_before_anything_else_is_read(
+        self, tmp_path, s3, workspace
     ):
-        rid = "neo-legacy-1"
-        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A))
+        # whatever the pointer says about workspace_id, a pointer without a tenant is refused
+        rid = derive_collection_id(A, WS_A)
+        body = {
+            "collection_readable_id": rid,
+            "taxonomy_version": VERSION,
+            "manifest_sha256": _sha(tmp_path, A),
+            "version_prefix": f"taxonomy/tenants/{A}/versions/{VERSION}/",
+        }
+        if workspace != "__absent__":
+            body["workspace_id"] = workspace
+        (s3 / "taxonomy" / "active" / f"{rid}.json").write_text(json.dumps(body))
         backend = CountingBackend(s3)
-        r = TaxonomyResolver(
-            backend, "taxonomy/", tmp_path / "local", 300, Clock(), require_collection_binding=True
-        )
-        with pytest.raises(TaxonomyResolutionError, match="no workspace_id"):
+        r = TaxonomyResolver(backend, "taxonomy/", tmp_path / "local", 300, Clock())
+        with pytest.raises(TaxonomyResolutionError, match="tenant_id"):
+            await r.resolve(rid)
+        assert backend.reads == [f"taxonomy/active/{rid}.json"]
+        assert not (tmp_path / "local").exists()
+
+    @pytest.mark.parametrize("workspace", ["__absent__", None])
+    async def test_a_missing_or_null_workspace_id_is_refused_before_anything_else_is_read(
+        self, tmp_path, s3, workspace
+    ):
+        # An active pointer must carry a valid workspace_id: absent and explicit null are both invalid.
+        rid = derive_collection_id(A, WS_A)
+        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), workspace)
+        backend = CountingBackend(s3)
+        r = TaxonomyResolver(backend, "taxonomy/", tmp_path / "local", 300, Clock())
+        with pytest.raises(TaxonomyResolutionError, match="missing workspace_id"):
             await r.resolve(rid)
         # only the pointer was read: no manifest, no artifact, and no local artifact directory
         assert backend.reads == [f"taxonomy/active/{rid}.json"]
         assert not (tmp_path / "local").exists()
 
-    async def test_unsafe_workspace_and_stale_cache(self, tmp_path, s3):
+    async def test_an_unsafe_workspace_is_refused(self, tmp_path, s3):
         rid = derive_collection_id(A, WS_A)
         _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), "../x")
-        r = _resolver(tmp_path, s3)
         with pytest.raises(TaxonomyResolutionError, match="unsafe workspace_id"):
-            await r.resolve(rid)
-        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), WS_A)
-        with pytest.raises(TaxonomyResolutionError):          # the refusal is cached until the TTL, as other failures are
-            await r.resolve(rid)
-        assert (await r.resolve(rid, fresh=True)).tenant_id == A
+            await _resolver(tmp_path, s3).resolve(rid)
 
-    async def test_a_refusal_clears_after_the_cache_ttl_without_fresh(self, tmp_path, s3):
+    @pytest.mark.parametrize("recover", ["fresh", "ttl"])
+    async def test_a_cached_refusal_lasts_until_the_ttl_or_a_fresh_read(
+        self, tmp_path, s3, recover
+    ):
+        # The resolver caches every failure for the active-cache TTL (existing behaviour, not
+        # specific to binding). The failure here is a binding mismatch, fixed afterwards.
         rid = derive_collection_id(A, WS_A)
         clock = Clock()
         r = TaxonomyResolver(CountingBackend(s3), "taxonomy/", tmp_path / "local", 300, clock)
-        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), "../x")
-        with pytest.raises(TaxonomyResolutionError):
+        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), WS_B)
+        with pytest.raises(TaxonomyResolutionError, match="do not derive"):
             await r.resolve(rid)
         _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), WS_A)
         clock.now += 299
-        # still inside the TTL: the documented behaviour for any failure
-        with pytest.raises(TaxonomyResolutionError):
+        with pytest.raises(TaxonomyResolutionError, match="do not derive"):  # still cached
             await r.resolve(rid)
-        clock.now += 2
-        # recovered on the next sync after the TTL
-        assert (await r.resolve(rid)).tenant_id == A
+        if recover == "fresh":
+            assert (await r.resolve(rid, fresh=True)).tenant_id == A
+        else:
+            clock.now += 2
+            assert (await r.resolve(rid)).tenant_id == A
 
 
 class TestMoreCases:
@@ -150,21 +160,30 @@ class TestMoreCases:
         ra, rb = derive_collection_id(A, WS_A), derive_collection_id(B, WS_B)
         _pointer(s3, ra, A, VERSION, _sha(tmp_path, A), WS_A)
         _pointer(s3, rb, B, VERSION, _sha(tmp_path, B), WS_B)
-        r = _resolver(tmp_path, s3, require=True)
+        backend = CountingBackend(s3)
+        r = TaxonomyResolver(
+            backend, "taxonomy/", tmp_path / "local", 300, Clock()
+        )
         ta, tb = await r.resolve(ra), await r.resolve(rb)
         assert (ta.tenant_id, tb.tenant_id) == (A, B) and ta.local_path != tb.local_path
         assert A in str(ta.local_path) and B in str(tb.local_path)
+        # each collection's own pointer and its own tenant's manifest were read
+        assert {f"taxonomy/active/{ra}.json", f"taxonomy/active/{rb}.json"} <= set(backend.reads)
+        manifests = [k for k in backend.reads if k.endswith("manifest.json")]
+        assert any(f"tenants/{A}/" in k for k in manifests)
+        assert any(f"tenants/{B}/" in k for k in manifests)
+        assert ta.manifest_sha256 != tb.manifest_sha256
 
     async def test_binding_does_not_replace_the_integrity_checks(self, tmp_path, s3):
         rid = derive_collection_id(A, WS_A)
         _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), WS_A)
         (s3 / f"taxonomy/tenants/{A}/versions/{VERSION}/dense_prototypes.npy").write_bytes(b"tampered")
         with pytest.raises(TaxonomyResolutionError):
-            await _resolver(tmp_path, s3, require=True).resolve(rid)
+            await _resolver(tmp_path, s3).resolve(rid)
 
 
 class TestIdentifierShapes:
-    """Identifier values outside the resolver's path-safe contract are refused with its own error, with or without strict binding.
+    """Identifier values outside the resolver's path-safe contract are refused with its own error.
 
     Two groups, kept apart: malformed values (wrong type, empty, path-unsafe) and valid but
     unusual ones. The contract is ``is_safe_name`` (ASCII letters, digits, ``._+-``, starting
@@ -172,41 +191,38 @@ class TestIdentifierShapes:
     because tenant ids form storage paths. Production workspace ids are UUIDs or ObjectIds.
     """
 
-    @pytest.mark.parametrize("require", [False, True])
     @pytest.mark.parametrize(
         "workspace", [5, True, ["ws-a"], {"id": "ws-a"}, "", "../x", "ws/a", ".hidden"]
     )
     async def test_malformed_or_path_unsafe_workspace_values_are_refused(
-        self, tmp_path, s3, workspace, require
+        self, tmp_path, s3, workspace
     ):
         rid = derive_collection_id(A, WS_A)
         _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), workspace)
         with pytest.raises(TaxonomyResolutionError):
-            await _resolver(tmp_path, s3, require=require).resolve(rid)
+            await _resolver(tmp_path, s3).resolve(rid)
 
-    @pytest.mark.parametrize("require", [False, True])
     @pytest.mark.parametrize("workspace", ["wörkspace", "日本", "ws a", " ws-a"])
     async def test_valid_but_unusual_workspace_values_outside_the_contract_are_refused(
-        self, tmp_path, s3, workspace, require
+        self, tmp_path, s3, workspace
     ):
         # the id could be derived: refusal is the contract, not a hashing failure
         rid = derive_collection_id(A, workspace)
         _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), workspace)
         with pytest.raises(TaxonomyResolutionError, match="unsafe workspace_id"):
-            await _resolver(tmp_path, s3, require=require).resolve(rid)
+            await _resolver(tmp_path, s3).resolve(rid)
 
-    @pytest.mark.parametrize("require", [False, True])
     @pytest.mark.parametrize(
         "workspace",
         ["123e4567-e89b-12d3-a456-426614174000", "507F1F77BCF86CD799439011", "ws.a+b_1-2"],
     )
     async def test_unusual_but_path_safe_workspace_values_resolve(
-        self, tmp_path, s3, workspace, require
+        self, tmp_path, s3, workspace
     ):
         # UUID, upper-case ObjectId, punctuation
         rid = derive_collection_id(A, workspace)
         _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), workspace)
-        assert (await _resolver(tmp_path, s3, require=require).resolve(rid)).tenant_id == A
+        assert (await _resolver(tmp_path, s3).resolve(rid)).tenant_id == A
 
     @pytest.mark.parametrize("tenant", ["t-é", "租户", "", 7, None])
     async def test_unexpected_tenant_values_are_refused(self, tmp_path, s3, tenant):
@@ -225,47 +241,58 @@ class TestIdentifierShapes:
         body.pop(drop)
         (s3 / "taxonomy" / "active" / f"{rid}.json").write_text(json.dumps(body))
         with pytest.raises(TaxonomyResolutionError):
-            await _resolver(tmp_path, s3, require=True).resolve(rid)
-
-
-class TestMissingWorkspaceWarning:
-    LOGGER = "airweave.domains.taxonomy.artifacts"
-
-    async def test_a_pointer_without_workspace_id_is_accepted_and_reported_once_per_collection(self, tmp_path, s3, caplog):
-        rid = "neo-legacy-1"
-        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A))
-        r = _resolver(tmp_path, s3)
-        with caplog.at_level("WARNING", logger=self.LOGGER):
-            assert (await r.resolve(rid)).tenant_id == A                      # behaviour unchanged: still accepted
-            assert (await r.resolve(rid, fresh=True)).tenant_id == A          # a second read does not log again
-        warned = [m for m in caplog.records if m.name == self.LOGGER and m.levelname == "WARNING"]
-        assert len(warned) == 1 and rid in warned[0].getMessage() and "no workspace_id" in warned[0].getMessage()
-        message = warned[0].getMessage()
-        # no workspace value is logged
-        assert WS_A not in message and WS_B not in message
-
-    async def test_no_warning_when_the_pointer_carries_workspace_id_or_binding_is_required(self, tmp_path, s3, caplog):
-        good = derive_collection_id(A, WS_A)
-        _pointer(s3, good, A, VERSION, _sha(tmp_path, A), WS_A)
-        _pointer(s3, "neo-legacy-2", A, VERSION, _sha(tmp_path, A))
-        with caplog.at_level("WARNING", logger=self.LOGGER):
-            await _resolver(tmp_path, s3).resolve(good)
-            with pytest.raises(TaxonomyResolutionError, match="no workspace_id"):
-                await _resolver(tmp_path, s3, require=True).resolve("neo-legacy-2")
-        assert not [m for m in caplog.records if m.name == self.LOGGER]
+            await _resolver(tmp_path, s3).resolve(rid)
 
 
 class TestLegacyCollectionIds:
-    @pytest.mark.parametrize("require", [False, True])
-    async def test_a_neo_meridian_prefix_is_not_an_exemption_from_the_binding_check(self, tmp_path, s3, require):
+    async def test_a_neo_meridian_prefix_is_not_an_exemption_from_the_binding_check(self, tmp_path, s3):
         rid = f"neo-meridian-{A}"                                         # legacy per-tenant collection id
         _pointer(s3, rid, A, VERSION, _sha(tmp_path, A), WS_A)           # a pointer that claims a workspace for it
         with pytest.raises(TaxonomyResolutionError, match="do not derive"):
-            await _resolver(tmp_path, s3, require=require).resolve(rid)
+            await _resolver(tmp_path, s3).resolve(rid)
 
-    async def test_a_legacy_collection_without_workspace_id_follows_the_documented_flag_behaviour(self, tmp_path, s3):
-        rid = f"neo-meridian-{A}"
-        _pointer(s3, rid, A, VERSION, _sha(tmp_path, A))
+
+class TestBoundaryValidation:
+    @pytest.mark.parametrize(
+        "tenant, workspace", [(5, "w"), ("t", 5), (None, "w"), ("t", None), (b"t", "w")]
+    )
+    def test_derive_collection_id_rejects_non_string_ids_with_value_error(self, tenant, workspace):
+        with pytest.raises(ValueError, match="strings"):
+            derive_collection_id(tenant, workspace)
+
+
+class TestProcessorOnARefusedPointer:
+    """Rollout behaviour (review of #21): a refused pointer does not fail the sync."""
+
+    @pytest.mark.parametrize("workspace", ["__absent__", None])
+    async def test_chunks_are_written_as_error_and_stay_so_after_the_pointer_is_fixed(
+        self, tmp_path, s3, monkeypatch, workspace
+    ):
+        monkeypatch.setattr(settings, "TAXONOMY_ENABLED", True)
+        rid = derive_collection_id(A, WS_A)
+        sha = _sha(tmp_path, A)
+        _pointer(s3, rid, A, VERSION, sha, workspace)  # a pointer written before workspace_id
+        batch, ctx = chunks(), sync_context(readable=rid)
+        out = await TaxonomyProcessor(_resolver(tmp_path, s3), FakePool(), 5.0, TaxonomyTally()).process(
+            batch, ctx
+        )
+        assert out is batch  # the sync carries on with the chunks
+        assert [c.taxonomy_status for c in batch] == ["ERROR"] * 3
+        errors = [call.args[0] for call in ctx.logger.error.call_args_list]
+        assert any("taxonomy unusable" in m and "missing workspace_id" in m for m in errors)
+        assert any("ERROR passed 1%" in m for m in errors)  # the sync's only visible alarm
+
+        # Rewriting the pointer repairs later reads only: the processor keeps no state, so chunks
+        # already persisted as ERROR change only when their documents sync again or a re-label runs.
+        _pointer(s3, rid, A, VERSION, sha, WS_A)
         assert (await _resolver(tmp_path, s3).resolve(rid)).tenant_id == A
-        with pytest.raises(TaxonomyResolutionError, match="no workspace_id"):
-            await _resolver(tmp_path, s3, require=True).resolve(rid)
+        assert [c.taxonomy_status for c in batch] == ["ERROR"] * 3
+
+    async def test_an_absent_pointer_is_not_an_error(self, tmp_path, s3, monkeypatch):
+        monkeypatch.setattr(settings, "TAXONOMY_ENABLED", True)
+        rid = derive_collection_id(A, WS_A)  # no pointer written
+        batch = chunks()
+        await TaxonomyProcessor(_resolver(tmp_path, s3), FakePool(), 5.0, TaxonomyTally()).process(
+            batch, sync_context(readable=rid)
+        )
+        assert [c.taxonomy_status for c in batch] == ["NOT_LABELLED"] * 3

@@ -33,6 +33,7 @@ from airweave.domains.taxonomy.jobs.tests.helpers import (  # noqa: E402
 )
 from airweave.domains.taxonomy.relabel.tests.helpers import Clock  # noqa: E402
 from airweave.domains.taxonomy.tests.taxonomy_fixtures import (  # noqa: E402
+    collection_id,
     CORPORA,
     BowEmbeddings,
     FakeLLM,
@@ -258,7 +259,7 @@ class TestPropose:
     async def serving(self, tmp_path, build_cfg):
         built, cfg = build_taxonomy(tmp_path, "acme", "acme-v1")
         s3 = tmp_path / "s3"
-        publish(s3, built, cfg, "acme", "acme-v1", ["neo-acme"])
+        publish(s3, built, cfg, "acme", "acme-v1", [collection_id("neo-acme")])
         return TaxonomyResolver(FilesystemBackend(s3), "taxonomy/", tmp_path / "local", 300), cfg
 
     def evolve_cfg(self, cfg):
@@ -291,7 +292,7 @@ class TestPropose:
 
     async def propose_with_cap(self, tmp_path, build_cfg, cap):
         resolver, _ = await self.serving(tmp_path, build_cfg)
-        self.evolve_cfg((await resolver.resolve("neo-acme")).config)
+        self.evolve_cfg((await resolver.resolve(collection_id("neo-acme"))).config)
         runner, repo, s3 = runner_for(
             tmp_path / "run",
             build_cfg,
@@ -319,7 +320,7 @@ class TestPropose:
         self, tmp_path, build_cfg
     ):
         resolver, cfg = await self.serving(tmp_path, build_cfg)
-        serving = await resolver.resolve("neo-acme")
+        serving = await resolver.resolve(collection_id("neo-acme"))
         self.evolve_cfg(serving.config)
         garden = stored_chunks({"garden": GARDEN}, n_docs=6, per_doc=4, seed=3, prefix="W")
         unresolved = [
@@ -372,7 +373,7 @@ class TestPropose:
         import hashlib
 
         resolver, cfg = await self.serving(tmp_path, build_cfg)
-        serving = await resolver.resolve("neo-acme")
+        serving = await resolver.resolve(collection_id("neo-acme"))
         self.evolve_cfg(serving.config)
         before = {
             p.name: hashlib.sha256(p.read_bytes()).hexdigest()
@@ -403,7 +404,7 @@ class TestPropose:
 
     async def test_a_wave_that_adds_nothing_writes_a_report_only(self, tmp_path, build_cfg):
         resolver, cfg = await self.serving(tmp_path, build_cfg)
-        serving = await resolver.resolve("neo-acme")
+        serving = await resolver.resolve(collection_id("neo-acme"))
         self.evolve_cfg(serving.config)
         noise = [
             chunk(i, doc=f"n{i}", body=f"zq vx kj {i}", status="UNRESOLVED", version="acme-v1")
